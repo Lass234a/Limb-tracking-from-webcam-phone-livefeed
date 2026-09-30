@@ -14,7 +14,8 @@ from collections import deque
 from dataclasses import asdict
 
 from . import overlay
-from .angles import measure
+from .angles import measure, segment_pairs
+from .geometry import anchored_ghost
 from .filters import LEVELS, make_filter
 from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
@@ -35,6 +36,9 @@ class Engine:
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
         self.locked = False
+        self.ghost_enabled = True    # draw a faint copy of the locked pose
+        self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
+        self._ghost = None           # dot positions (px) when the position was locked
         self.smoothing = "light"     # 'off', 'light' or 'medium' (see filters.py)
         self._filters = {}
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
@@ -66,6 +70,7 @@ class Engine:
             self._filters = {}
             self.locked = False
             self._refs = {}
+            self._ghost = None
 
     def set_smoothing(self, level):
         if level not in LEVELS:
@@ -116,6 +121,9 @@ class Engine:
             if not angles or any(a.status == LOST for a in angles):
                 return False
             self._refs = {a.name: a.value for a in angles if not a.primary}
+            self._ghost = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
+            if self.rec is not None:
+                self.rec_info["ghost"] = dict(self._ghost)
             self.locked = True
             return True
 
@@ -123,6 +131,7 @@ class Engine:
         with self.lock:
             self.locked = False
             self._refs = {}
+            self._ghost = None
 
     # --------------------------------------------------------------- per frame
     def _smooth(self, name, raw, t):
@@ -181,10 +190,16 @@ class Engine:
             nxt = self.next_dot_to_mark()
             if nxt:
                 head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
-            img = overlay.draw(frame, states, angles, head, self.rec is not None)
+            ghost = None
+            if self.locked and self.ghost_enabled and self._ghost:
+                live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
+                anchor = self.test.primary.fulcrum if self.ghost_anchored else None
+                ghost = anchored_ghost(self._ghost, live, anchor)
+            img = overlay.draw(frame, states, angles, head, self.rec is not None,
+                               ghost, segment_pairs(self.test.angles))
             if self.rec is not None:
                 self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles)
-            res = FrameResult(self.frame_index, t, img, angles, states)
+            res = FrameResult(self.frame_index, t, img, angles, states, ghost)
             self.frame_index += 1
             return res
 
@@ -201,7 +216,8 @@ class Engine:
             self.rec = TrialRecorder(
                 self.recordings_dir, participant or "unnamed", self.test.key, self.target,
                 self.test.dots, [a.name for a in self.test.angles], self._fps(), frame_size)
-            self.rec_info = {"participant": participant, "notes": notes}
+            self.rec_info = {"participant": participant, "notes": notes,
+                             "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
 
     def stop_trial(self):
@@ -225,6 +241,8 @@ class Engine:
                 "lens_calibration": None,
                 "facing": "right" if self.facing_right else "left",
                 "smoothing": self.smoothing,
+                "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
+                "ghost_anchor": t.primary.fulcrum,
                 "angles": [asdict(a) for a in t.angles],
             }
             paths = self.rec.close(meta)

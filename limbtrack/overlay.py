@@ -2,6 +2,7 @@
 import math
 
 import cv2
+import numpy as np
 
 from .results import INFO, LOST, OK, OUT
 
@@ -30,14 +31,47 @@ def _arc(img, vertex, a, c, radius, colour, thick):
                 ang_a, ang_a + diff, colour, thick, cv2.LINE_AA)
 
 
-def draw(frame, dots, angles, header_lines=(), recording=False):
-    """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost."""
+GHOST = (255, 200, 0)   # BGR bright cyan-blue
+
+
+def _dashed(img, p, q, col, thick, dash=12):
+    p, q = np.array(p, float), np.array(q, float)
+    length = float(np.hypot(*(q - p)))
+    if length < 1:
+        return
+    u = (q - p) / length
+    for k in range(0, int(length), dash * 2):
+        a, b = p + u * k, p + u * min(k + dash, length)
+        cv2.line(img, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), col, thick, cv2.LINE_AA)
+
+
+def _draw_ghost(img, ghost, segments, dots, s, thick):
+    """Faint dashed copy of the locked pose, with a thin line from each ghost dot to its live dot."""
+    layer = img.copy()
+    for a, b in segments:
+        if a in ghost and b in ghost:
+            _dashed(layer, ghost[a], ghost[b], GHOST, thick + 2)
+    for n, (gx, gy) in ghost.items():
+        cv2.circle(layer, (int(gx), int(gy)), max(int(6 * s), 3), GHOST, thick, cv2.LINE_AA)
+        d = dots.get(n)
+        if d is not None and not d.lost and np.hypot(d.x - gx, d.y - gy) > 3:
+            cv2.line(layer, (int(gx), int(gy)), (int(d.x), int(d.y)), (255, 255, 255), 1, cv2.LINE_AA)
+    return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
+
+
+def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=()):
+    """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost.
+
+    `ghost`: name -> (x, y) of the locked pose to draw faintly behind the live limb (or None).
+    """
     img = frame.copy()
     if img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     h, w = img.shape[:2]
     s = h / 720.0
     thick = max(1, int(round(2 * s)))
+    if ghost:
+        img = _draw_ghost(img, ghost, ghost_segments, dots, s, thick)
 
     for a in angles:
         col = COLOURS[a.status]

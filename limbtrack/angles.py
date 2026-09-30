@@ -20,3 +20,15 @@ def measure(defn, xy, facing_right=True):
         else:                               # 'up' / 'forward' / perpendicular: no dot-to-dot line to draw
             r.rays.append(direction)
     return r
+
+
+def segment_pairs(angle_defs):
+    """Unique (dotA, dotB) limb segments used by a set of angle definitions, in order."""
+    out = []
+    for a in angle_defs:
+        for spec in a.vectors:
+            if isinstance(spec, (list, tuple)):
+                pair = (spec[0], spec[1])
+                if pair not in out and pair[::-1] not in out:
+                    out.append(pair)
+    return out

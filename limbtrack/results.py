@@ -28,3 +28,4 @@ class FrameResult:
     overlay: object = None                     # BGR image with drawings
     angles: list = field(default_factory=list)
     dots: dict = field(default_factory=dict)   # name -> DotState
+    ghost: dict = None                         # locked pose (name -> (x, y)) if one is being shown

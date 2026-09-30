@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMessageBox, QP
                                QWidget)
 
 from . import overlay
-from .angles import measure
+from .angles import measure, segment_pairs
+from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
 from .tracker import WEAK_BELOW
@@ -48,6 +49,8 @@ class Trial:
         self.ref = {a.name: np.array([_f(r[f"{a.name}_ref"]) for r in self.rows]) for a in self.angle_defs}
         self.dev = {a.name: np.array([_f(r[f"{a.name}_dev"]) for r in self.rows]) for a in self.angle_defs}
         self.ok = {a.name: [r[f"{a.name}_ok"] for r in self.rows] for a in self.angle_defs}
+        self.ghost = self.meta.get("locked_positions_px")
+        self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
         self._pos = -2
 
@@ -77,7 +80,11 @@ class Trial:
             res.status = LOST if math.isnan(res.value) else OK if flag == "1" else OUT if flag == "0" else INFO
             angles.append(res)
         head = f"{self.meta['test_label']} | {self.meta['participant']} | t = {self.t[i]:.2f} s"
-        return overlay.draw(img, dots, angles, [head])
+        ghost = None
+        if self.ghost and r["locked"] == "1":
+            live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
+            ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
+        return overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs))
 
     def summary(self, t0, t1):
         """Rows of statistics per angle within [t0, t1] seconds."""

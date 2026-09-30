@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPainter, QShortcut
-from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -232,11 +232,19 @@ class LiveTab(QWidget):
         self.btn_lock = QPushButton("Lock position  (Space)")
         self.btn_lock.setCheckable(True)
         self.btn_lock.clicked.connect(self.toggle_lock)
+        self.chk_ghost = QCheckBox("Show ghost of the locked pose")
+        self.chk_ghost.setChecked(True)
+        self.chk_ghost.toggled.connect(lambda v: (setattr(engine, "ghost_enabled", v), self.refresh_view()))
+        self.chk_anchor = QCheckBox("Ghost follows the main joint\n(shows angle drift only)")
+        self.chk_anchor.setChecked(True)
+        self.chk_anchor.toggled.connect(lambda v: (setattr(engine, "ghost_anchored", v), self.refresh_view()))
         mk = QGroupBox("3. Mark dots, set position, lock")
         ml = QVBoxLayout(mk)
         ml.addWidget(self.instruction)
         ml.addWidget(btn_remark)
         ml.addWidget(self.btn_lock)
+        ml.addWidget(self.chk_ghost)
+        ml.addWidget(self.chk_anchor)
 
         # --- record
         self.participant = QLineEdit()
