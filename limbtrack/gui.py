@@ -4,7 +4,11 @@ import threading
 import time
 from pathlib import Path
 
+import math
+
 import cv2
+import numpy as np
+import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
@@ -16,6 +20,18 @@ from .engine import Engine
 from .review import ReviewTab
 
 BIG = "font-size: 15pt; font-weight: bold;"
+PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
+
+
+def trace_y_range(arrays, centre, half_span):
+    """(low, high) for the live trace: at least centre +/- half_span, stretched to include all finite data."""
+    lo, hi = centre - half_span, centre + half_span
+    for a in arrays:
+        a = np.asarray(a, float)
+        a = a[np.isfinite(a)]
+        if a.size:
+            lo, hi = min(lo, float(a.min()) - 1.0), max(hi, float(a.max()) + 1.0)
+    return lo, hi
 
 
 def bgr_to_qimage(img):
@@ -264,6 +280,23 @@ class LiveTab(QWidget):
         rf.addRow(self.rec_label)
         rf.addRow(btn_open)
 
+        # --- live trace (last 15 s)
+        self.trace_mode = QComboBox()
+        self.trace_mode.addItem("Main angle, last 15 s", "main")
+        self.trace_mode.addItem("Drift from set position, all joints", "drift")
+        self.trace = pg.PlotWidget()
+        self.trace.setMinimumHeight(170)
+        self.trace.setMaximumHeight(230)
+        self.trace.setLabel("bottom", "Seconds ago")
+        self.trace.setLabel("left", "deg")
+        self.trace.showGrid(x=True, y=True, alpha=0.25)
+        self.trace.setMouseEnabled(False, False)
+        self.trace.addLegend(offset=(10, 5))
+        self._trace_items = []
+        self.trace_timer = QTimer(self)
+        self.trace_timer.timeout.connect(self.update_trace)
+        self.trace_timer.start(100)
+
         side = QVBoxLayout()
         for g in (src, tg, mk, rc):
             side.addWidget(g)
@@ -271,8 +304,16 @@ class LiveTab(QWidget):
         side_w = QWidget()
         side_w.setLayout(side)
         side_w.setFixedWidth(340)
+        left = QVBoxLayout()
+        left.addWidget(self.view, 1)
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Live trace:"))
+        trow.addWidget(self.trace_mode)
+        trow.addStretch(1)
+        left.addLayout(trow)
+        left.addWidget(self.trace)
         lay = QHBoxLayout(self)
-        lay.addWidget(self.view, 1)
+        lay.addLayout(left, 1)
         lay.addWidget(side_w)
 
         QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.btn_lock.click)
@@ -374,6 +415,42 @@ class LiveTab(QWidget):
             self._set_file_controls(False)
             if msg != "Stopped.":
                 self.instruction.setText(msg)
+
+    # ------------------------------------------------------- live trace
+    def update_trace(self):
+        h = self.engine.history(15.0)
+        for it in self._trace_items:
+            self.trace.removeItem(it)
+        self._trace_items = []
+        if h is None or self.worker is None:
+            return
+        tol, ntol, target = h["tolerance"], h["neighbour_tolerance"], h["target"]
+        drift = self.trace_mode.currentData() == "drift"
+        pens = {n: PENS[k % len(PENS)] for k, n in enumerate(h["values"])}
+        names = [h["primary"]] + ([n for n in h["values"] if n != h["primary"]] if drift else [])
+        series = h["deviations"] if drift else h["values"]
+        for n in names:
+            item = self.trace.plot(h["t"], series[n], pen=pg.mkPen(pens[n], width=3 if n == h["primary"] else 1.5),
+                                   name=h["titles"][n], connect="finite")
+            self._trace_items.append(item)
+        if drift:
+            centre, span = 0.0, 2 * max(tol, ntol if len(names) > 1 else tol)
+            for lo, hi, col in ((-tol, tol, (60, 180, 60, 45)),):
+                band = pg.LinearRegionItem(values=(lo, hi), orientation="horizontal", brush=col, movable=False)
+                self.trace.addItem(band)
+                self._trace_items.append(band)
+        else:
+            centre, span = (target if target is not None else 0.0), 2 * tol
+            if target is not None:
+                band = pg.LinearRegionItem(values=(target - tol, target + tol), orientation="horizontal",
+                                           brush=(60, 180, 60, 45), movable=False)
+                self.trace.addItem(band)
+                self._trace_items.append(band)
+        if not drift and target is None:
+            centre = float(np.nanmean(series[h["primary"]])) if np.isfinite(series[h["primary"]]).any() else 0.0
+        lo, hi = trace_y_range([series[n] for n in names], centre, span)
+        self.trace.setYRange(lo, hi, padding=0.02)
+        self.trace.setXRange(-15, 0, padding=0)
 
     # ------------------------------------------------ pause / frame step
     def _set_file_controls(self, on):

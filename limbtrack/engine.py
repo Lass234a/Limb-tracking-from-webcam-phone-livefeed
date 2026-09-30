@@ -8,8 +8,11 @@ How "deviation" is judged
                       At that moment their current values become the reference,
                       and from then on any drift beyond the neighbour tolerance turns red.
 """
+import math
 import threading
 from collections import deque
+
+import numpy as np
 
 from dataclasses import asdict
 
@@ -47,6 +50,7 @@ class Engine:
         self._last_states = {}
         self._last_angles = []
         self._times = deque(maxlen=30)
+        self._hist = deque(maxlen=6000)      # (t, {angle name: (value, deviation)}) for the live trace
         self.frame_index = 0
         self.rec = None
         self.rec_info = {}
@@ -68,6 +72,7 @@ class Engine:
             self._last_states = {}
             self._last_angles = []
             self._filters = {}
+            self._hist.clear()
             self.locked = False
             self._refs = {}
             self._ghost = None
@@ -162,6 +167,36 @@ class Engine:
             out.append(r)
         return out
 
+    def _record_history(self, t, angles):
+        while self._hist and self._hist[-1][0] >= t:      # time went backwards (frame stepping): drop the future
+            self._hist.pop()
+        self._hist.append((t, {a.name: (a.value, a.deviation) for a in angles}))
+
+    def history(self, seconds=15.0):
+        """The last few seconds of angles for the live trace, or None if there is nothing yet.
+
+        Returns a dict: t (seconds relative to now, <= 0), values / deviations (angle name -> array),
+        plus what the plot needs to draw the tolerance band.
+        """
+        with self.lock:
+            if not self._hist:
+                return None
+            t_last = self._hist[-1][0]
+            rows = [r for r in self._hist if r[0] >= t_last - seconds]
+            nan = (math.nan, math.nan)
+            names = [a.name for a in self.test.angles]
+            return {
+                "t": np.array([r[0] - t_last for r in rows]),
+                "values": {n: np.array([r[1].get(n, nan)[0] for r in rows]) for n in names},
+                "deviations": {n: np.array([r[1].get(n, nan)[1] for r in rows]) for n in names},
+                "titles": {a.name: a.title for a in self.test.angles},
+                "primary": self.test.primary.name,
+                "target": self.target,
+                "tolerance": self.tolerance,
+                "neighbour_tolerance": self.neighbour_tolerance,
+                "locked": self.locked,
+            }
+
     def _fps(self):
         if len(self._times) < 5:
             return 30.0
@@ -177,6 +212,7 @@ class Engine:
             self._last_states = states
             angles = self._compute_angles(states, t)
             self._last_angles = angles
+            self._record_history(t, angles)
             first = self.test.label
             if self.target is not None:
                 first += f"  |  target {self.target:g} +/-{self.tolerance:g} deg"
