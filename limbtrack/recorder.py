@@ -40,7 +40,7 @@ class TrialRecorder:
         for d in self.dot_names:
             head += [f"{d}_x", f"{d}_y", f"{d}_lost"]
         for a in self.angle_names:
-            head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
+            head += [f"{a}_deg", f"{a}_raw_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head.append("all_ok")
         self._csv.writerow(head)
         self.frames = 0
@@ -65,7 +65,7 @@ class TrialRecorder:
             ok = 1 if a.status == OK else 0 if a.status == OUT else ""
             if a.status in (OUT, LOST):
                 oks.append(False)
-            row += [_num(a.value), _num(a.reference), _num(a.deviation), ok]
+            row += [_num(a.value), _num(a.raw_value), _num(a.reference), _num(a.deviation), ok]
         row.append(0 if oks else 1)
         self._csv.writerow(row)
         self.frames += 1

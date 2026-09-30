@@ -207,6 +207,11 @@ class LiveTab(QWidget):
         self.facing_combo.addItem("Right side of the image", True)
         self.facing_combo.addItem("Left side of the image", False)
         self.facing_combo.currentIndexChanged.connect(self.on_facing_changed)
+        self.smooth_combo = QComboBox()
+        for label, k in (("Light (default)", "light"), ("Medium", "medium"), ("Off (raw)", "off")):
+            self.smooth_combo.addItem(label, k)
+        self.smooth_combo.currentIndexChanged.connect(
+            lambda: (engine.set_smoothing(self.smooth_combo.currentData()), self.refresh_view()))
         tg = QGroupBox("2. Test and target")
         f = QFormLayout(tg)
         f.addRow("Test", self.test_combo)
@@ -216,6 +221,7 @@ class LiveTab(QWidget):
         f.addRow("Tolerance other joints", self.ntol_spin)
         f.addRow("Dot colour", self.kind_combo)
         f.addRow("Participant faces", self.facing_combo)
+        f.addRow("Angle smoothing", self.smooth_combo)
 
         # --- marking & lock
         self.instruction = QLabel("Start the camera first.")

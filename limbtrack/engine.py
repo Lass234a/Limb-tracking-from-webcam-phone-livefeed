@@ -15,6 +15,7 @@ from dataclasses import asdict
 
 from . import overlay
 from .angles import measure
+from .filters import LEVELS, make_filter
 from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import DotState, TrackerSet, to_gray
@@ -34,10 +35,13 @@ class Engine:
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
         self.locked = False
+        self.smoothing = "light"     # 'off', 'light' or 'medium' (see filters.py)
+        self._filters = {}
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._refs = {}
         self._last_gray = None
         self._last_states = {}
+        self._last_angles = []
         self._times = deque(maxlen=30)
         self.frame_index = 0
         self.rec = None
@@ -58,8 +62,17 @@ class Engine:
         with self.lock:
             self.trackers = TrackerSet(self.test.dots, self.kind)
             self._last_states = {}
+            self._last_angles = []
+            self._filters = {}
             self.locked = False
             self._refs = {}
+
+    def set_smoothing(self, level):
+        if level not in LEVELS:
+            raise ValueError(f"smoothing must be one of {list(LEVELS)}")
+        with self.lock:
+            self.smoothing = level
+            self._filters = {}
 
     def set_dot_kind(self, kind):
         """'white', 'black' or 'auto'. Dots must be re-marked afterwards."""
@@ -83,6 +96,7 @@ class Engine:
                 return False
             t = self.trackers.trackers[name]
             self._last_states[name] = DotState(name, t.x, t.y, False, 0)   # usable at once, e.g. by Lock
+            self._last_angles = []
             return True
 
     def nearest_dot(self, x, y, max_dist=60):
@@ -98,7 +112,7 @@ class Engine:
     def lock_position(self):
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
-            angles = self._compute_angles(self._last_states) if self._last_states else []
+            angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             if not angles or any(a.status == LOST for a in angles):
                 return False
             self._refs = {a.name: a.value for a in angles if not a.primary}
@@ -111,12 +125,24 @@ class Engine:
             self._refs = {}
 
     # --------------------------------------------------------------- per frame
-    def _compute_angles(self, states):
+    def _smooth(self, name, raw, t):
+        if t is None or self.smoothing == "off":
+            return raw
+        f = self._filters.get(name)
+        if f is None:
+            f = self._filters[name] = make_filter(self.smoothing)
+        return f(raw, t)
+
+    def _compute_angles(self, states, t=None):
         xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
         out = []
         for a in self.test.angles:
             r = measure(a, xy, self.facing_right)
-            if r.status != LOST:
+            if r.status == LOST:
+                self._filters.pop(a.name, None)         # do not blend across a gap
+            else:
+                r.raw_value = r.value
+                r.value = self._smooth(a.name, r.raw_value, t)
                 if a.primary:
                     r.reference, r.tolerance = self.target, self.tolerance
                 elif self.locked and a.name in self._refs:
@@ -140,7 +166,8 @@ class Engine:
             self._times.append(t)
             states = self.trackers.update(gray)
             self._last_states = states
-            angles = self._compute_angles(states)
+            angles = self._compute_angles(states, t)
+            self._last_angles = angles
             first = self.test.label
             if self.target is not None:
                 first += f"  |  target {self.target:g} +/-{self.tolerance:g} deg"
@@ -194,6 +221,7 @@ class Engine:
                 "camera": self.camera_desc,
                 "lens_calibration": None,
                 "facing": "right" if self.facing_right else "left",
+                "smoothing": self.smoothing,
                 "angles": [asdict(a) for a in t.angles],
             }
             paths = self.rec.close(meta)
