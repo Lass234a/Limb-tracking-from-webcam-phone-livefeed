@@ -11,6 +11,7 @@ COLOURS = {  # BGR
     LOST: (150, 150, 150),
     INFO: (235, 235, 235),
 }
+DOT_OK, DOT_WEAK = (0, 215, 255), (0, 140, 255)   # yellow / orange
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -55,7 +56,7 @@ def draw(frame, dots, angles, header_lines=(), recording=False):
         _text(img, f"{a.value:.1f}", (fx + 36 * s, fy + 10 * s), 0.8 * s, col, thick + 1)
 
     for name, d in dots.items():
-        col = COLOURS[LOST] if d.lost else (0, 215, 255)
+        col = COLOURS[LOST] if d.lost else DOT_WEAK if getattr(d, 'weak', False) else DOT_OK
         c = (int(d.x), int(d.y))
         r = max(int(8 * s), 4)
         if d.lost:

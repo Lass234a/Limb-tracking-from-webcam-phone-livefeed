@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 MIN_CONTRAST = 8.0  # grey levels; below this a "dot" is indistinguishable from noise
+WEAK_BELOW = 0.6    # dot contrast relative to when it was marked; below this the dot is "weak"
 
 
 def _odd(n):
@@ -31,6 +32,11 @@ class DotState:
     y: float
     lost: bool
     lost_frames: int = 0
+    quality: float = 1.0   # contrast now / contrast when marked (0 when lost, capped at 1)
+
+    @property
+    def weak(self):
+        return not self.lost and self.quality < WEAK_BELOW
 
 
 class DotTracker:
@@ -41,7 +47,8 @@ class DotTracker:
         self.vx = self.vy = 0.0
         self.diam = 12.0
         self.area = 100.0
-        self.contrast = 40.0
+        self.contrast = 40.0          # slowly adapting estimate, used for the detection threshold
+        self.ref_contrast = 40.0      # contrast when the operator marked the dot, used for the quality read-out
         self.lost_frames = 0
         self.initialised = False
 
@@ -106,7 +113,7 @@ class DotTracker:
         self.vx = self.vy = 0.0
         self.area = area
         self.diam = max(2.0 * (area / np.pi) ** 0.5, 4.0)
-        self.contrast = peak
+        self.contrast = self.ref_contrast = peak
         self.lost_frames = 0
         self.initialised = True
         return True
@@ -144,18 +151,19 @@ class DotTracker:
             self.lost_frames += 1
             self.vx *= 0.5
             self.vy *= 0.5
-            return DotState(self.name, self.x, self.y, True, self.lost_frames)
+            return DotState(self.name, self.x, self.y, True, self.lost_frames, 0.0)
         _, nx, ny, area, enh, cx, cy = found
         self.vx = 0.5 * (nx - self.x)
         self.vy = 0.5 * (ny - self.y)
         self.x, self.y = nx, ny
         self.area = 0.9 * self.area + 0.1 * area
         self.diam = max(2.0 * (self.area / np.pi) ** 0.5, 4.0)
-        peak = float(enh[int(round(cy)), int(round(cx))]) if enh.size else self.contrast
+        iy, ix = int(round(cy)), int(round(cx))
+        peak = float(enh[max(iy - 1, 0):iy + 2, max(ix - 1, 0):ix + 2].max()) if enh.size else self.contrast
         if peak >= MIN_CONTRAST:
             self.contrast = 0.95 * self.contrast + 0.05 * peak
         self.lost_frames = 0
-        return DotState(self.name, self.x, self.y, False, 0)
+        return DotState(self.name, self.x, self.y, False, 0, min(peak / self.ref_contrast, 1.0))
 
 
 def to_gray(frame):
@@ -194,5 +202,5 @@ class TrackerSet:
                 if (sa.x - sb.x) ** 2 + (sa.y - sb.y) ** 2 < lim ** 2:
                     t = self.trackers[b]
                     t.lost_frames += 1
-                    states[b] = DotState(b, t.x, t.y, True, t.lost_frames)
+                    states[b] = DotState(b, t.x, t.y, True, t.lost_frames, 0.0)
         return states

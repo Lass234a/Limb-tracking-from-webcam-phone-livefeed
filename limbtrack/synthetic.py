@@ -50,7 +50,8 @@ def leg_points(hip_flex=0.0, knee_flex=0.0, ankle_df=0.0, pelvic_tilt=0.0, facin
     return pts
 
 
-def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, seed=0, distractors=True):
+def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, seed=0, distractors=True,
+           dot_gain=1.0):
     w, h = size
     rng = np.random.default_rng(seed)
     bg = 90 if kind == "white" else 170
@@ -63,7 +64,9 @@ def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, se
     if distractors:  # something bright and something dark that is NOT a dot
         cv2.rectangle(img, (w - 260, h - 140), (w - 90, h - 80), (240, 240, 240), -1)
         cv2.rectangle(img, (60, h - 140), (230, h - 80), (20, 20, 20), -1)
-    col = (245, 245, 245) if kind == "white" else (15, 15, 15)
+    full = 245 if kind == "white" else 15
+    level = int(round(bg + dot_gain * (full - bg)))     # dot_gain < 1 = faded / low-contrast dots
+    col = (level, level, level)
     shift = 4
     for n in names:
         x, y = points[n]

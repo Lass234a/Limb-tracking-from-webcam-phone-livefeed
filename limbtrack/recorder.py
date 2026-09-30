@@ -38,7 +38,7 @@ class TrialRecorder:
         self.dot_names, self.angle_names = list(dot_names), list(angle_names)
         head = ["frame", "t_s", "clock_s", "locked"]
         for d in self.dot_names:
-            head += [f"{d}_x", f"{d}_y", f"{d}_lost"]
+            head += [f"{d}_x", f"{d}_y", f"{d}_lost", f"{d}_q"]
         for a in self.angle_names:
             head += [f"{a}_deg", f"{a}_raw_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head.append("all_ok")
@@ -57,7 +57,7 @@ class TrialRecorder:
         row = [frame_index, round(t - self._t0, 5), round(t, 5), int(locked)]
         for d in self.dot_names:
             st = dots.get(d)
-            row += ["", "", ""] if st is None else [round(st.x, 2), round(st.y, 2), int(st.lost)]
+            row += ["", "", "", ""] if st is None else [round(st.x, 2), round(st.y, 2), int(st.lost), round(st.quality, 2)]
         by_name = {a.name: a for a in angles}
         oks = []
         for n in self.angle_names:

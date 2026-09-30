@@ -175,6 +175,9 @@ class Engine:
             lost = [n for n, st in states.items() if st.lost]
             if lost:
                 head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
+            weak = [n for n, st in states.items() if st.weak]
+            if weak:
+                head.append("weak dot (fading): " + ", ".join(self.test.dot_title(n) for n in weak))
             nxt = self.next_dot_to_mark()
             if nxt:
                 head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]

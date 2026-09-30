@@ -17,6 +17,7 @@ from . import overlay
 from .angles import measure
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
+from .tracker import WEAK_BELOW
 
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
 
@@ -62,7 +63,8 @@ class Trial:
         if img is None:
             return None
         r = self.rows[i]
-        dots = {n: SimpleNamespace(x=_f(r[f"{n}_x"]), y=_f(r[f"{n}_y"]), lost=r[f"{n}_lost"] == "1")
+        dots = {n: SimpleNamespace(x=_f(r[f"{n}_x"]), y=_f(r[f"{n}_y"]), lost=r[f"{n}_lost"] == "1",
+                                   weak=r[f"{n}_lost"] != "1" and _f(r.get(f"{n}_q")) < WEAK_BELOW)
                 for n in self.dot_names if r[f"{n}_x"] != ""}
         angles = []
         for a in self.angle_defs:

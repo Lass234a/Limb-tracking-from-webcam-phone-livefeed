@@ -187,3 +187,21 @@ def test_bright_distractor_is_not_mistaken_for_dot():
         st = t.update(to_gray(render(pts, distractors=True, seed=i)))
         assert not st.lost
         assert math.hypot(st.x - pts["mt5_head"][0], st.y - pts["mt5_head"][1]) < 0.5
+
+
+@pytest.mark.parametrize("kind", ["white", "black"])
+def test_fading_dots_are_flagged_weak_before_they_are_lost(tmp_path, kind):
+    eng = make_engine(tmp_path, kind=kind)
+    eng.target = 50.0
+    pts = leg_points(hip_flex=70, knee_flex=50)
+    eng.process(render(pts, kind=kind), 0.0)
+    click_all(eng, pts)
+    good = eng.process(render(pts, kind=kind, seed=1), 0.03)
+    assert all(st.quality > 0.9 and not st.weak for st in good.dots.values())
+
+    faded = eng.process(render(pts, kind=kind, seed=2, dot_gain=0.45), 0.06)
+    assert all(st.weak and not st.lost for st in faded.dots.values())
+    assert values(faded)["knee"] == pytest.approx(50, abs=1.0)        # still tracked accurately while weak
+
+    gone = eng.process(render(pts, kind=kind, seed=3, dot_gain=0.1), 0.09)
+    assert all(st.lost for st in gone.dots.values())
