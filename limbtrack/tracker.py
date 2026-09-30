@@ -112,8 +112,12 @@ class DotTracker:
         return True
 
     # -------------------------------------------------------------------- track
-    def update(self, gray):
-        """Find the dot in a new frame. Returns a DotState."""
+    def update(self, gray, claimed=()):
+        """Find the dot in a new frame. Returns a DotState.
+
+        `claimed`: (x, y, radius) of dots that other trackers currently hold. Blobs inside those
+        circles are ignored, so a hidden dot can never jump onto its neighbour.
+        """
         if not self.initialised:
             return DotState(self.name, self.x, self.y, True, 0)
         px, py = self.x + self.vx, self.y + self.vy
@@ -128,6 +132,8 @@ class DotTracker:
                 if not (0.3 * self.area <= area <= 3.5 * self.area):
                     continue
                 if max(w, h) > 2.5 * min(w, h) + 2:
+                    continue
+                if any((x0 + cx - qx) ** 2 + (y0 + cy - qy) ** 2 < qr ** 2 for qx, qy, qr in claimed):
                     continue
                 d = ((x0 + cx - px) ** 2 + (y0 + cy - py) ** 2) ** 0.5
                 if d <= reach and (best is None or d < best[0]):
@@ -171,7 +177,12 @@ class TrackerSet:
         return all(t.initialised for t in self.trackers.values())
 
     def update(self, gray):
-        states = {n: t.update(gray) for n, t in self.trackers.items() if t.initialised}
+        active = {n: t for n, t in self.trackers.items() if t.initialised}
+        held = {n: (t.x, t.y, 0.8 * t.diam) for n, t in active.items() if t.lost_frames == 0}
+        states = {}
+        for n, t in active.items():
+            claimed = [v for k, v in held.items() if k != n]
+            states[n] = t.update(gray, claimed)
         # Two trackers must never sit on the same dot: the later one is declared lost.
         names = list(states)
         for i, a in enumerate(names):

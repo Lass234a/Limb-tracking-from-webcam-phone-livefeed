@@ -11,13 +11,15 @@ How "deviation" is judged
 import threading
 from collections import deque
 
+from dataclasses import asdict
+
 from . import overlay
-from .geometry import interior_angle, segment_vs_vertical, to_display
+from .angles import measure
 from .recorder import TrialRecorder
-from .results import INFO, LOST, OK, OUT, AngleResult, FrameResult
+from .results import LOST, OK, OUT, FrameResult
 from .tracker import DotState, TrackerSet, to_gray
 
-SOFTWARE_VERSION = "0.1.0"
+SOFTWARE_VERSION = "0.2.0-dev"
 
 
 class Engine:
@@ -32,6 +34,7 @@ class Engine:
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
         self.locked = False
+        self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._refs = {}
         self._last_gray = None
         self._last_states = {}
@@ -109,16 +112,11 @@ class Engine:
 
     # --------------------------------------------------------------- per frame
     def _compute_angles(self, states):
+        xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
         out = []
         for a in self.test.angles:
-            r = AngleResult(a.name, a.title, a.kind, a.points, a.primary)
-            pts = [states.get(p) for p in a.points]
-            if any(p is None or p.lost for p in pts):
-                r.status = LOST
-            else:
-                xy = [(p.x, p.y) for p in pts]
-                raw = interior_angle(*xy) if a.kind == "joint" else segment_vs_vertical(*xy)
-                r.value = to_display(raw, a.sign, a.offset)
+            r = measure(a, xy, self.facing_right)
+            if r.status != LOST:
                 if a.primary:
                     r.reference, r.tolerance = self.target, self.tolerance
                 elif self.locked and a.name in self._refs:
@@ -149,10 +147,10 @@ class Engine:
             head = [first, "POSITION LOCKED" if self.locked else "position not locked"]
             lost = [n for n, st in states.items() if st.lost]
             if lost:
-                head.append("DOT LOST: " + ", ".join(lost))
+                head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
             nxt = self.next_dot_to_mark()
             if nxt:
-                head = [self.test.label, f"click dot: {nxt}"]
+                head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
             img = overlay.draw(frame, states, angles, head, self.rec is not None)
             if self.rec is not None:
                 self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles)
@@ -195,10 +193,8 @@ class Engine:
                 "dot_kind": self.kind,
                 "camera": self.camera_desc,
                 "lens_calibration": None,
-                "angles": [
-                    {"name": a.name, "label": a.title, "kind": a.kind, "points": a.points,
-                     "sign": a.sign, "offset": a.offset, "primary": a.primary}
-                    for a in t.angles],
+                "facing": "right" if self.facing_right else "left",
+                "angles": [asdict(a) for a in t.angles],
             }
             paths = self.rec.close(meta)
             self.rec = None

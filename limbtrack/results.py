@@ -7,9 +7,12 @@ OK, OUT, LOST, INFO = "ok", "out", "lost", "info"
 class AngleResult:
     name: str
     title: str
-    kind: str                  # "joint" or "vertical"
-    points: list               # dot names, vertex is points[1] for joints
     primary: bool
+    segments: list = field(default_factory=list)   # (dotA, dotB) pairs to draw as limb lines
+    rays: list = field(default_factory=list)       # unit vectors of arms that are not dot-to-dot (drawn from the fulcrum)
+    fulcrum: tuple = None                          # image position of the read-out
+    dir1: tuple = None                             # unit vectors of the two arms (image coords), for the arc
+    dir2: tuple = None
     value: float = float("nan")      # in the protocol's convention (NaN if a dot is lost)
     reference: float = None          # target (primary) or locked value (neighbours)
     deviation: float = float("nan")  # value - reference

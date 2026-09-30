@@ -39,17 +39,20 @@ def draw(frame, dots, angles, header_lines=(), recording=False):
     thick = max(1, int(round(2 * s)))
 
     for a in angles:
-        pts = [dots.get(p) for p in a.points]
-        if any(p is None for p in pts):
-            continue
         col = COLOURS[a.status]
-        xy = [(p.x, p.y) for p in pts]
-        for p, q in zip(xy[:-1], xy[1:]):
-            cv2.line(img, (int(p[0]), int(p[1])), (int(q[0]), int(q[1])), col, thick, cv2.LINE_AA)
-        if a.kind == "joint":
-            _arc(img, xy[1], xy[0], xy[2], int(28 * s), col, thick)
-            if a.status != LOST:
-                _text(img, f"{a.value:.0f}", (xy[1][0] + 36 * s, xy[1][1] + 10 * s), 0.9 * s, col, thick + 1)
+        for p, q in a.segments:
+            dp, dq = dots.get(p), dots.get(q)
+            if dp is not None and dq is not None:
+                cv2.line(img, (int(dp.x), int(dp.y)), (int(dq.x), int(dq.y)), col, thick, cv2.LINE_AA)
+        if a.status == LOST or a.fulcrum is None:
+            continue
+        fx, fy = a.fulcrum
+        for d in a.rays:                     # reference directions (vertical, forward, pelvis midline)
+            cv2.line(img, (int(fx), int(fy)), (int(fx + d[0] * 80 * s), int(fy + d[1] * 80 * s)), col, 1, cv2.LINE_AA)
+        if a.dir1 and a.dir2:
+            _arc(img, (fx, fy), (fx + a.dir1[0] * 100, fy + a.dir1[1] * 100),
+                 (fx + a.dir2[0] * 100, fy + a.dir2[1] * 100), int(28 * s), col, thick)
+        _text(img, f"{a.value:.1f}", (fx + 36 * s, fy + 10 * s), 0.8 * s, col, thick + 1)
 
     for name, d in dots.items():
         col = COLOURS[LOST] if d.lost else (0, 215, 255)

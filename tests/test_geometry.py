@@ -1,8 +1,10 @@
 import math
 
+import numpy as np
 import pytest
 
-from limbtrack.geometry import interior_angle, segment_vs_vertical, to_display
+from limbtrack.geometry import (interior_angle, resolve_arm, segment_vs_vertical, spec_dots, to_display,
+                                vector_angle)
 
 
 @pytest.mark.parametrize("deg", [10, 30, 60, 90, 120, 150, 179])
@@ -23,6 +25,25 @@ def test_vertical():
     assert segment_vs_vertical((0, 0), (10, 0)) == pytest.approx(90)
     assert segment_vs_vertical((0, 0), (0, 10)) == pytest.approx(180)
     assert segment_vs_vertical((0, 10), (10, 0)) == pytest.approx(45)
+
+
+def test_vector_angle_signed_and_unsigned():
+    assert vector_angle((0, 1), (1, 0)) == pytest.approx(90)
+    assert vector_angle((0, 1), (1, 0), signed=True) == pytest.approx(-90)   # image coords: y down
+    assert vector_angle((0, 1), (-1, 0), signed=True) == pytest.approx(90)
+    assert vector_angle((1, 0), (2, 0)) == pytest.approx(0)
+    assert math.isnan(vector_angle((0, 0), (1, 0)))
+
+
+def test_resolve_arm_variants_and_facing():
+    xy = {"a": (0, 0), "b": (10, 0)}
+    assert np.allclose(resolve_arm(["a", "b"], xy), (10, 0))
+    assert np.allclose(resolve_arm(["a", "b"], xy, facing_right=False), (-10, 0))   # mirrored
+    assert np.allclose(resolve_arm({"perp": ["a", "b"]}, xy), (0, 10))              # points down
+    assert np.allclose(resolve_arm({"perp": ["b", "a"]}, xy), (0, 10))              # order does not matter
+    assert np.allclose(resolve_arm("forward", xy, facing_right=False), (1, 0))      # already in the mirrored frame
+    assert resolve_arm(["a", "zzz"], xy) is None
+    assert spec_dots({"perp": ["a", "b"]}) == ["a", "b"] and spec_dots("up") == []
 
 
 def test_to_display():

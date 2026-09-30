@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMessageBox, QP
                                QWidget)
 
 from . import overlay
-from .results import INFO, LOST, OK, OUT, AngleResult
+from .angles import measure
+from .protocol import AngleDef
+from .results import INFO, LOST, OK, OUT
 
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
 
@@ -38,12 +40,13 @@ class Trial:
         with open(folder / self.meta["files"]["data.csv"], newline="", encoding="utf-8") as fh:
             self.rows = list(csv.DictReader(fh))
         self.t = np.array([_f(r["t_s"]) for r in self.rows])
-        self.angle_defs = self.meta["angles"]
+        self.angle_defs = [AngleDef(**a) for a in self.meta["angles"]]
+        self.facing_right = self.meta.get("facing", "right") == "right"
         self.dot_names = [k[:-5] for k in self.rows[0] if k.endswith("_lost")]
-        self.deg = {a["name"]: np.array([_f(r[f"{a['name']}_deg"]) for r in self.rows]) for a in self.angle_defs}
-        self.ref = {a["name"]: np.array([_f(r[f"{a['name']}_ref"]) for r in self.rows]) for a in self.angle_defs}
-        self.dev = {a["name"]: np.array([_f(r[f"{a['name']}_dev"]) for r in self.rows]) for a in self.angle_defs}
-        self.ok = {a["name"]: [r[f"{a['name']}_ok"] for r in self.rows] for a in self.angle_defs}
+        self.deg = {a.name: np.array([_f(r[f"{a.name}_deg"]) for r in self.rows]) for a in self.angle_defs}
+        self.ref = {a.name: np.array([_f(r[f"{a.name}_ref"]) for r in self.rows]) for a in self.angle_defs}
+        self.dev = {a.name: np.array([_f(r[f"{a.name}_dev"]) for r in self.rows]) for a in self.angle_defs}
+        self.ok = {a.name: [r[f"{a.name}_ok"] for r in self.rows] for a in self.angle_defs}
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
         self._pos = -2
 
@@ -63,8 +66,9 @@ class Trial:
                 for n in self.dot_names if r[f"{n}_x"] != ""}
         angles = []
         for a in self.angle_defs:
-            n = a["name"]
-            res = AngleResult(n, a["label"], a["kind"], a["points"], a["primary"])
+            n = a.name
+            xy = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
+            res = measure(a, xy, self.facing_right)     # geometry for drawing; numbers come from the CSV
             res.value, res.deviation = self.deg[n][i], self.dev[n][i]
             res.reference = None if math.isnan(self.ref[n][i]) else self.ref[n][i]
             flag = self.ok[n][i]
@@ -78,14 +82,14 @@ class Trial:
         m = (self.t >= t0) & (self.t <= t1)
         out = []
         for a in self.angle_defs:
-            n = a["name"]
+            n = a.name
             v = self.deg[n][m]
             valid = ~np.isnan(v)
             flags = [f for f, keep in zip(self.ok[n], m) if keep and f != ""]
             dev = self.dev[n][m]
             out.append({
-                "angle": a["label"],
-                "role": "main" if a["primary"] else "neighbour",
+                "angle": a.title,
+                "role": "main" if a.primary else "neighbour",
                 "frames": int(m.sum()),
                 "frames_lost": int((~valid).sum()),
                 "mean_deg": float(np.mean(v[valid])) if valid.any() else math.nan,
@@ -174,9 +178,9 @@ class ReviewTab(QWidget):
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)
         for k, a in enumerate(tr.angle_defs):
-            self.plot.plot(tr.t, tr.deg[a["name"]], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a["primary"] else 1.5),
-                           name=a["label"])
-            if a["primary"] and m["target_deg"] is not None:
+            self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
+                           name=a.title)
+            if a.primary and m["target_deg"] is not None:
                 tol = m["tolerance_deg"]
                 band = pg.LinearRegionItem(values=(m["target_deg"] - tol, m["target_deg"] + tol), orientation="horizontal",
                                            brush=(60, 180, 60, 45), movable=False)

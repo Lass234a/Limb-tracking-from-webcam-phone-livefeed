@@ -203,6 +203,10 @@ class LiveTab(QWidget):
         for label, k in (("Auto (white or black)", "auto"), ("White dots", "white"), ("Black dots", "black")):
             self.kind_combo.addItem(label, k)
         self.kind_combo.currentIndexChanged.connect(self.on_kind_changed)
+        self.facing_combo = QComboBox()
+        self.facing_combo.addItem("Right side of the image", True)
+        self.facing_combo.addItem("Left side of the image", False)
+        self.facing_combo.currentIndexChanged.connect(self.on_facing_changed)
         tg = QGroupBox("2. Test and target")
         f = QFormLayout(tg)
         f.addRow("Test", self.test_combo)
@@ -211,6 +215,7 @@ class LiveTab(QWidget):
         f.addRow("Tolerance main joint", self.tol_spin)
         f.addRow("Tolerance other joints", self.ntol_spin)
         f.addRow("Dot colour", self.kind_combo)
+        f.addRow("Participant faces", self.facing_combo)
 
         # --- marking & lock
         self.instruction = QLabel("Start the camera first.")
@@ -287,6 +292,10 @@ class LiveTab(QWidget):
         self.tol_spin.setValue(self.engine.tolerance)
         self.ntol_spin.setValue(self.engine.neighbour_tolerance)
         self.btn_lock.setChecked(False)
+
+    def on_facing_changed(self):
+        self.engine.facing_right = bool(self.facing_combo.currentData())
+        self.refresh_view()
 
     def on_kind_changed(self):
         self.engine.set_dot_kind(self.kind_combo.currentData())
@@ -401,7 +410,7 @@ class LiveTab(QWidget):
         if name is None:
             return
         if not self.engine.mark_dot(name, x, y):
-            self.instruction.setText(f"No dot found at that spot for '{name}'. Click the centre of the dot "
+            self.instruction.setText(f"No dot found at that spot for '{self.engine.test.dot_title(name)}'. Click the centre of the dot "
                                      f"(check colour setting and lighting).")
         self.refresh_view()
 
@@ -458,7 +467,7 @@ class LiveTab(QWidget):
             return
         nxt = self.engine.next_dot_to_mark()
         if nxt:
-            self.instruction.setText(f"Click the '{nxt}' dot on the video.")
+            self.instruction.setText(f"Click the {self.engine.test.dot_title(nxt)} dot on the video.")
         elif not self.engine.locked:
             self.instruction.setText("All dots marked. Set the participant's position, then lock it.")
         else:

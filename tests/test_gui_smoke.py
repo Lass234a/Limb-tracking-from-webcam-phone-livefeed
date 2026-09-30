@@ -37,7 +37,7 @@ def test_full_session(tmp_path, monkeypatch):
     n = 75
     for i in range(n):
         knee = 20 + 30 * math.sin(math.pi * i / n)
-        w.write(render(leg_points(hip_flex=80, knee_flex=knee, ankle_df=5, trunk_lean=3), seed=i))
+        w.write(render(leg_points(hip_flex=80, knee_flex=knee, ankle_df=5, pelvic_tilt=3), seed=i))
     w.release()
 
     win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
@@ -47,7 +47,7 @@ def test_full_session(tmp_path, monkeypatch):
     live.start_source(str(video))
     assert pump(app, lambda: win.engine._last_gray is not None)
 
-    p0 = leg_points(hip_flex=80, knee_flex=20, ankle_df=5, trunk_lean=3)
+    p0 = leg_points(hip_flex=80, knee_flex=20, ankle_df=5, pelvic_tilt=3)
     for name in win.engine.test.dots:
         assert win.engine.next_dot_to_mark() == name
         live.view.clicked.emit(float(p0[name][0]) + 2, float(p0[name][1]) + 2)
@@ -108,7 +108,7 @@ def test_pause_and_frame_stepping(tmp_path, monkeypatch):
     # marking while paused redraws the frame
     before = len(imgs)
     p = leg_points(hip_flex=80, knee_flex=20 + frozen - 2, ankle_df=5)
-    live.view.clicked.emit(float(p["shoulder"][0]) + 1, float(p["shoulder"][1]) + 1)
+    live.view.clicked.emit(float(p["asis"][0]) + 1, float(p["asis"][1]) + 1)
     assert pump(app, lambda: len(imgs) > before)
     assert pos[-1][0] == frozen - 1
 
