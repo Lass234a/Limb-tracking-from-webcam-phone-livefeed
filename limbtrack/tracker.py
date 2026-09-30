@@ -56,7 +56,7 @@ class DotTracker:
     def _enhance(self, roi, diam):
         """Top-hat / black-hat: keeps only features smaller than the kernel."""
         k = _odd(max(diam * 2.5, 9))
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
         op = cv2.MORPH_TOPHAT if self.kind == "white" else cv2.MORPH_BLACKHAT
         return cv2.morphologyEx(cv2.GaussianBlur(roi, (3, 3), 0), op, kernel)
 
