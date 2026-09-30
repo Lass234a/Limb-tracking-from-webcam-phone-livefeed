@@ -24,7 +24,7 @@ from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import DotState, TrackerSet, to_gray
 
-SOFTWARE_VERSION = "0.2.0-dev"
+SOFTWARE_VERSION = "0.2.0"
 
 
 class Engine:

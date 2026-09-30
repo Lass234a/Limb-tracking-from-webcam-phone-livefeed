@@ -11,8 +11,8 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPainter, QShortcut
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
+                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from .camera import CameraSource, list_cameras
@@ -314,6 +314,12 @@ class LiveTab(QWidget):
         side_w = QWidget()
         side_w.setLayout(side)
         side_w.setFixedWidth(340)
+        side_scroll = QScrollArea()          # the panel is tall: scroll it on small screens
+        side_scroll.setWidget(side_w)
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        side_scroll.setFixedWidth(370)
         left = QVBoxLayout()
         left.addWidget(self.view, 1)
         trow = QHBoxLayout()
@@ -324,7 +330,7 @@ class LiveTab(QWidget):
         left.addWidget(self.trace)
         lay = QHBoxLayout(self)
         lay.addLayout(left, 1)
-        lay.addWidget(side_w)
+        lay.addWidget(side_scroll)
 
         QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.btn_lock.click)
         QShortcut(QKeySequence(Qt.Key_R), self, activated=self.btn_rec.click)
