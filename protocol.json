@@ -1,0 +1,85 @@
+{
+  "_note": "EDIT ME. Angle conventions and target angles below are taken from ChenData/StrengthCurve/plot_proposal.m (knee/hip flexion: 0 = extended; ankle: + = dorsiflexion, 0 = shank 90 deg to foot). Confirm against your final protocol. 'sign' and 'offset' turn the raw dot angle into your convention: shown = sign * raw + offset.",
+  "tolerance_deg": 3.0,
+  "neighbour_tolerance_deg": 5.0,
+
+  "tests": {
+    "knee_extension": {
+      "label": "Knee extension (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [20, 65, 110],
+      "angles": [
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180, "primary": true},
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180},
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    },
+    "knee_flexion": {
+      "label": "Knee flexion (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [15, 50, 85],
+      "angles": [
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180, "primary": true},
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180},
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    },
+    "hip_extension": {
+      "label": "Hip extension (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [0, 45, 90],
+      "angles": [
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180, "primary": true},
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180},
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    },
+    "hip_flexion": {
+      "label": "Hip flexion (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [0, 45],
+      "angles": [
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180, "primary": true},
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180},
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    },
+    "ankle_plantarflexion": {
+      "label": "Ankle plantarflexion (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [-20, 0, 20],
+      "angles": [
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90, "primary": true},
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180},
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    },
+    "ankle_dorsiflexion": {
+      "label": "Ankle dorsiflexion (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [-10, 10],
+      "angles": [
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90, "primary": true},
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180},
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    },
+    "belt_squat": {
+      "label": "Belt squat (MVIC)",
+      "dots": ["shoulder", "hip", "knee", "ankle", "toe"],
+      "targets": [],
+      "angles": [
+        {"name": "knee",  "label": "Knee flexion",  "kind": "joint", "points": ["hip", "knee", "ankle"],     "sign": -1, "offset": 180, "primary": true},
+        {"name": "hip",   "label": "Hip flexion",   "kind": "joint", "points": ["shoulder", "hip", "knee"],  "sign": -1, "offset": 180},
+        {"name": "ankle", "label": "Ankle dorsiflexion", "kind": "joint", "points": ["knee", "ankle", "toe"], "sign": -1, "offset": 90},
+        {"name": "trunk", "label": "Trunk vs vertical", "kind": "vertical", "points": ["hip", "shoulder"]}
+      ]
+    }
+  }
+}
