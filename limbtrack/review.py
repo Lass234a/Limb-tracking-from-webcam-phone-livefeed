@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
                                QWidget)
 
 from . import overlay
@@ -49,6 +49,7 @@ class Trial:
         self.ref = {a.name: np.array([_f(r[f"{a.name}_ref"]) for r in self.rows]) for a in self.angle_defs}
         self.dev = {a.name: np.array([_f(r[f"{a.name}_dev"]) for r in self.rows]) for a in self.angle_defs}
         self.ok = {a.name: [r[f"{a.name}_ok"] for r in self.rows] for a in self.angle_defs}
+        self.events = [(i, self.t[i], r["event"]) for i, r in enumerate(self.rows) if r.get("event")]
         self.ghost = self.meta.get("locked_positions_px")
         self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
@@ -86,6 +87,14 @@ class Trial:
             ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
         return overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs))
 
+    def hold_window(self):
+        """(start, end) seconds from the first 'MVIC start' and the next 'MVIC end' marker, or None."""
+        start = next((t for _, t, lab in self.events if lab == "MVIC start"), None)
+        if start is None:
+            return None
+        end = next((t for _, t, lab in self.events if lab == "MVIC end" and t > start), None)
+        return None if end is None else (float(start), float(end))
+
     def summary(self, t0, t1):
         """Rows of statistics per angle within [t0, t1] seconds."""
         m = (self.t >= t0) & (self.t <= t1)
@@ -96,6 +105,8 @@ class Trial:
             valid = ~np.isnan(v)
             flags = [f for f, keep in zip(self.ok[n], m) if keep and f != ""]
             dev = self.dev[n][m]
+            good = v[valid]
+            change = float(np.mean(good[-5:]) - np.mean(good[:5])) if good.size >= 2 else math.nan
             out.append({
                 "angle": a.title,
                 "role": "main" if a.primary else "neighbour",
@@ -105,6 +116,7 @@ class Trial:
                 "sd_deg": float(np.std(v[valid], ddof=1)) if valid.sum() > 1 else math.nan,
                 "min_deg": float(np.min(v[valid])) if valid.any() else math.nan,
                 "max_deg": float(np.max(v[valid])) if valid.any() else math.nan,
+                "change_start_to_end_deg": change,
                 "max_abs_dev_deg": float(np.nanmax(np.abs(dev))) if np.any(~np.isnan(dev)) else math.nan,
                 "pct_in_tolerance": 100.0 * sum(f == "1" for f in flags) / len(flags) if flags else math.nan,
             })
@@ -141,6 +153,10 @@ class ReviewTab(QWidget):
         self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("k", width=2))
         self.window = pg.LinearRegionItem(brush=(30, 120, 220, 40))
         self.window.sigRegionChanged.connect(self.update_summary)
+        self.event_combo = QComboBox()
+        self.event_combo.activated.connect(self.jump_to_event)
+        self.btn_hold = QPushButton("Window = MVIC start to end")
+        self.btn_hold.clicked.connect(self.snap_window)
         self.stats = QLabel()
         self.stats.setStyleSheet("font-family: Consolas, monospace;")
         self.stats.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -155,6 +171,11 @@ class ReviewTab(QWidget):
         left = QVBoxLayout()
         left.addWidget(self.video, 1)
         left.addLayout(ctrl)
+        erow = QHBoxLayout()
+        erow.addWidget(QLabel("Markers:"))
+        erow.addWidget(self.event_combo, 1)
+        erow.addWidget(self.btn_hold)
+        left.addLayout(erow)
         left.addWidget(QLabel("Blue band on the plot = analysis window (drag its edges). Statistics below use it."))
         left.addWidget(self.stats)
         body = QHBoxLayout()
@@ -196,6 +217,13 @@ class ReviewTab(QWidget):
                 for line in band.lines:
                     line.setPen(pg.mkPen((60, 150, 60), style=Qt.DashLine))
                 self.plot.addItem(band)
+        self.event_combo.clear()
+        for i, t, lab in tr.events:
+            self.event_combo.addItem(f"{lab}  @ {t:.2f} s", i)
+            line = pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen((90, 90, 90), style=Qt.DashLine),
+                                   label=lab, labelOpts={"position": 0.95, "color": (90, 90, 90), "rotateAxis": (1, 0)})
+            self.plot.addItem(line)
+        self.btn_hold.setEnabled(tr.hold_window() is not None)
         self.window.setRegion((tr.t[0], tr.t[-1]))
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(tr.rows) - 1)
@@ -234,6 +262,16 @@ class ReviewTab(QWidget):
             return
         self.slider.setValue(i)
 
+    # ------------------------------------------------------------- markers
+    def jump_to_event(self, index):
+        if self.trial is not None and index >= 0:
+            self.slider.setValue(int(self.event_combo.itemData(index)))
+
+    def snap_window(self):
+        w = self.trial.hold_window() if self.trial is not None else None
+        if w:
+            self.window.setRegion(w)
+
     # ------------------------------------------------------------- summary
     def _rows(self):
         t0, t1 = self.window.getRegion()
@@ -243,10 +281,10 @@ class ReviewTab(QWidget):
         if self.trial is None:
             return
         rows, (t0, t1) = self._rows()
-        lines = [f"Window {t0:.2f} - {t1:.2f} s", f"{'':22s}{'mean':>7s}{'SD':>6s}{'min':>7s}{'max':>7s}{'maxdev':>8s}{'in tol':>8s}{'lost':>6s}"]
+        lines = [f"Window {t0:.2f} - {t1:.2f} s", f"{'':22s}{'mean':>7s}{'SD':>6s}{'min':>7s}{'max':>7s}{'start>end':>10s}{'maxdev':>8s}{'in tol':>8s}{'lost':>6s}"]
         for r in rows:
             lines.append(f"{r['angle'][:21]:22s}{r['mean_deg']:7.1f}{r['sd_deg']:6.2f}{r['min_deg']:7.1f}{r['max_deg']:7.1f}"
-                         f"{r['max_abs_dev_deg']:8.1f}{r['pct_in_tolerance']:7.0f}%{r['frames_lost']:6d}")
+                         f"{r['change_start_to_end_deg']:+10.1f}{r['max_abs_dev_deg']:8.1f}{r['pct_in_tolerance']:7.0f}%{r['frames_lost']:6d}")
         self.stats.setText("\n".join(lines))
 
     def export(self):

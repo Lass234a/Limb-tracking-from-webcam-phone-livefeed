@@ -272,11 +272,21 @@ class LiveTab(QWidget):
         self.rec_label = QLabel("Not recording")
         btn_open = QPushButton("Open recordings folder")
         btn_open.clicked.connect(lambda: (self.recordings_dir.mkdir(exist_ok=True), os.startfile(self.recordings_dir)))
+        self.btn_start_mark = QPushButton("MVIC start  (S)")
+        self.btn_end_mark = QPushButton("MVIC end  (E)")
+        self.btn_mark = QPushButton("Marker  (M)")
+        self.btn_start_mark.clicked.connect(lambda: self.mark("MVIC start"))
+        self.btn_end_mark.clicked.connect(lambda: self.mark("MVIC end"))
+        self.btn_mark.clicked.connect(lambda: self.mark(None))
+        mrow = QHBoxLayout()
+        for b in (self.btn_start_mark, self.btn_end_mark, self.btn_mark):
+            mrow.addWidget(b)
         rc = QGroupBox("4. Record")
         rf = QFormLayout(rc)
         rf.addRow("Participant ID", self.participant)
         rf.addRow("Notes", self.notes)
         rf.addRow(self.btn_rec)
+        rf.addRow(mrow)
         rf.addRow(self.rec_label)
         rf.addRow(btn_open)
 
@@ -319,6 +329,9 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.btn_lock.click)
         QShortcut(QKeySequence(Qt.Key_R), self, activated=self.btn_rec.click)
         QShortcut(QKeySequence(Qt.Key_P), self, activated=self.btn_pause.click)
+        QShortcut(QKeySequence(Qt.Key_S), self, activated=self.btn_start_mark.click)
+        QShortcut(QKeySequence(Qt.Key_E), self, activated=self.btn_end_mark.click)
+        QShortcut(QKeySequence(Qt.Key_M), self, activated=self.btn_mark.click)
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=self.btn_back.click)
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=self.btn_fwd.click)
         self.timer = QTimer(self)
@@ -520,6 +533,11 @@ class LiveTab(QWidget):
         self.refresh_view()
 
     # ---------------------------------------------------------- recording
+    def mark(self, label):
+        """Write a marker into the recording (MVIC start/end or a numbered marker)."""
+        if not self.engine.add_event(label):
+            self.rec_label.setText("Markers can only be added while recording.")
+
     def toggle_record(self, checked=None, force_stop=False):
         if self.btn_rec.isChecked() and not force_stop:
             if not self.participant.text().strip():

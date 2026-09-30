@@ -73,7 +73,7 @@ def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, se
         cv2.circle(img, (int(round(x * (1 << shift))), int(round(y * (1 << shift)))),
                    int(round(dot_radius * (1 << shift))), col, -1, cv2.LINE_AA, shift)
     if noise:
-        img = np.clip(img.astype(np.float32) + rng.normal(0, noise, img.shape), 0, 255).astype(np.uint8)
+        img = np.clip(img.astype(np.float32) + rng.normal(0, noise, img.shape[:2] + (1,)).astype(np.float32), 0, 255).astype(np.uint8)
     return img
 
 

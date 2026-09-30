@@ -42,6 +42,9 @@ class Engine:
         self.ghost_enabled = True    # draw a faint copy of the locked pose
         self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
         self._ghost = None           # dot positions (px) when the position was locked
+        self._pending_event = None   # marker to write on the next recorded frame
+        self._banner = None          # (label, time) of the last marker, shown briefly on screen
+        self._marker_n = 0
         self.smoothing = "light"     # 'off', 'light' or 'medium' (see filters.py)
         self._filters = {}
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
@@ -167,6 +170,20 @@ class Engine:
             out.append(r)
         return out
 
+    def add_event(self, label=None):
+        """Mark the current moment in the trial ("MVIC start", "MVIC end", or a numbered marker).
+
+        Only meaningful while recording; returns False (and does nothing) otherwise.
+        """
+        with self.lock:
+            if self.rec is None:
+                return False
+            if label is None:
+                self._marker_n += 1
+                label = f"marker {self._marker_n}"
+            self._pending_event = label
+            return True
+
     def _record_history(self, t, angles):
         while self._hist and self._hist[-1][0] >= t:      # time went backwards (frame stepping): drop the future
             self._hist.pop()
@@ -223,6 +240,11 @@ class Engine:
             weak = [n for n, st in states.items() if st.weak]
             if weak:
                 head.append("weak dot (fading): " + ", ".join(self.test.dot_title(n) for n in weak))
+            event, self._pending_event = self._pending_event, None
+            if event:
+                self._banner = (event, t)
+            if self._banner and 0 <= t - self._banner[1] < 1.5:
+                head.append(f"MARK: {self._banner[0]}")
             nxt = self.next_dot_to_mark()
             if nxt:
                 head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
@@ -234,8 +256,8 @@ class Engine:
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
                                ghost, segment_pairs(self.test.angles))
             if self.rec is not None:
-                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles)
-            res = FrameResult(self.frame_index, t, img, angles, states, ghost)
+                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "")
+            res = FrameResult(self.frame_index, t, img, angles, states, head, ghost)
             self.frame_index += 1
             return res
 
@@ -252,6 +274,8 @@ class Engine:
             self.rec = TrialRecorder(
                 self.recordings_dir, participant or "unnamed", self.test.key, self.target,
                 self.test.dots, [a.name for a in self.test.angles], self._fps(), frame_size)
+            self._marker_n = 0
+            self._pending_event = None
             self.rec_info = {"participant": participant, "notes": notes,
                              "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths

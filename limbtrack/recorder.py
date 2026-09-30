@@ -41,15 +41,16 @@ class TrialRecorder:
             head += [f"{d}_x", f"{d}_y", f"{d}_lost", f"{d}_q"]
         for a in self.angle_names:
             head += [f"{a}_deg", f"{a}_raw_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
-        head.append("all_ok")
+        head += ["all_ok", "event"]
         self._csv.writerow(head)
         self.frames = 0
+        self.events = []          # {frame, t_s, label} markers added during the trial
         self.last_t = 0.0
         self._t0 = None
         self.fps = fps
         self.frame_size = frame_size
 
-    def write(self, frame, overlay, frame_index, t, locked, dots, angles):
+    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event=""):
         if self._t0 is None:
             self._t0 = t
         self._raw.write(frame)
@@ -67,6 +68,9 @@ class TrialRecorder:
                 oks.append(False)
             row += [_num(a.value), _num(a.raw_value), _num(a.reference), _num(a.deviation), ok]
         row.append(0 if oks else 1)
+        row.append(event or "")
+        if event:
+            self.events.append({"frame": self.frames, "t_s": round(t - self._t0, 4), "label": event})
         self._csv.writerow(row)
         self.frames += 1
         self.last_t = t - self._t0
@@ -80,6 +84,7 @@ class TrialRecorder:
         meta = dict(meta)
         meta.update({
             "started_at": self.started_at,
+            "events": self.events,
             "frames": self.frames,
             "duration_s": round(self.last_t, 4),
             "video_fps_written": round(self.fps, 3),
