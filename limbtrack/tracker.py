@@ -176,16 +176,26 @@ class TrackerSet:
     """All dots for the current test."""
 
     def __init__(self, names, kind="auto"):
+        self.kind = kind
         self.trackers = {n: DotTracker(n, kind) for n in names}
+        self.enabled = set(names)     # dots switched off by the operator are neither tracked nor required
+
+    def set_enabled(self, name, on):
+        """Switch a dot on or off. Switching on gives a fresh tracker: the dot has to be marked again."""
+        if on:
+            self.trackers[name] = DotTracker(name, self.kind)
+            self.enabled.add(name)
+        else:
+            self.enabled.discard(name)
 
     def init_dot(self, name, gray, x, y):
         return self.trackers[name].init_at(gray, x, y)
 
     def is_ready(self):
-        return all(t.initialised for t in self.trackers.values())
+        return all(t.initialised for n, t in self.trackers.items() if n in self.enabled)
 
     def update(self, gray):
-        active = {n: t for n, t in self.trackers.items() if t.initialised}
+        active = {n: t for n, t in self.trackers.items() if t.initialised and n in self.enabled}
         held = {n: (t.x, t.y, 0.8 * t.diam) for n, t in active.items() if t.lost_frames == 0}
         states = {}
         for n, t in active.items():

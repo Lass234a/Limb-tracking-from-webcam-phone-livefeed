@@ -239,6 +239,19 @@ class LiveTab(QWidget):
         f.addRow("Participant faces", self.facing_combo)
         f.addRow("Angle smoothing", self.smooth_combo)
 
+        # --- landmarks to use (pilot testing)
+        self.lm_preset = QComboBox()
+        self.lm_preset.activated.connect(self.apply_landmark_preset)
+        self.lm_checks = {}
+        self.lm_holder = QVBoxLayout()
+        self.lm_info = QLabel()
+        self.lm_info.setWordWrap(True)
+        lm = QGroupBox("Landmarks to use (pilot)")
+        lml = QVBoxLayout(lm)
+        lml.addWidget(self.lm_preset)
+        lml.addLayout(self.lm_holder)
+        lml.addWidget(self.lm_info)
+
         # --- marking & lock
         self.instruction = QLabel("Start the camera first.")
         self.instruction.setStyleSheet(BIG)
@@ -308,7 +321,7 @@ class LiveTab(QWidget):
         self.trace_timer.start(100)
 
         side = QVBoxLayout()
-        for g in (src, tg, mk, rc):
+        for g in (src, tg, lm, mk, rc):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -366,6 +379,64 @@ class LiveTab(QWidget):
         self.tol_spin.setValue(self.engine.tolerance)
         self.ntol_spin.setValue(self.engine.neighbour_tolerance)
         self.btn_lock.setChecked(False)
+        self.rebuild_landmarks()
+
+    # ------------------------------------------------- landmark selection
+    def rebuild_landmarks(self):
+        """One checkbox per landmark of the current test, plus presets like 'Only: Knee flexion'."""
+        t = self.engine.test
+        for cb in self.lm_checks.values():
+            self.lm_holder.removeWidget(cb)
+            cb.deleteLater()
+        self.lm_checks = {}
+        for n in t.dots:
+            cb = QCheckBox(t.dot_title(n))
+            cb.setChecked(n not in self.engine.disabled_dots)
+            cb.toggled.connect(lambda on, name=n: self.on_landmark_toggled(name, on))
+            self.lm_holder.addWidget(cb)
+            self.lm_checks[n] = cb
+        self.lm_preset.clear()
+        self.lm_preset.addItem("Preset: all landmarks", list(t.dots))
+        for a in t.angles:
+            self.lm_preset.addItem(f"Preset: only {a.title}", list(dict.fromkeys(a.dots)))
+        self.update_landmark_info()
+
+    def _sync_landmark_checks(self):
+        for n, cb in self.lm_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(n not in self.engine.disabled_dots)
+            cb.blockSignals(False)
+
+    def on_landmark_toggled(self, name, on):
+        try:
+            self.engine.set_dot_enabled(name, on)
+        except RuntimeError as e:
+            self._sync_landmark_checks()
+            QMessageBox.warning(self, "Landmarks", str(e))
+            return
+        self.btn_lock.setChecked(False)
+        self.update_landmark_info()
+        self.refresh_view()
+
+    def apply_landmark_preset(self, index):
+        wanted = set(self.lm_preset.itemData(index))
+        try:
+            for n in self.engine.test.dots:
+                self.engine.set_dot_enabled(n, n in wanted)
+        except RuntimeError as e:
+            QMessageBox.warning(self, "Landmarks", str(e))
+        self._sync_landmark_checks()
+        self.btn_lock.setChecked(False)
+        self.update_landmark_info()
+        self.refresh_view()
+
+    def update_landmark_info(self):
+        lines = []
+        for title, ok, missing in self.engine.angle_availability():
+            lines.append(f"\u2713 {title}" if ok else f"\u2717 {title}  (needs {', '.join(missing)})")
+        if self.engine.primary_angle is None:
+            lines.append("Main joint not available: no target is judged.")
+        self.lm_info.setText("\n".join(lines))
 
     def on_facing_changed(self):
         self.engine.facing_right = bool(self.facing_combo.currentData())
@@ -576,6 +647,10 @@ class LiveTab(QWidget):
                                    else "Not recording")
 
     def refresh_status(self):
+        recording = self._rec_started is not None
+        for cb in self.lm_checks.values():
+            cb.setEnabled(not recording)
+        self.lm_preset.setEnabled(not recording)
         if self._rec_started is not None:
             self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
         if self.worker is None:

@@ -39,6 +39,7 @@ class Engine:
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
         self.locked = False
+        self.disabled_dots = set()   # landmarks the operator chose not to use (kept when switching test)
         self.ghost_enabled = True    # draw a faint copy of the locked pose
         self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
         self._ghost = None           # dot positions (px) when the position was locked
@@ -67,11 +68,13 @@ class Engine:
             self.tolerance = self.test.tolerance_deg
             self.neighbour_tolerance = self.test.neighbour_tolerance_deg
             self.target = self.test.targets[0] if self.test.targets else None
+            self.disabled_dots &= set(self.test.dots)
             self.reset_dots()
 
     def reset_dots(self):
         with self.lock:
             self.trackers = TrackerSet(self.test.dots, self.kind)
+            self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
             self._last_angles = []
             self._filters = {}
@@ -79,6 +82,47 @@ class Engine:
             self.locked = False
             self._refs = {}
             self._ghost = None
+
+    # ----------------------------------------------------- landmark selection
+    @property
+    def active_dots(self):
+        return [n for n in self.test.dots if n not in self.disabled_dots]
+
+    @property
+    def active_angles(self):
+        """Angles whose dots are all switched on."""
+        return [a for a in self.test.angles if not set(a.dots) & self.disabled_dots]
+
+    @property
+    def primary_angle(self):
+        """The main joint, or None if the chosen landmarks cannot give it."""
+        return next((a for a in self.active_angles if a.primary), None)
+
+    def angle_availability(self):
+        """[(angle title, available, [titles of the switched-off dots it needs])] for every angle of the test."""
+        with self.lock:
+            return [(a.title, not (set(a.dots) & self.disabled_dots),
+                     [self.test.dot_title(d) for d in a.dots if d in self.disabled_dots]) for a in self.test.angles]
+
+    def set_dot_enabled(self, name, on):
+        """Use or skip one landmark (pilot testing). Not possible while recording.
+
+        Angles that need a skipped landmark disappear; the rest keep working. The position is unlocked.
+        """
+        with self.lock:
+            if self.rec is not None:
+                raise RuntimeError("Stop recording before changing which landmarks are used.")
+            if name not in self.test.dots or (name not in self.disabled_dots) == bool(on):
+                return
+            if on:
+                self.disabled_dots.discard(name)
+            else:
+                self.disabled_dots.add(name)
+            self.trackers.set_enabled(name, on)
+            self._last_states.pop(name, None)
+            self._last_angles = []
+            self._filters = {}
+            self.unlock_position()
 
     def set_smoothing(self, level):
         if level not in LEVELS:
@@ -95,7 +139,7 @@ class Engine:
 
     def next_dot_to_mark(self):
         with self.lock:
-            for n in self.test.dots:
+            for n in self.active_dots:
                 if not self.trackers.trackers[n].initialised:
                     return n
             return None
@@ -103,7 +147,7 @@ class Engine:
     def mark_dot(self, name, x, y):
         """Operator clicked a dot on the live image."""
         with self.lock:
-            if self._last_gray is None:
+            if self._last_gray is None or name in self.disabled_dots:
                 return False
             if not self.trackers.init_dot(name, self._last_gray, x, y):
                 return False
@@ -126,7 +170,7 @@ class Engine:
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
-            if not angles or any(a.status == LOST for a in angles):
+            if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
                 return False
             self._refs = {a.name: a.value for a in angles if not a.primary}
             self._ghost = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
@@ -153,7 +197,7 @@ class Engine:
     def _compute_angles(self, states, t=None):
         xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
         out = []
-        for a in self.test.angles:
+        for a in self.active_angles:
             r = measure(a, xy, self.facing_right)
             if r.status == LOST:
                 self._filters.pop(a.name, None)         # do not blend across a gap
@@ -201,18 +245,28 @@ class Engine:
             t_last = self._hist[-1][0]
             rows = [r for r in self._hist if r[0] >= t_last - seconds]
             nan = (math.nan, math.nan)
-            names = [a.name for a in self.test.angles]
+            names = [a.name for a in self.active_angles]
+            main = self.primary_angle
+            if not names:
+                return None
             return {
                 "t": np.array([r[0] - t_last for r in rows]),
                 "values": {n: np.array([r[1].get(n, nan)[0] for r in rows]) for n in names},
                 "deviations": {n: np.array([r[1].get(n, nan)[1] for r in rows]) for n in names},
-                "titles": {a.name: a.title for a in self.test.angles},
-                "primary": self.test.primary.name,
-                "target": self.target,
+                "titles": {a.name: a.title for a in self.active_angles},
+                "primary": main.name if main else names[0],
+                "target": self.target if main else None,
                 "tolerance": self.tolerance,
                 "neighbour_tolerance": self.neighbour_tolerance,
                 "locked": self.locked,
             }
+
+    def _ghost_anchor(self):
+        """Dot the ghost is pinned to: the main joint's fulcrum, or the first available angle's."""
+        for a in ([self.primary_angle] if self.primary_angle else []) + self.active_angles:
+            if a.fulcrum:
+                return a.fulcrum
+        return None
 
     def _fps(self):
         if len(self._times) < 5:
@@ -231,9 +285,12 @@ class Engine:
             self._last_angles = angles
             self._record_history(t, angles)
             first = self.test.label
-            if self.target is not None:
+            main = self.primary_angle
+            if self.target is not None and main is not None:
                 first += f"  |  target {self.target:g} +/-{self.tolerance:g} deg"
             head = [first, "POSITION LOCKED" if self.locked else "position not locked"]
+            if main is None:
+                head.append(f"main joint ({self.test.primary.title}) not available with the chosen landmarks")
             lost = [n for n, st in states.items() if st.lost]
             if lost:
                 head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
@@ -251,10 +308,10 @@ class Engine:
             ghost = None
             if self.locked and self.ghost_enabled and self._ghost:
                 live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
-                anchor = self.test.primary.fulcrum if self.ghost_anchored else None
+                anchor = self._ghost_anchor() if self.ghost_anchored else None
                 ghost = anchored_ghost(self._ghost, live, anchor)
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
-                               ghost, segment_pairs(self.test.angles))
+                               ghost, segment_pairs(self.active_angles))
             if self.rec is not None:
                 self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "")
             res = FrameResult(self.frame_index, t, img, angles, states, head, ghost)
@@ -266,14 +323,17 @@ class Engine:
         with self.lock:
             if self.rec is not None:
                 return None
+            if not self.active_angles:
+                raise RuntimeError("None of the angles can be computed with the chosen landmarks.")
             if not self.trackers.is_ready():
                 raise RuntimeError("Mark all dots before recording.")
             if frame_size is None:
                 h, w = self._last_gray.shape[:2]
                 frame_size = (w, h)
             self.rec = TrialRecorder(
-                self.recordings_dir, participant or "unnamed", self.test.key, self.target,
-                self.test.dots, [a.name for a in self.test.angles], self._fps(), frame_size)
+                self.recordings_dir, participant or "unnamed", self.test.key,
+                self.target if self.primary_angle else None,
+                self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size)
             self._marker_n = 0
             self._pending_event = None
             self.rec_info = {"participant": participant, "notes": notes,
@@ -291,8 +351,10 @@ class Engine:
                 "notes": self.rec_info.get("notes"),
                 "test_key": t.key,
                 "test_label": t.label,
-                "target_deg": self.target,
+                "target_deg": self.target if self.primary_angle else None,
                 "tolerance_deg": self.tolerance,
+                "dots_used": self.active_dots,
+                "dots_disabled": sorted(self.disabled_dots),
                 "neighbour_tolerance_deg": self.neighbour_tolerance,
                 "position_locked": self.locked,
                 "locked_references_deg": self._refs,
@@ -302,8 +364,8 @@ class Engine:
                 "facing": "right" if self.facing_right else "left",
                 "smoothing": self.smoothing,
                 "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
-                "ghost_anchor": t.primary.fulcrum,
-                "angles": [asdict(a) for a in t.angles],
+                "ghost_anchor": self._ghost_anchor(),
+                "angles": [asdict(a) for a in self.active_angles],
             }
             paths = self.rec.close(meta)
             self.rec = None
