@@ -24,6 +24,7 @@ from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import DotState, TrackerSet, to_gray
+from .tracker import settings as tracker_settings
 
 SOFTWARE_VERSION = "0.2.0"
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
@@ -463,6 +464,7 @@ class Engine:
                 "position_locked": self.locked,
                 "locked_references_deg": self._refs,
                 "dot_kind": self.kind,
+                "tracker_settings": tracker_settings(),
                 "camera": self.camera_desc,
                 "camera_settings": self.camera_info,
                 "lens_calibration": None,

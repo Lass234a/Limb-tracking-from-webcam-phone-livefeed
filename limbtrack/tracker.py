@@ -24,6 +24,59 @@ LOST_RADIUS_FACTOR = 2.0    # search circle for a lost dot = this x the dot's di
 RESUME_MIN_QUALITY = 0.6    # a lost dot resumes only on a blob at least this fraction as contrasty as when marked
 RESUME_AREA_RANGE = (0.5, 2.0)   # ...and with an area within this range of the learned dot area (normal tracking: 0.3-3.5)
 RESUME_MAX_ASPECT = 1.6          # ...and roughly round: longer side at most this x the shorter side + 1 (normal tracking: 2.5x + 2)
+RESUME_ASPECT_EXTRA_PX = 1
+
+# Image preparation
+BLUR_KERNEL = 3                  # Gaussian blur, pixels, before the top-hat / black-hat
+KERNEL_DIAM_FACTOR = 2.5         # top-hat / black-hat kernel side = this x dot diameter ...
+KERNEL_MIN_PX = 9                # ... but never less than this (then rounded up to an odd number)
+MARKING_KERNEL_DIAM = 16         # diameter assumed when the operator clicks (kernel 41 px)
+MARKING_WINDOW_RADIUS_PX = 40    # area looked at around the click
+MARKING_PEAK_BOX_PX = 8          # the dot's brightness is the strongest value within this distance of the click ...
+MARKING_BLOB_FRACTION = 0.5      # ... and the blob is everything above this fraction of it
+MARKING_MAX_SNAP_PX = 15         # the blob centre must be within this distance of the click
+MIN_BLOB_PIXELS = 3              # smaller specks are ignored
+
+# Following the dot
+THRESHOLD_FRACTION = 0.4         # detection threshold = this x the dot's running contrast (and at least MIN_CONTRAST)
+REACH_DIAM_FACTOR = 3.0          # search reach = this x diameter + REACH_EXTRA_PX, at most REACH_MAX_PX
+REACH_EXTRA_PX = 12.0
+REACH_MAX_PX = 160.0
+VELOCITY_GAIN = 0.5              # predicted velocity = this x the latest step
+AREA_RANGE = (0.3, 3.5)          # accepted blob area, as multiples of the running dot area
+ASPECT_FACTOR = 2.5              # accepted blob: longer side at most this x the shorter side + ASPECT_EXTRA_PX
+ASPECT_EXTRA_PX = 2
+AREA_KEEP, AREA_NEW = 0.9, 0.1           # running dot area: 0.9 old + 0.1 new
+CONTRAST_KEEP, CONTRAST_NEW = 0.95, 0.05  # running contrast: 0.95 old + 0.05 new
+MIN_DIAMETER_PX = 4.0
+NEIGHBOUR_EXCLUSION_FACTOR = 0.8  # blobs within this x diameter of another tracked dot are ignored
+DUPLICATE_FACTOR = 0.5            # two dots closer than this x the smaller diameter: the later one is declared lost
+
+
+def settings():
+    """Every number that steers dot detection and tracking, for meta.json. Keep in step with the constants above."""
+    return {
+        "image_preparation": {
+            "blur_kernel_px": BLUR_KERNEL, "kernel_diam_factor": KERNEL_DIAM_FACTOR, "kernel_min_px": KERNEL_MIN_PX,
+            "marking_kernel_diam_px": MARKING_KERNEL_DIAM, "marking_window_radius_px": MARKING_WINDOW_RADIUS_PX,
+            "marking_peak_box_px": MARKING_PEAK_BOX_PX, "marking_blob_fraction": MARKING_BLOB_FRACTION,
+            "marking_max_snap_px": MARKING_MAX_SNAP_PX, "min_blob_pixels": MIN_BLOB_PIXELS,
+        },
+        "tracking": {
+            "min_contrast": MIN_CONTRAST, "threshold_fraction": THRESHOLD_FRACTION,
+            "reach_diam_factor": REACH_DIAM_FACTOR, "reach_extra_px": REACH_EXTRA_PX, "reach_max_px": REACH_MAX_PX,
+            "velocity_gain": VELOCITY_GAIN, "area_range": list(AREA_RANGE),
+            "aspect_factor": ASPECT_FACTOR, "aspect_extra_px": ASPECT_EXTRA_PX,
+            "area_average": {"old": AREA_KEEP, "new": AREA_NEW}, "contrast_average": {"old": CONTRAST_KEEP, "new": CONTRAST_NEW},
+            "min_diameter_px": MIN_DIAMETER_PX, "neighbour_exclusion_factor": NEIGHBOUR_EXCLUSION_FACTOR,
+            "duplicate_factor": DUPLICATE_FACTOR, "weak_below_quality": WEAK_BELOW,
+        },
+        "lost_dot": {
+            "search_radius_diam_factor": LOST_RADIUS_FACTOR, "resume_min_quality": RESUME_MIN_QUALITY,
+            "resume_area_range": list(RESUME_AREA_RANGE), "resume_max_aspect": RESUME_MAX_ASPECT,
+            "resume_aspect_extra_px": RESUME_ASPECT_EXTRA_PX,
+        },
+    }
 
 
 def _odd(n):
@@ -63,10 +116,10 @@ class DotTracker:
     # ------------------------------------------------------------------ helpers
     def _enhance(self, roi, diam):
         """Top-hat / black-hat: keeps only features smaller than the kernel."""
-        k = _odd(max(diam * 2.5, 9))
+        k = _odd(max(diam * KERNEL_DIAM_FACTOR, KERNEL_MIN_PX))
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
         op = cv2.MORPH_TOPHAT if self.kind == "white" else cv2.MORPH_BLACKHAT
-        return cv2.morphologyEx(cv2.GaussianBlur(roi, (3, 3), 0), op, kernel)
+        return cv2.morphologyEx(cv2.GaussianBlur(roi, (BLUR_KERNEL, BLUR_KERNEL), 0), op, kernel)
 
     @staticmethod
     def _window(gray, cx, cy, r):
@@ -82,7 +135,7 @@ class DotTracker:
         out = []
         for i in range(1, n):
             x, y, w, h, area = stats[i]
-            if area < 3:
+            if area < MIN_BLOB_PIXELS:
                 continue
             ys, xs = np.nonzero(labels[y:y + h, x:x + w] == i)
             wts = enh[y:y + h, x:x + w][ys, xs].astype(np.float64)
@@ -97,7 +150,7 @@ class DotTracker:
     def init_at(self, gray, x, y):
         """Lock onto the dot nearest the click. Returns True on success."""
         gray = gray.astype(np.float32) if gray.dtype != np.uint8 else gray
-        r = 40
+        r = MARKING_WINDOW_RADIUS_PX
         x0, y0, roi = self._window(gray, x, y, r)
         if roi.size == 0:
             return False
@@ -105,22 +158,23 @@ class DotTracker:
             cx, cy = int(x - x0), int(y - y0)
             centre = float(np.mean(roi[max(cy - 2, 0):cy + 3, max(cx - 2, 0):cx + 3]))
             self.kind = "white" if centre >= float(np.median(roi)) else "black"
-        enh = self._enhance(roi, 16)
+        enh = self._enhance(roi, MARKING_KERNEL_DIAM)
         cx, cy = int(x - x0), int(y - y0)
-        near = enh[max(cy - 8, 0):cy + 9, max(cx - 8, 0):cx + 9]
+        b = MARKING_PEAK_BOX_PX
+        near = enh[max(cy - b, 0):cy + b + 1, max(cx - b, 0):cx + b + 1]
         peak = float(near.max()) if near.size else 0.0
         if peak < MIN_CONTRAST:
             return False
-        blobs = self._blobs(enh, 0.5 * peak)
+        blobs = self._blobs(enh, MARKING_BLOB_FRACTION * peak)
         if not blobs:
             return False
         bx, by, area, _, _ = min(blobs, key=lambda b: (b[0] - cx) ** 2 + (b[1] - cy) ** 2)
-        if (bx - cx) ** 2 + (by - cy) ** 2 > 15 ** 2:
+        if (bx - cx) ** 2 + (by - cy) ** 2 > MARKING_MAX_SNAP_PX ** 2:
             return False
         self.x, self.y = x0 + bx, y0 + by
         self.vx = self.vy = 0.0
         self.area = area
-        self.diam = max(2.0 * (area / np.pi) ** 0.5, 4.0)
+        self.diam = max(2.0 * (area / np.pi) ** 0.5, MIN_DIAMETER_PX)
         self.contrast = self.ref_contrast = peak
         self.lost_frames = 0
         self.lost_radius = 0.0
@@ -154,16 +208,16 @@ class DotTracker:
             cx0, cy0, reach = self.x, self.y, self.lost_radius
         else:
             cx0, cy0 = self.x + self.vx, self.y + self.vy
-            reach = min(3.0 * self.diam + 12.0, 160.0)
+            reach = min(REACH_DIAM_FACTOR * self.diam + REACH_EXTRA_PX, REACH_MAX_PX)
         x0, y0, roi = self._window(gray, cx0, cy0, reach + self.diam)
         best = None
         if roi.size:
             enh = self._enhance(roi, self.diam)
-            thr = max(0.4 * self.contrast, MIN_CONTRAST)
+            thr = max(THRESHOLD_FRACTION * self.contrast, MIN_CONTRAST)
             for cx, cy, area, w, h in self._blobs(enh, thr):
-                if not (0.3 * self.area <= area <= 3.5 * self.area):
+                if not (AREA_RANGE[0] * self.area <= area <= AREA_RANGE[1] * self.area):
                     continue
-                if max(w, h) > 2.5 * min(w, h) + 2:
+                if max(w, h) > ASPECT_FACTOR * min(w, h) + ASPECT_EXTRA_PX:
                     continue
                 if any((x0 + cx - qx) ** 2 + (y0 + cy - qy) ** 2 < qr ** 2 for qx, qy, qr in claimed):
                     continue
@@ -176,7 +230,7 @@ class DotTracker:
                         continue           # too faint (shadow, edge)
                     if not (RESUME_AREA_RANGE[0] * self.area <= area <= RESUME_AREA_RANGE[1] * self.area):
                         continue           # wrong size
-                    if max(w, h) > RESUME_MAX_ASPECT * min(w, h) + 1:
+                    if max(w, h) > RESUME_MAX_ASPECT * min(w, h) + RESUME_ASPECT_EXTRA_PX:
                         continue           # not round (sliver, edge of an object)
                 if best is None or d < best[0]:
                     best = (d, x0 + cx, y0 + cy, area, peak)
@@ -190,13 +244,13 @@ class DotTracker:
         if was_lost:                       # resuming after a jump: no velocity to carry over
             self.vx = self.vy = 0.0
         else:
-            self.vx = 0.5 * (nx - self.x)
-            self.vy = 0.5 * (ny - self.y)
+            self.vx = VELOCITY_GAIN * (nx - self.x)
+            self.vy = VELOCITY_GAIN * (ny - self.y)
         self.x, self.y = nx, ny
-        self.area = 0.9 * self.area + 0.1 * area
-        self.diam = max(2.0 * (self.area / np.pi) ** 0.5, 4.0)
+        self.area = AREA_KEEP * self.area + AREA_NEW * area
+        self.diam = max(2.0 * (self.area / np.pi) ** 0.5, MIN_DIAMETER_PX)
         if peak >= MIN_CONTRAST:
-            self.contrast = 0.95 * self.contrast + 0.05 * peak
+            self.contrast = CONTRAST_KEEP * self.contrast + CONTRAST_NEW * peak
         self.lost_frames = 0
         return DotState(self.name, self.x, self.y, False, 0, min(peak / self.ref_contrast, 1.0))
 
@@ -231,7 +285,7 @@ class TrackerSet:
 
     def update(self, gray):
         active = {n: t for n, t in self.trackers.items() if t.initialised and n in self.enabled}
-        held = {n: (t.x, t.y, 0.8 * t.diam) for n, t in active.items() if t.lost_frames == 0}
+        held = {n: (t.x, t.y, NEIGHBOUR_EXCLUSION_FACTOR * t.diam) for n, t in active.items() if t.lost_frames == 0}
         states = {}
         for n, t in active.items():
             claimed = [v for k, v in held.items() if k != n]
@@ -243,7 +297,7 @@ class TrackerSet:
                 sa, sb = states[a], states[b]
                 if sa.lost or sb.lost:
                     continue
-                lim = 0.5 * min(self.trackers[a].diam, self.trackers[b].diam)
+                lim = DUPLICATE_FACTOR * min(self.trackers[a].diam, self.trackers[b].diam)
                 if (sa.x - sb.x) ** 2 + (sa.y - sb.y) ** 2 < lim ** 2:
                     t = self.trackers[b]
                     t.undo_update()        # back to its previous position, lost
