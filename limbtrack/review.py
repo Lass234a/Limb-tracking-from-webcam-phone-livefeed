@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
                                QWidget)
 
 from . import overlay
@@ -18,6 +18,7 @@ from .angles import measure, segment_pairs
 from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
+from .engine import TRAIL_MIN_STEP_PX
 from .tracker import WEAK_BELOW
 
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
@@ -50,6 +51,22 @@ class Trial:
         self.dev = {a.name: np.array([_f(r[f"{a.name}_dev"]) for r in self.rows]) for a in self.angle_defs}
         self.ok = {a.name: [r[f"{a.name}_ok"] for r in self.rows] for a in self.angle_defs}
         self.events = [(i, self.t[i], r["event"]) for i, r in enumerate(self.rows) if r.get("event")]
+        # trails: per dot, segments of (frame index array, xy array); a lost dot ends a segment (as when recording)
+        self.trail_segments = {}
+        for n in self.dot_names:
+            segs, cur = [], None
+            for i, r in enumerate(self.rows):
+                if r[f"{n}_x"] == "" or r[f"{n}_lost"] == "1":
+                    cur = None
+                    continue
+                x, y = _f(r[f"{n}_x"]), _f(r[f"{n}_y"])
+                if cur is None:
+                    cur = ([i], [(x, y)])
+                    segs.append(cur)
+                elif (x - cur[1][-1][0]) ** 2 + (y - cur[1][-1][1]) ** 2 >= TRAIL_MIN_STEP_PX ** 2:
+                    cur[0].append(i)
+                    cur[1].append((x, y))
+            self.trail_segments[n] = [(np.array(a), np.array(b)) for a, b in segs]
         self.ghost = self.meta.get("locked_positions_px")
         self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
@@ -62,7 +79,19 @@ class Trial:
         self._pos = i if ok else -2
         return img if ok else None
 
-    def drawn(self, i):
+    def trails_upto(self, i):
+        """The dots' paths from the start of the recording up to frame i."""
+        out = {}
+        for n, segs in self.trail_segments.items():
+            part = []
+            for idx, xy in segs:
+                if idx[0] > i:
+                    break
+                part.append(xy[: int(np.searchsorted(idx, i, side="right"))])
+            out[n] = part
+        return out
+
+    def drawn(self, i, trails=True):
         img = self.frame(i)
         if img is None:
             return None
@@ -85,7 +114,8 @@ class Trial:
         if self.ghost and r["locked"] == "1":
             live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
             ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
-        return overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs))
+        return overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs),
+                            trails=self.trails_upto(i) if trails else None)
 
     def hold_window(self):
         """(start, end) seconds from the first 'MVIC start' and the next 'MVIC end' marker, or None."""
@@ -153,6 +183,9 @@ class ReviewTab(QWidget):
         self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("k", width=2))
         self.window = pg.LinearRegionItem(brush=(30, 120, 220, 40))
         self.window.sigRegionChanged.connect(self.update_summary)
+        self.chk_trails = QCheckBox("Show trails")
+        self.chk_trails.setChecked(True)
+        self.chk_trails.toggled.connect(lambda _: self.show_frame(self.slider.value()))
         self.event_combo = QComboBox()
         self.event_combo.activated.connect(self.jump_to_event)
         self.btn_hold = QPushButton("Window = MVIC start to end")
@@ -167,6 +200,7 @@ class ReviewTab(QWidget):
         ctrl = QHBoxLayout()
         ctrl.addWidget(self.btn_play)
         ctrl.addWidget(self.slider, 1)
+        ctrl.addWidget(self.chk_trails)
         ctrl.addWidget(btn_export)
         left = QVBoxLayout()
         left.addWidget(self.video, 1)
@@ -236,7 +270,7 @@ class ReviewTab(QWidget):
     def show_frame(self, i):
         if self.trial is None:
             return
-        img = self.trial.drawn(i)
+        img = self.trial.drawn(i, trails=self.chk_trails.isChecked())
         self.cursor.setValue(self.trial.t[i])
         if img is None:
             return

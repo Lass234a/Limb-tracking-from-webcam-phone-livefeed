@@ -32,6 +32,22 @@ def _arc(img, vertex, a, c, radius, colour, thick):
 
 
 GHOST = (255, 200, 0)   # BGR bright cyan-blue
+TRAIL_COLOURS = [(60, 76, 231), (219, 152, 52), (113, 204, 46), (182, 89, 155),
+                 (15, 196, 241), (156, 188, 26), (34, 126, 230), (166, 166, 127)]   # BGR, one per dot in turn
+
+
+def _draw_trails(img, trails, s):
+    """Thin coloured path of every dot. `trails`: dot name -> list of segments (each a list of (x, y)).
+
+    A new segment starts whenever the dot was lost, so no line is drawn across a gap.
+    """
+    width = max(1, int(round(1.5 * s)))
+    for k, segments in enumerate(trails.values()):
+        colour = TRAIL_COLOURS[k % len(TRAIL_COLOURS)]
+        for seg in segments:
+            if len(seg) >= 2:
+                pts = np.round(np.asarray(seg, float)).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(img, [pts], False, colour, width, cv2.LINE_AA)
 
 
 def _dashed(img, p, q, col, thick, dash=12):
@@ -59,7 +75,7 @@ def _draw_ghost(img, ghost, segments, dots, s, thick):
     return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
 
 
-def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=()):
+def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=(), trails=None):
     """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost.
 
     `ghost`: name -> (x, y) of the locked pose to draw faintly behind the live limb (or None).
@@ -72,6 +88,8 @@ def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghos
     thick = max(1, int(round(2 * s)))
     if ghost:
         img = _draw_ghost(img, ghost, ghost_segments, dots, s, thick)
+    if trails:
+        _draw_trails(img, trails, s)
 
     for a in angles:
         col = COLOURS[a.status]

@@ -26,6 +26,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import DotState, TrackerSet, to_gray
 
 SOFTWARE_VERSION = "0.2.0"
+TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
 
 
 class Engine:
@@ -46,6 +47,9 @@ class Engine:
         self.ghost_enabled = True    # draw a faint copy of the locked pose
         self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
         self._ghost = None           # dot positions (px) when the position was locked
+        self.trails_enabled = True   # draw the path of every dot (display only)
+        self._trails = {}            # dot name -> list of segments of (x, y); filled while recording, kept until the next recording
+        self._trail_open = {}        # dot name -> was it tracked on the previous recorded frame?
         self._pending_event = None   # marker to write on the next recorded frame
         self._banner = None          # (label, time) of the last marker, shown briefly on screen
         self._marker_n = 0
@@ -84,6 +88,7 @@ class Engine:
             self._last_angles = []
             self._filters = {}
             self._hist.clear()
+            self._trails, self._trail_open = {}, {}
             self.locked = False
             self._refs = {}
             self._ghost = None
@@ -190,6 +195,7 @@ class Engine:
             else:
                 self.disabled_dots.add(name)
             self.trackers.set_enabled(name, on)
+            self._trails, self._trail_open = {}, {}          # the set of dots changed: old trails no longer apply
             self._last_states.pop(name, None)
             self._last_angles = []
             self._filters = {}
@@ -302,6 +308,21 @@ class Engine:
             self._pending_event = label
             return True
 
+    def _update_trails(self, states):
+        """Add this frame's dot positions to the trails. A lost dot ends its segment; a new one starts when it is back."""
+        for n, st in states.items():
+            segs = self._trails.setdefault(n, [])
+            if st.lost:
+                self._trail_open[n] = False
+                continue
+            if not self._trail_open.get(n) or not segs:
+                segs.append([(st.x, st.y)])
+            else:
+                lx, ly = segs[-1][-1]
+                if (st.x - lx) ** 2 + (st.y - ly) ** 2 >= TRAIL_MIN_STEP_PX ** 2:
+                    segs[-1].append((st.x, st.y))
+            self._trail_open[n] = True
+
     def _record_history(self, t, angles):
         while self._hist and self._hist[-1][0] >= t:      # time went backwards (frame stepping): drop the future
             self._hist.pop()
@@ -384,8 +405,11 @@ class Engine:
                 live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
                 anchor = self._ghost_anchor() if self.ghost_anchored else None
                 ghost = anchored_ghost(self._ghost, live, anchor)
+            if self.rec is not None:
+                self._update_trails(states)
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
-                               ghost, segment_pairs(self.active_angles))
+                               ghost, segment_pairs(self.active_angles),
+                               self._trails if self.trails_enabled else None)
             if self.rec is not None:
                 self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "")
             res = FrameResult(self.frame_index, t, img, angles, states, head, ghost)
@@ -410,6 +434,7 @@ class Engine:
                 self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size)
             self._marker_n = 0
             self._pending_event = None
+            self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
             self.rec_info = {"participant": participant, "notes": notes,
                              "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
@@ -442,6 +467,7 @@ class Engine:
                     "window_s": SMOOTHING_WINDOW_S,
                     "applies_to": "screen, live trace and overlay video only; CSV angles, deviations and flags are unsmoothed",
                 },
+                "trails": {"shown_in_overlay_video": self.trails_enabled, "min_step_px": TRAIL_MIN_STEP_PX},
                 "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
                 "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
                 "ghost_anchor": self._ghost_anchor(),

@@ -284,6 +284,9 @@ class LiveTab(QWidget):
         self.chk_anchor = QCheckBox("Ghost follows the main joint\n(shows angle drift only)")
         self.chk_anchor.setChecked(True)
         self.chk_anchor.toggled.connect(lambda v: (setattr(engine, "ghost_anchored", v), self.refresh_view()))
+        self.chk_trails = QCheckBox("Show trails of the dots (from Start recording)")
+        self.chk_trails.setChecked(True)
+        self.chk_trails.toggled.connect(lambda v: (setattr(engine, "trails_enabled", v), self.refresh_view()))
         mk = QGroupBox("3. Mark dots, set position, lock")
         ml = QVBoxLayout(mk)
         ml.addWidget(self.instruction)
@@ -291,6 +294,7 @@ class LiveTab(QWidget):
         ml.addWidget(self.btn_lock)
         ml.addWidget(self.chk_ghost)
         ml.addWidget(self.chk_anchor)
+        ml.addWidget(self.chk_trails)
 
         # --- record
         self.participant = QLineEdit()
