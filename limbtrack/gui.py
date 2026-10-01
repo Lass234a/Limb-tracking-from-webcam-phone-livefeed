@@ -111,6 +111,8 @@ class VideoWorker(QThread):
             return self._cmds.pop(0) if self._cmds else None
 
     def _show(self, frame, t, cam):
+        if self.engine.mirror:
+            frame = cv2.flip(frame, 1)          # before tracking, recording and drawing: everything sees the flipped picture
         res = self.engine.process(frame, t)
         self.frame_ready.emit(bgr_to_qimage(res.overlay))
         if cam.is_file:
@@ -242,6 +244,11 @@ class LiveTab(QWidget):
         self.cam_info = QLabel("")
         self.cam_info.setWordWrap(True)
         sl.addWidget(self.cam_info)
+        self.chk_mirror = QCheckBox("Mirror the image (flip left-right)")
+        self.chk_mirror.setToolTip("Flips the picture before tracking and recording, so saved video and pixel positions are flipped too. "
+                                   "Changing it clears the marked dots.")
+        self.chk_mirror.toggled.connect(self.on_mirror_toggled)
+        sl.addWidget(self.chk_mirror)
         self.btn_lock_cam = QPushButton("Lock exposure and white balance")
         self.btn_lock_cam.setToolTip("Stops the camera from changing brightness/colour by itself during a trial. "
                                      "Do this once the lighting is final. Not every webcam allows it; the result is shown below.")
@@ -556,6 +563,14 @@ class LiveTab(QWidget):
             lines.append("Main joint not available: no target is judged.")
         self.lm_info.setText("\n".join(lines))
 
+    def on_mirror_toggled(self, on):
+        self.engine.mirror = bool(on)
+        self.engine.reset_dots()                  # marked positions belong to the old orientation
+        self.btn_lock.setChecked(False)
+        self.refresh_view()
+        self.instruction.setText("Image " + ("mirrored" if on else "not mirrored") + ". Mark the dots again, and check "
+                                 "'Participant faces' against what you now see.")
+
     def on_facing_changed(self):
         self.engine.facing_right = bool(self.facing_combo.currentData())
         self.refresh_view()
@@ -792,6 +807,7 @@ class LiveTab(QWidget):
         for cb in self.lm_checks.values():
             cb.setEnabled(not recording)
         self.lm_preset.setEnabled(not recording)
+        self.chk_mirror.setEnabled(not recording)
         for w in (self.chk_tp, self.chk_tp_main, *self.tp_combos):
             w.setEnabled(not recording)
         if self._rec_started is not None:

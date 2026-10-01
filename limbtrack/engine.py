@@ -55,6 +55,7 @@ class Engine:
         self._marker_n = 0
         self.smoothing = True        # moving average over 0.2 s for what is SHOWN (never for the CSV)
         self._filters = {}
+        self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._refs = {}
         self._last_gray = None
@@ -466,6 +467,7 @@ class Engine:
                 "camera_settings": self.camera_info,
                 "lens_calibration": None,
                 "facing": "right" if self.facing_right else "left",
+                "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
                 "smoothing": {
                     "enabled": self.smoothing,
                     "type": "moving_average",
