@@ -14,11 +14,12 @@ from collections import deque
 
 import numpy as np
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from . import overlay
 from .angles import measure, segment_pairs
 from .geometry import anchored_ghost
+from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
@@ -40,6 +41,8 @@ class Engine:
         self.neighbour_tolerance = 5.0
         self.locked = False
         self.disabled_dots = set()   # landmarks the operator chose not to use (kept when switching test)
+        self.three_point = None      # (first, middle, last) dot names of the operator's own angle, or None
+        self.three_point_main = True # judge it against the target (instead of the test's own main joint)
         self.ghost_enabled = True    # draw a faint copy of the locked pose
         self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
         self._ghost = None           # dot positions (px) when the position was locked
@@ -69,6 +72,8 @@ class Engine:
             self.neighbour_tolerance = self.test.neighbour_tolerance_deg
             self.target = self.test.targets[0] if self.test.targets else None
             self.disabled_dots &= set(self.test.dots)
+            if self.three_point and not set(self.three_point) <= set(self.test.dots):
+                self.three_point = None
             self.reset_dots()
 
     def reset_dots(self):
@@ -88,10 +93,31 @@ class Engine:
     def active_dots(self):
         return [n for n in self.test.dots if n not in self.disabled_dots]
 
+    def _three_point_def(self):
+        if not self.three_point:
+            return None
+        a, b, c = self.three_point
+        return AngleDef(name="three_point", label=f"Angle at {self.test.dot_title(b)}", vectors=[[b, a], [b, c]],
+                        signed=False, sign=1.0, offset=0.0, primary=self.three_point_main, fulcrum=b)
+
+    @property
+    def all_angles(self):
+        """The test's own angles plus the operator's three-point angle, if any.
+
+        A three-point angle that is the main joint takes over that role from the test's own main joint.
+        """
+        own = list(self.test.angles)
+        tp = self._three_point_def()
+        if tp is None:
+            return own
+        if tp.primary:
+            own = [replace(a, primary=False) for a in own]
+        return own + [tp]
+
     @property
     def active_angles(self):
         """Angles whose dots are all switched on."""
-        return [a for a in self.test.angles if not set(a.dots) & self.disabled_dots]
+        return [a for a in self.all_angles if not set(a.dots) & self.disabled_dots]
 
     @property
     def primary_angle(self):
@@ -102,8 +128,53 @@ class Engine:
         """[(angle title, available, [titles of the switched-off dots it needs])] for every angle of the test."""
         with self.lock:
             return [(a.title, not (set(a.dots) & self.disabled_dots),
-                     [self.test.dot_title(d) for d in a.dots if d in self.disabled_dots]) for a in self.test.angles]
+                     [self.test.dot_title(d) for d in a.dots if d in self.disabled_dots]) for a in self.all_angles]
 
+    def set_three_point(self, first, middle, last, main=True):
+        """Add an angle between three landmarks of your choice: the unsigned angle at the middle one.
+
+        A straight limb reads 180 deg. The three landmarks are switched on automatically.
+        With main=True it is judged against the target; otherwise like the other joints (against the locked position).
+        """
+        with self.lock:
+            if self.rec is not None:
+                raise RuntimeError("Stop recording before changing the angles.")
+            names = (first, middle, last)
+            if len(set(names)) != 3:
+                raise ValueError("Choose three different landmarks.")
+            if any(n not in self.test.dots for n in names):
+                raise ValueError("That landmark is not used by this test.")
+            for n in names:
+                self.set_dot_enabled(n, True)
+            self.three_point, self.three_point_main = names, bool(main)
+            self._angles_changed()
+
+    def clear_three_point(self):
+        with self.lock:
+            if self.rec is not None:
+                raise RuntimeError("Stop recording before changing the angles.")
+            self.three_point = None
+            self._angles_changed()
+
+    def _angles_changed(self):
+        self._last_angles = []
+        self._filters = {}
+        self._hist.clear()
+        self.unlock_position()
+
+    def lock_problem(self):
+        """Plain-English reason why the position cannot be locked right now."""
+        with self.lock:
+            if not self.active_angles:
+                return ("No angle can be computed with the chosen landmarks. Tick the missing landmarks, "
+                        "or choose a three-point angle.")
+            missing = [self.test.dot_title(n) for n in self.active_dots if n not in self._last_states]
+            if missing:
+                return "Mark these dots first: " + ", ".join(missing)
+            lost = [self.test.dot_title(n) for n, st in self._last_states.items() if st.lost]
+            if lost:
+                return "These dots are not visible right now: " + ", ".join(lost)
+            return "Every dot must be marked and visible to lock the position."
     def set_dot_enabled(self, name, on):
         """Use or skip one landmark (pilot testing). Not possible while recording.
 
@@ -374,6 +445,7 @@ class Engine:
                 "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
                 "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
                 "ghost_anchor": self._ghost_anchor(),
+                "three_point": list(self.three_point) if self.three_point else None,
                 "angles": [asdict(a) for a in self.active_angles],
             }
             paths = self.rec.close(meta)

@@ -251,6 +251,24 @@ class LiveTab(QWidget):
         lml.addLayout(self.lm_holder)
         lml.addWidget(self.lm_info)
 
+        # --- three-point angle
+        self.chk_tp = QCheckBox("Use a three-point angle")
+        self.tp_combos = [QComboBox() for _ in range(3)]
+        self.chk_tp_main = QCheckBox("Use it as the main joint (the target above applies to it)")
+        self.chk_tp_main.setChecked(True)
+        self.tp_info = QLabel()
+        self.tp_info.setWordWrap(True)
+        tpbox = QGroupBox("Three-point angle")
+        tpf = QFormLayout(tpbox)
+        tpf.addRow(self.chk_tp)
+        for label, combo in zip(("First dot", "Middle dot (angle is here)", "Last dot"), self.tp_combos):
+            tpf.addRow(label, combo)
+            combo.currentIndexChanged.connect(self.apply_three_point)
+        tpf.addRow(self.chk_tp_main)
+        tpf.addRow(self.tp_info)
+        self.chk_tp.toggled.connect(self.apply_three_point)
+        self.chk_tp_main.toggled.connect(self.apply_three_point)
+
         # --- marking & lock
         self.instruction = QLabel("Start the camera first.")
         self.instruction.setStyleSheet(BIG)
@@ -320,7 +338,7 @@ class LiveTab(QWidget):
         self.trace_timer.start(100)
 
         side = QVBoxLayout()
-        for g in (src, tg, lm, mk, rc):
+        for g in (src, tg, lm, tpbox, mk, rc):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -394,11 +412,60 @@ class LiveTab(QWidget):
             cb.toggled.connect(lambda on, name=n: self.on_landmark_toggled(name, on))
             self.lm_holder.addWidget(cb)
             self.lm_checks[n] = cb
+        self.rebuild_three_point_choices()
         self.lm_preset.clear()
         self.lm_preset.addItem("Preset: all landmarks", list(t.dots))
         for a in t.angles:
             self.lm_preset.addItem(f"Preset: only {a.title}", list(dict.fromkeys(a.dots)))
         self.update_landmark_info()
+
+    def rebuild_three_point_choices(self):
+        t = self.engine.test
+        keep = [c.currentData() for c in self.tp_combos]
+        defaults = [d for d in ("trochanter", "epicondyle", "malleolus") if d in t.dots]
+        if len(defaults) < 3:
+            defaults = list(t.dots[:3])
+        if self.engine.three_point:
+            defaults = list(self.engine.three_point)
+        for i, combo in enumerate(self.tp_combos):
+            combo.blockSignals(True)
+            combo.clear()
+            for n in t.dots:
+                combo.addItem(t.dot_title(n), n)
+            want = keep[i] if keep[i] in t.dots and not self.engine.three_point else defaults[i]
+            combo.setCurrentIndex(max(combo.findData(want), 0))
+            combo.blockSignals(False)
+        self.chk_tp.blockSignals(True)
+        self.chk_tp.setChecked(bool(self.engine.three_point))
+        self.chk_tp.blockSignals(False)
+        self.update_three_point_info()
+
+    def apply_three_point(self, *_):
+        try:
+            if self.chk_tp.isChecked():
+                self.engine.set_three_point(*[c.currentData() for c in self.tp_combos], main=self.chk_tp_main.isChecked())
+            else:
+                self.engine.clear_three_point()
+        except (ValueError, RuntimeError) as e:
+            self.tp_info.setText(str(e))
+            return
+        self._sync_landmark_checks()
+        self.btn_lock.setChecked(False)
+        self.update_landmark_info()
+        self.update_three_point_info()
+        self.refresh_view()
+
+    def update_three_point_info(self):
+        e = self.engine
+        main = bool(e.three_point) and e.three_point_main
+        self.suggest.setEnabled(not main)         # the suggested targets belong to the test's own main joint
+        if not e.three_point:
+            self.tp_info.setText("")
+        elif main:
+            self.tp_info.setText("The target is the angle at the middle dot (a straight limb reads 180 deg). "
+                                 "The test's own angles are checked against the locked position instead.")
+        else:
+            self.tp_info.setText("Shown with the other joints and checked against the locked position.")
 
     def _sync_landmark_checks(self):
         for n, cb in self.lm_checks.items():
@@ -603,7 +670,7 @@ class LiveTab(QWidget):
         if self.btn_lock.isChecked():
             if not self.engine.lock_position():
                 self.btn_lock.setChecked(False)
-                QMessageBox.warning(self, "Cannot lock", "Every dot must be marked and visible to lock the position.")
+                QMessageBox.warning(self, "Cannot lock", self.engine.lock_problem())
         else:
             self.engine.unlock_position()
         self.refresh_view()
@@ -650,6 +717,8 @@ class LiveTab(QWidget):
         for cb in self.lm_checks.values():
             cb.setEnabled(not recording)
         self.lm_preset.setEnabled(not recording)
+        for w in (self.chk_tp, self.chk_tp_main, *self.tp_combos):
+            w.setEnabled(not recording)
         if self._rec_started is not None:
             self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
         if self.worker is None:
