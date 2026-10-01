@@ -31,7 +31,7 @@ def _arc(img, vertex, a, c, radius, colour, thick):
                 ang_a, ang_a + diff, colour, thick, cv2.LINE_AA)
 
 
-GHOST = (255, 200, 0)   # BGR bright cyan-blue
+# PARKED-GHOST: GHOST = (255, 200, 0)   # BGR bright cyan-blue
 TRAIL_COLOURS = [(60, 76, 231), (219, 152, 52), (113, 204, 46), (182, 89, 155),
                  (15, 196, 241), (156, 188, 26), (34, 126, 230), (166, 166, 127)]   # BGR, one per dot in turn
 
@@ -61,24 +61,25 @@ def _dashed(img, p, q, col, thick, dash=12):
         cv2.line(img, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), col, thick, cv2.LINE_AA)
 
 
-def _draw_ghost(img, ghost, segments, dots, s, thick):
-    """Faint dashed copy of the locked pose, with a thin line from each ghost dot to its live dot."""
-    layer = img.copy()
-    for a, b in segments:
-        if a in ghost and b in ghost:
-            _dashed(layer, ghost[a], ghost[b], GHOST, thick + 2)
-    for n, (gx, gy) in ghost.items():
-        cv2.circle(layer, (int(gx), int(gy)), max(int(6 * s), 3), GHOST, thick, cv2.LINE_AA)
-        d = dots.get(n)
-        if d is not None and not d.lost and np.hypot(d.x - gx, d.y - gy) > 3:
-            cv2.line(layer, (int(gx), int(gy)), (int(d.x), int(d.y)), (255, 255, 255), 1, cv2.LINE_AA)
-    return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
+# PARKED-GHOST: def _draw_ghost(img, ghost, segments, dots, s, thick):
+    # PARKED-GHOST: """Faint dashed copy of the locked pose, with a thin line from each ghost dot to its live dot."""
+    # PARKED-GHOST: layer = img.copy()
+    # PARKED-GHOST: for a, b in segments:
+        # PARKED-GHOST: if a in ghost and b in ghost:
+            # PARKED-GHOST: _dashed(layer, ghost[a], ghost[b], GHOST, thick + 2)
+    # PARKED-GHOST: for n, (gx, gy) in ghost.items():
+        # PARKED-GHOST: cv2.circle(layer, (int(gx), int(gy)), max(int(6 * s), 3), GHOST, thick, cv2.LINE_AA)
+        # PARKED-GHOST: d = dots.get(n)
+        # PARKED-GHOST: if d is not None and not d.lost and np.hypot(d.x - gx, d.y - gy) > 3:
+            # PARKED-GHOST: cv2.line(layer, (int(gx), int(gy)), (int(d.x), int(d.y)), (255, 255, 255), 1, cv2.LINE_AA)
+    # PARKED-GHOST: return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
 
 
-def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=(), trails=None):
+def draw(frame, dots, angles, header_lines=(), recording=False, trails=None):
+# PARKED-GHOST: # with the ghost: def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=(), trails=None)
     """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost.
 
-    `ghost`: name -> (x, y) of the locked pose to draw faintly behind the live limb (or None).
+    `trails`: dot name -> list of segments of (x, y), drawn as thin paths (or None).
     """
     img = frame.copy()
     if img.ndim == 2:
@@ -86,8 +87,8 @@ def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghos
     h, w = img.shape[:2]
     s = h / 720.0
     thick = max(1, int(round(2 * s)))
-    if ghost:
-        img = _draw_ghost(img, ghost, ghost_segments, dots, s, thick)
+    # PARKED-GHOST: if ghost:
+        # PARKED-GHOST: img = _draw_ghost(img, ghost, ghost_segments, dots, s, thick)
     if trails:
         _draw_trails(img, trails, s)
 

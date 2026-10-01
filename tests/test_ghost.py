@@ -3,6 +3,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.skip("ghost pose is parked (see PARKED.md); remove this line when the code is restored", allow_module_level=True)
+
 from limbtrack.angles import segment_pairs
 from limbtrack.engine import Engine
 from limbtrack.geometry import anchored_ghost

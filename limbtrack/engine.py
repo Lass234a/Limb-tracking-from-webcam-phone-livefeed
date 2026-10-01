@@ -18,7 +18,7 @@ from dataclasses import asdict, replace
 
 from . import overlay
 from .angles import measure, segment_pairs
-from .geometry import anchored_ghost
+# PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
@@ -44,9 +44,9 @@ class Engine:
         self.disabled_dots = set()   # landmarks the operator chose not to use (kept when switching test)
         self.three_point = None      # (first, middle, last) dot names of the operator's own angle, or None
         self.three_point_main = True # judge it against the target (instead of the test's own main joint)
-        self.ghost_enabled = True    # draw a faint copy of the locked pose
-        self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
-        self._ghost = None           # dot positions (px) when the position was locked
+        # PARKED-GHOST: self.ghost_enabled = True    # draw a faint copy of the locked pose
+        # PARKED-GHOST: self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
+        # PARKED-GHOST: self._ghost = None           # dot positions (px) when the position was locked
         self.trails_enabled = True   # draw the path of every dot (display only)
         self._trails = {}            # dot name -> list of segments of (x, y); filled while recording, kept until the next recording
         self._trail_open = {}        # dot name -> was it tracked on the previous recorded frame?
@@ -91,7 +91,7 @@ class Engine:
             self._trails, self._trail_open = {}, {}
             self.locked = False
             self._refs = {}
-            self._ghost = None
+            # PARKED-GHOST: self._ghost = None
 
     # ----------------------------------------------------- landmark selection
     @property
@@ -249,9 +249,9 @@ class Engine:
             if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
                 return False
             self._refs = {a.name: a.value for a in angles if not a.primary}
-            self._ghost = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
-            if self.rec is not None:
-                self.rec_info["ghost"] = dict(self._ghost)
+            # PARKED-GHOST: self._ghost = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
+            # PARKED-GHOST: if self.rec is not None:
+                # PARKED-GHOST: self.rec_info["ghost"] = dict(self._ghost)
             self.locked = True
             return True
 
@@ -259,7 +259,7 @@ class Engine:
         with self.lock:
             self.locked = False
             self._refs = {}
-            self._ghost = None
+            # PARKED-GHOST: self._ghost = None
 
     # --------------------------------------------------------------- per frame
     def _smooth(self, name, raw, t):
@@ -356,12 +356,12 @@ class Engine:
                 "locked": self.locked,
             }
 
-    def _ghost_anchor(self):
-        """Dot the ghost is pinned to: the main joint's fulcrum, or the first available angle's."""
-        for a in ([self.primary_angle] if self.primary_angle else []) + self.active_angles:
-            if a.fulcrum:
-                return a.fulcrum
-        return None
+    # PARKED-GHOST: def _ghost_anchor(self):
+        # PARKED-GHOST: """Dot the ghost is pinned to: the main joint's fulcrum, or the first available angle's."""
+        # PARKED-GHOST: for a in ([self.primary_angle] if self.primary_angle else []) + self.active_angles:
+            # PARKED-GHOST: if a.fulcrum:
+                # PARKED-GHOST: return a.fulcrum
+        # PARKED-GHOST: return None
 
     def _fps(self):
         if len(self._times) < 5:
@@ -400,19 +400,21 @@ class Engine:
             nxt = self.next_dot_to_mark()
             if nxt:
                 head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
-            ghost = None
-            if self.locked and self.ghost_enabled and self._ghost:
-                live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
-                anchor = self._ghost_anchor() if self.ghost_anchored else None
-                ghost = anchored_ghost(self._ghost, live, anchor)
+            # PARKED-GHOST: ghost = None
+            # PARKED-GHOST: if self.locked and self.ghost_enabled and self._ghost:
+                # PARKED-GHOST: live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
+                # PARKED-GHOST: anchor = self._ghost_anchor() if self.ghost_anchored else None
+                # PARKED-GHOST: ghost = anchored_ghost(self._ghost, live, anchor)
             if self.rec is not None:
                 self._update_trails(states)
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
-                               ghost, segment_pairs(self.active_angles),
-                               self._trails if self.trails_enabled else None)
+                               trails=self._trails if self.trails_enabled else None)
+            # PARKED-GHOST: # (with the ghost: overlay.draw(frame, states, angles, head, self.rec is not None, ghost,
+            # PARKED-GHOST: #                               segment_pairs(self.active_angles), trails=...))
             if self.rec is not None:
                 self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "")
-            res = FrameResult(self.frame_index, t, img, angles, states, head, ghost)
+            res = FrameResult(self.frame_index, t, img, angles, states, head)
+            # PARKED-GHOST: # with the ghost: FrameResult(self.frame_index, t, img, angles, states, head, ghost)
             self.frame_index += 1
             return res
 
@@ -435,8 +437,9 @@ class Engine:
             self._marker_n = 0
             self._pending_event = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
-            self.rec_info = {"participant": participant, "notes": notes,
-                             "ghost": dict(self._ghost) if self.locked and self._ghost else None}
+            self.rec_info = {"participant": participant, "notes": notes}
+            # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
+            # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
 
     def stop_trial(self):
@@ -469,8 +472,8 @@ class Engine:
                 },
                 "trails": {"shown_in_overlay_video": self.trails_enabled, "min_step_px": TRAIL_MIN_STEP_PX},
                 "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
-                "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
-                "ghost_anchor": self._ghost_anchor(),
+                # PARKED-GHOST: "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
+                # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
                 "three_point": list(self.three_point) if self.three_point else None,
                 "angles": [asdict(a) for a in self.active_angles],
             }

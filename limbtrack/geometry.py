@@ -120,12 +120,12 @@ def evaluate_angle(defn, xy, facing_right=True):
     return AngleGeometry(value, tuple(xy[f]) if f in xy else (0.0, 0.0), unit(v1), unit(v2))
 
 
-def anchored_ghost(snapshot, live_xy, anchor=None):
-    """Positions of the locked pose ("ghost"), optionally shifted so the `anchor` dot sits on its live position.
+# PARKED-GHOST: def anchored_ghost(snapshot, live_xy, anchor=None):
+    # PARKED-GHOST: """Positions of the locked pose ("ghost"), optionally shifted so the `anchor` dot sits on its live position.
 
-    Anchored: the ghost shows only how the limb has rotated, not how the whole body has shifted in the picture.
-    """
-    dx = dy = 0.0
-    if anchor and anchor in snapshot and anchor in live_xy:
-        dx, dy = live_xy[anchor][0] - snapshot[anchor][0], live_xy[anchor][1] - snapshot[anchor][1]
-    return {n: (x + dx, y + dy) for n, (x, y) in snapshot.items()}
+    # PARKED-GHOST: Anchored: the ghost shows only how the limb has rotated, not how the whole body has shifted in the picture.
+    # PARKED-GHOST: """
+    # PARKED-GHOST: dx = dy = 0.0
+    # PARKED-GHOST: if anchor and anchor in snapshot and anchor in live_xy:
+        # PARKED-GHOST: dx, dy = live_xy[anchor][0] - snapshot[anchor][0], live_xy[anchor][1] - snapshot[anchor][1]
+    # PARKED-GHOST: return {n: (x + dx, y + dy) for n, (x, y) in snapshot.items()}

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, Q
 
 from . import overlay
 from .angles import measure, segment_pairs
-from .geometry import anchored_ghost
+# PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
 from .engine import TRAIL_MIN_STEP_PX
@@ -67,8 +67,8 @@ class Trial:
                     cur[0].append(i)
                     cur[1].append((x, y))
             self.trail_segments[n] = [(np.array(a), np.array(b)) for a, b in segs]
-        self.ghost = self.meta.get("locked_positions_px")
-        self.ghost_anchor = self.meta.get("ghost_anchor")
+        # PARKED-GHOST: self.ghost = self.meta.get("locked_positions_px")
+        # PARKED-GHOST: self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
         self._pos = -2
 
@@ -110,12 +110,12 @@ class Trial:
             res.status = LOST if math.isnan(res.value) else OK if flag == "1" else OUT if flag == "0" else INFO
             angles.append(res)
         head = f"{self.meta['test_label']} | {self.meta['participant']} | t = {self.t[i]:.2f} s"
-        ghost = None
-        if self.ghost and r["locked"] == "1":
-            live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
-            ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
-        return overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs),
-                            trails=self.trails_upto(i) if trails else None)
+        # PARKED-GHOST: ghost = None
+        # PARKED-GHOST: if self.ghost and r["locked"] == "1":
+            # PARKED-GHOST: live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
+            # PARKED-GHOST: ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
+        return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None)
+        # PARKED-GHOST: # with the ghost: overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs), trails=...)
 
     def hold_window(self):
         """(start, end) seconds from the first 'MVIC start' and the next 'MVIC end' marker, or None."""

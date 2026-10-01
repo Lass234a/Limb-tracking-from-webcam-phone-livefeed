@@ -12,7 +12,8 @@ Decided on 2026-10-01 after reviewing FEATURES.md. "Parked" means: no further wo
 | Phones as cameras (Android, iPhone, mixed) | Not built (the video-source code can already accept a network address, but there is no box for it in the window) | Webcam first; needs a phone and a streaming app |
 | ADC and load cell | Not built | Hardware not available yet; the CSV already carries a camera clock column (`clock_s`) so force can be merged later |
 | Change-since-lock for the main joint | Not built | The main joint is judged against the typed target; a separate "movement since lock" number is deferred |
-| Custom dots and angles | Not built | The 8 landmarks plus the coming three-point angle mode cover the pilot |
+| Ghost pose (dashed copy of the locked pose) | Code and checkboxes commented out, marked `# PARKED-GHOST:` in `engine.py`, `overlay.py`, `geometry.py`, `review.py`, `gui.py`, `results.py`; its tests are skipped (`tests/test_ghost.py`) | Decided to simplify the app after reviewing FEATURES.md |
+| Custom dots and angles | Not built | The 8 landmarks plus the three-point angle mode cover the pilot |
 
 ## Proposed, not added
 | Item | Note |
