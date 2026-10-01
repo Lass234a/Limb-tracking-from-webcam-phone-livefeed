@@ -19,7 +19,7 @@ from dataclasses import asdict
 from . import overlay
 from .angles import measure, segment_pairs
 from .geometry import anchored_ghost
-from .filters import LEVELS, make_filter
+from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import DotState, TrackerSet, to_gray
@@ -46,7 +46,7 @@ class Engine:
         self._pending_event = None   # marker to write on the next recorded frame
         self._banner = None          # (label, time) of the last marker, shown briefly on screen
         self._marker_n = 0
-        self.smoothing = "light"     # 'off', 'light' or 'medium' (see filters.py)
+        self.smoothing = True        # moving average over 0.2 s for what is SHOWN (never for the CSV)
         self._filters = {}
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._refs = {}
@@ -124,11 +124,10 @@ class Engine:
             self._filters = {}
             self.unlock_position()
 
-    def set_smoothing(self, level):
-        if level not in LEVELS:
-            raise ValueError(f"smoothing must be one of {list(LEVELS)}")
+    def set_smoothing(self, on):
+        """Switch the display smoothing on or off. The recorded angles are unaffected."""
         with self.lock:
-            self.smoothing = level
+            self.smoothing = bool(on)
             self._filters = {}
 
     def set_dot_kind(self, kind):
@@ -187,27 +186,31 @@ class Engine:
 
     # --------------------------------------------------------------- per frame
     def _smooth(self, name, raw, t):
-        if t is None or self.smoothing == "off":
+        if t is None or not self.smoothing:
             return raw
         f = self._filters.get(name)
         if f is None:
-            f = self._filters[name] = make_filter(self.smoothing)
+            f = self._filters[name] = MovingAverage(SMOOTHING_WINDOW_S)
         return f(raw, t)
 
     def _compute_angles(self, states, t=None):
         xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
         out = []
         for a in self.active_angles:
-            r = measure(a, xy, self.facing_right)
+            r = measure(a, xy, self.facing_right)       # r.value is the raw angle here
             if r.status == LOST:
-                self._filters.pop(a.name, None)         # do not blend across a gap
+                r.raw_status = LOST
+                self._filters.pop(a.name, None)         # do not average across a gap
             else:
                 r.raw_value = r.value
-                r.value = self._smooth(a.name, r.raw_value, t)
                 if a.primary:
                     r.reference, r.tolerance = self.target, self.tolerance
                 elif self.locked and a.name in self._refs:
                     r.reference, r.tolerance = self._refs[a.name], self.neighbour_tolerance
+                if r.reference is not None:                         # recorded verdict: from the raw angle
+                    r.raw_deviation = r.raw_value - r.reference
+                    r.raw_status = OK if abs(r.raw_deviation) <= r.tolerance else OUT
+                r.value = self._smooth(a.name, r.raw_value, t)      # shown value (and verdict)
                 if r.reference is not None:
                     r.deviation = r.value - r.reference
                     r.status = OK if abs(r.deviation) <= r.tolerance else OUT
@@ -362,7 +365,13 @@ class Engine:
                 "camera": self.camera_desc,
                 "lens_calibration": None,
                 "facing": "right" if self.facing_right else "left",
-                "smoothing": self.smoothing,
+                "smoothing": {
+                    "enabled": self.smoothing,
+                    "type": "moving_average",
+                    "window_s": SMOOTHING_WINDOW_S,
+                    "applies_to": "screen, live trace and overlay video only; CSV angles, deviations and flags are unsmoothed",
+                },
+                "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
                 "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
                 "ghost_anchor": self._ghost_anchor(),
                 "angles": [asdict(a) for a in self.active_angles],

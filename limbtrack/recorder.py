@@ -40,7 +40,7 @@ class TrialRecorder:
         for d in self.dot_names:
             head += [f"{d}_x", f"{d}_y", f"{d}_lost", f"{d}_q"]
         for a in self.angle_names:
-            head += [f"{a}_deg", f"{a}_raw_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
+            head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head += ["all_ok", "event"]
         self._csv.writerow(head)
         self.frames = 0
@@ -68,10 +68,10 @@ class TrialRecorder:
         oks = []
         for n in self.angle_names:
             a = by_name[n]
-            ok = 1 if a.status == OK else 0 if a.status == OUT else ""
-            if a.status in (OUT, LOST):
+            ok = 1 if a.raw_status == OK else 0 if a.raw_status == OUT else ""
+            if a.raw_status in (OUT, LOST):
                 oks.append(False)
-            row += [_num(a.value), _num(a.raw_value), _num(a.reference), _num(a.deviation), ok]
+            row += [_num(a.raw_value), _num(a.reference), _num(a.raw_deviation), ok]       # unsmoothed values
         row.append(0 if oks else 1)
         row.append(event or "")
         if event:

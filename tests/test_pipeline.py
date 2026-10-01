@@ -112,7 +112,7 @@ def test_tracking_a_moving_knee_and_recording(tmp_path):
     got = []
     for i in range(n):
         res = eng.process(render(seq[i], seed=i), i / 30.0)
-        got.append(values(res)["knee"])
+        got.append(next(a.raw_value for a in res.angles if a.name == "knee"))   # recorded value, unsmoothed
     paths = eng.stop_trial()
 
     err = np.abs(np.array(got) - np.array(truth))

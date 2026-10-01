@@ -13,12 +13,16 @@ class AngleResult:
     fulcrum: tuple = None                          # image position of the read-out
     dir1: tuple = None                             # unit vectors of the two arms (image coords), for the arc
     dir2: tuple = None
-    value: float = float("nan")      # in the protocol's convention, smoothed (NaN if a dot is lost)
-    raw_value: float = float("nan")  # same, before smoothing
-    reference: float = None          # target (primary) or locked value (neighbours)
+    # What the operator SEES (smoothed over 0.2 s if smoothing is on). Used by the screen, trace and overlay video.
+    value: float = float("nan")      # in the protocol's convention (NaN if a dot is lost)
     deviation: float = float("nan")  # value - reference
-    tolerance: float = None
     status: str = INFO               # ok / out / lost / info (no reference yet)
+    # What is RECORDED in the CSV: the unsmoothed angle and the verdicts computed from it.
+    raw_value: float = float("nan")
+    raw_deviation: float = float("nan")
+    raw_status: str = INFO
+    reference: float = None          # target (main joint) or the value shown when the position was locked (others)
+    tolerance: float = None
 
 
 @dataclass

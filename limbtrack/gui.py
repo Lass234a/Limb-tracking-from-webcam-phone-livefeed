@@ -223,11 +223,10 @@ class LiveTab(QWidget):
         self.facing_combo.addItem("Right side of the image", True)
         self.facing_combo.addItem("Left side of the image", False)
         self.facing_combo.currentIndexChanged.connect(self.on_facing_changed)
-        self.smooth_combo = QComboBox()
-        for label, k in (("Light (default)", "light"), ("Medium", "medium"), ("Off (raw)", "off")):
-            self.smooth_combo.addItem(label, k)
-        self.smooth_combo.currentIndexChanged.connect(
-            lambda: (engine.set_smoothing(self.smooth_combo.currentData()), self.refresh_view()))
+        self.chk_smooth = QCheckBox("Smooth the displayed angles (0.2 s average)")
+        self.chk_smooth.setToolTip("Only changes what you see. The saved CSV always has the unsmoothed angles.")
+        self.chk_smooth.setChecked(True)
+        self.chk_smooth.toggled.connect(lambda on: (engine.set_smoothing(on), self.refresh_view()))
         tg = QGroupBox("2. Test and target")
         f = QFormLayout(tg)
         f.addRow("Test", self.test_combo)
@@ -237,7 +236,7 @@ class LiveTab(QWidget):
         f.addRow("Tolerance other joints", self.ntol_spin)
         f.addRow("Dot colour", self.kind_combo)
         f.addRow("Participant faces", self.facing_combo)
-        f.addRow("Angle smoothing", self.smooth_combo)
+        f.addRow(self.chk_smooth)
 
         # --- landmarks to use (pilot testing)
         self.lm_preset = QComboBox()
