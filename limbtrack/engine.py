@@ -66,6 +66,7 @@ class Engine:
         self.rec = None
         self.rec_info = {}
         self.camera_desc = ""
+        self.camera_info = None      # requested / granted camera settings, set by the video thread
         self.set_test(next(iter(tests)))
 
     # ----------------------------------------------------------------- set-up
@@ -462,6 +463,7 @@ class Engine:
                 "locked_references_deg": self._refs,
                 "dot_kind": self.kind,
                 "camera": self.camera_desc,
+                "camera_settings": self.camera_info,
                 "lens_calibration": None,
                 "facing": "right" if self.facing_right else "left",
                 "smoothing": {

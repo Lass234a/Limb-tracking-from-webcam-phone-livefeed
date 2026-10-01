@@ -86,6 +86,7 @@ class VideoWorker(QThread):
         super().__init__()
         self.engine, self.source = engine, source
         self.paused = False
+        self.camera = None
         self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
         self._stop = False
         self._cmds = []
@@ -117,6 +118,8 @@ class VideoWorker(QThread):
             return
         self.is_file = cam.is_file
         self.engine.camera_desc = cam.description
+        self.engine.camera_info = cam.info()
+        self.camera = cam        # read-only use from the window: settings and measured frame rate
         t_start = None           # wall-clock origin for real-time playback of a file
         last = (None, None)      # last frame shown (for redraws while paused)
         msg = "Stopped."
@@ -225,6 +228,9 @@ class LiveTab(QWidget):
         sl.addWidget(self.btn_pause)
         sl.addLayout(prow)
         sl.addWidget(self.frame_label)
+        self.cam_info = QLabel("")
+        self.cam_info.setWordWrap(True)
+        sl.addWidget(self.cam_info)
         self._set_file_controls(False)
 
         # --- test
@@ -587,6 +593,7 @@ class LiveTab(QWidget):
             self.worker = None
         self.btn_start.setText("Start camera")
         self._set_file_controls(False)
+        self.update_camera_info()
 
     def on_ended(self, msg, worker):
         if worker is not self.worker:      # late signal from a source that was already replaced
@@ -598,6 +605,7 @@ class LiveTab(QWidget):
             self.worker = None
             self.btn_start.setText("Start camera")
             self._set_file_controls(False)
+            self.update_camera_info()
             if msg != "Stopped.":
                 self.instruction.setText(msg)
 
@@ -741,6 +749,24 @@ class LiveTab(QWidget):
             self.rec_label.setText(f"Saved: {paths['data.csv'].parent.name}/{paths['raw.mp4'].name[:-8]}..." if paths
                                    else "Not recording")
 
+    def update_camera_info(self):
+        """One line on what the camera really delivers; orange when it differs from what was asked for."""
+        cam = self.worker.camera if self.worker is not None else None
+        if cam is None:
+            self.cam_info.setText("")
+            return
+        g, m = cam._granted, cam.measured_fps()
+        if cam.is_file:
+            self.cam_info.setText(f"Video file: {g['width']}x{g['height']}, {cam.file_fps:.1f} fps")
+            self.cam_info.setStyleSheet("")
+            return
+        text = f"Camera delivers {g['width']}x{g['height']}" + (f", {m:.1f} fps measured" if m else ", measuring frame rate...")
+        problems = cam.settings_problems()
+        if problems:
+            text += "\nWARNING: " + "; ".join(problems)
+        self.cam_info.setText(text)
+        self.cam_info.setStyleSheet("color: #d97706; font-weight: bold;" if problems else "")
+
     def refresh_status(self):
         recording = self._rec_started is not None
         for cb in self.lm_checks.values():
@@ -750,6 +776,7 @@ class LiveTab(QWidget):
             w.setEnabled(not recording)
         if self._rec_started is not None:
             self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
+        self.update_camera_info()
         if self.worker is None:
             return
         nxt = self.engine.next_dot_to_mark()
