@@ -96,3 +96,60 @@ def test_file_source_reports_its_own_size_in_the_window_and_meta(tmp_path):
     assert meta["camera_settings"]["is_file"] is True
     assert meta["camera_settings"]["granted_by_driver"]["width"] == 1280
     win.close()
+
+
+class SettableCap(FakeCap):
+    """A stand-in webcam. accept=False behaves like a driver that returns True from set() but ignores it."""
+
+    def __init__(self, accept):
+        super().__init__(1280, 720, 30)
+        self.accept = accept
+        self.v.update({cv2.CAP_PROP_AUTO_EXPOSURE: 0.75, cv2.CAP_PROP_EXPOSURE: -6.0,
+                       cv2.CAP_PROP_AUTO_WB: 1, cv2.CAP_PROP_WB_TEMPERATURE: 4600})
+
+    def set(self, k, value):
+        if self.accept:
+            self.v[k] = value
+        return True
+
+
+def webcam_with(cap):
+    cam = fake_camera((1280, 720, 30))
+    cam.cap = cap
+    return cam
+
+
+def test_lock_is_reported_as_accepted_when_the_camera_takes_it():
+    cap = SettableCap(accept=True)
+    cam = webcam_with(cap)
+    r = cam.lock_exposure_wb()
+    assert r["exposure_locked"] and r["white_balance_locked"]
+    assert cap.v[cv2.CAP_PROP_EXPOSURE] == -6.0 and cap.v[cv2.CAP_PROP_WB_TEMPERATURE] == 4600   # held at the current values
+    assert "locked" in cam.lock_summary()
+    assert cam.info()["exposure_wb_lock"]["readback"]["auto_exposure"] == 0.25                   # raw read-back is kept for the record
+
+
+def test_lock_is_reported_as_refused_when_the_camera_ignores_it():
+    cam = webcam_with(SettableCap(accept=False))
+    r = cam.lock_exposure_wb()
+    assert not r["exposure_locked"] and not r["white_balance_locked"]
+    assert "did not accept" in cam.lock_summary()
+
+
+def test_lock_button_is_only_available_for_a_live_camera(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
+    assert not win.live.btn_lock_cam.isEnabled()                       # nothing running
+    video = tmp_path / "demo.mp4"
+    w = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 30, (1280, 720))
+    for i in range(20):
+        w.write(render(leg_points(hip_flex=80, knee_flex=20 + i, ankle_df=5), seed=i))
+    w.release()
+    win.live.start_source(str(video))
+    end = time.time() + 20
+    while time.time() < end and "Video file" not in win.live.cam_info.text():
+        app.processEvents()
+        time.sleep(0.01)
+    assert not win.live.btn_lock_cam.isEnabled()                       # a file has no exposure to lock
+    win.live.stop_camera()
+    win.close()

@@ -87,6 +87,8 @@ class VideoWorker(QThread):
         self.engine, self.source = engine, source
         self.paused = False
         self.camera = None
+        self.lock_message = ""
+        self._lock_request = False
         self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
         self._stop = False
         self._cmds = []
@@ -94,6 +96,10 @@ class VideoWorker(QThread):
 
     def stop(self):
         self._stop = True
+
+    def request_lock(self):
+        """Ask the video thread to lock exposure/white balance (the camera may only be touched from that thread)."""
+        self._lock_request = True
 
     def command(self, name):
         """'step_fwd', 'step_back' or 'refresh' (redraw the current frame). Files only."""
@@ -149,6 +155,11 @@ class VideoWorker(QThread):
         """Read, track and show frames until stopped. Returns the reason it ended."""
         msg = "Stopped."
         while not self._stop:
+            if self._lock_request:
+                self._lock_request = False
+                cam.lock_exposure_wb()
+                self.engine.camera_info = cam.info()
+                self.lock_message = cam.lock_summary()
             cmd = self._next_command() if cam.is_file else None
             if cam.is_file and (self.paused or cmd):
                 if cmd is None:
@@ -231,6 +242,12 @@ class LiveTab(QWidget):
         self.cam_info = QLabel("")
         self.cam_info.setWordWrap(True)
         sl.addWidget(self.cam_info)
+        self.btn_lock_cam = QPushButton("Lock exposure and white balance")
+        self.btn_lock_cam.setToolTip("Stops the camera from changing brightness/colour by itself during a trial. "
+                                     "Do this once the lighting is final. Not every webcam allows it; the result is shown below.")
+        self.btn_lock_cam.clicked.connect(lambda: self.worker and self.worker.request_lock())
+        self.btn_lock_cam.setEnabled(False)
+        sl.addWidget(self.btn_lock_cam)
         self._set_file_controls(False)
 
         # --- test
@@ -752,6 +769,7 @@ class LiveTab(QWidget):
     def update_camera_info(self):
         """One line on what the camera really delivers; orange when it differs from what was asked for."""
         cam = self.worker.camera if self.worker is not None else None
+        self.btn_lock_cam.setEnabled(cam is not None and not cam.is_file and isinstance(cam.source, int))
         if cam is None:
             self.cam_info.setText("")
             return
@@ -764,6 +782,8 @@ class LiveTab(QWidget):
         problems = cam.settings_problems()
         if problems:
             text += "\nWARNING: " + "; ".join(problems)
+        if self.worker.lock_message:
+            text += "\n" + self.worker.lock_message
         self.cam_info.setText(text)
         self.cam_info.setStyleSheet("color: #d97706; font-weight: bold;" if problems else "")
 

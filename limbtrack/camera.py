@@ -61,9 +61,51 @@ class CameraSource:
             out.append(f"asked for {r['fps']:g} fps but only {m:.1f} fps are arriving (low light often makes webcams slow down)")
         return out
 
+    def lock_exposure_wb(self):
+        """Switch automatic exposure and white balance off and hold their current values.
+
+        Must be called from the thread that reads frames. Returns (and remembers) a report with the raw numbers read
+        back from the driver, because many webcams accept the request without honouring it.
+        """
+        if not isinstance(self.source, int):
+            self.lock_report = {"requested": False, "note": "not a webcam: nothing to lock"}
+            return self.lock_report
+        cap = self.cap
+        exp0, wbt0 = cap.get(cv2.CAP_PROP_EXPOSURE), cap.get(cv2.CAP_PROP_WB_TEMPERATURE)
+        ok_ae = cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)       # DirectShow: 0.25 = manual, 0.75 = automatic
+        ok_exp = cap.set(cv2.CAP_PROP_EXPOSURE, exp0)           # hold the value the camera had settled on
+        ok_awb = cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+        ok_wbt = cap.set(cv2.CAP_PROP_WB_TEMPERATURE, wbt0)
+        ae, awb = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE), cap.get(cv2.CAP_PROP_AUTO_WB)
+        exposure_locked = bool(ok_ae and ok_exp) and ae in (0, 0.25)
+        wb_locked = bool(ok_awb and ok_wbt) and awb == 0
+        self.lock_report = {
+            "requested": True,
+            "exposure_locked": exposure_locked, "white_balance_locked": wb_locked,
+            "readback": {"auto_exposure": ae, "exposure": cap.get(cv2.CAP_PROP_EXPOSURE),
+                         "auto_wb": awb, "wb_temperature": cap.get(cv2.CAP_PROP_WB_TEMPERATURE)},
+        }
+        return self.lock_report
+
+    def lock_summary(self):
+        """One plain-English sentence about the last lock request, or '' if none was made."""
+        r = getattr(self, "lock_report", None)
+        if not r:
+            return ""
+        if not r["requested"]:
+            return r["note"]
+        e, w = r["exposure_locked"], r["white_balance_locked"]
+        if e and w:
+            return "Exposure and white balance are locked (as far as the camera reports)."
+        if not e and not w:
+            return "This camera did not accept the lock: exposure and white balance stay automatic. Use even, constant lighting."
+        return ("Exposure locked; white balance stayed automatic." if e
+                else "White balance locked; exposure stayed automatic.")
+
     def info(self):
         """Settings record for meta.json."""
-        return {"requested": self.requested, "granted_by_driver": self._granted, "is_file": self.is_file}
+        return {"requested": self.requested, "granted_by_driver": self._granted, "is_file": self.is_file,
+                "exposure_wb_lock": getattr(self, "lock_report", None)}
 
     def read(self):
         """Returns (frame, t) or (None, None). For files, t follows the video's own frame rate."""
