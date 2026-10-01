@@ -58,7 +58,12 @@ class TrialRecorder:
         row = [frame_index, round(t - self._t0, 5), round(t, 5), int(locked)]
         for d in self.dot_names:
             st = dots.get(d)
-            row += ["", "", "", ""] if st is None else [round(st.x, 2), round(st.y, 2), int(st.lost), round(st.quality, 2)]
+            if st is None:
+                row += ["", "", "", ""]
+            elif st.lost:                       # no position is known while a dot is lost: leave x/y blank
+                row += ["", "", 1, round(st.quality, 2)]
+            else:
+                row += [round(st.x, 2), round(st.y, 2), 0, round(st.quality, 2)]
         by_name = {a.name: a for a in angles}
         oks = []
         for n in self.angle_names:

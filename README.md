@@ -40,7 +40,7 @@ While the video runs, the **live trace** under it shows the last 15 s: the main 
 | Dot grey with a cross, angle "lost" | dot not found; nothing is guessed |
 
 ### CSV columns
-`frame, t_s` (seconds from trial start), `clock_s` (camera clock, for merging force data later), `locked`, then per dot `<dot>_x, <dot>_y, <dot>_lost, <dot>_q` (quality 0-1), then per angle `<angle>_deg` (smoothed, what is judged), `<angle>_raw_deg`, `<angle>_ref`, `<angle>_dev`, `<angle>_ok` (1 in tolerance, 0 out, blank = no reference / lost), then `all_ok` and `event` (marker label on the frame where it was pressed).
+`frame, t_s` (seconds from trial start), `clock_s` (camera clock, for merging force data later), `locked`, then per dot `<dot>_x, <dot>_y, <dot>_lost, <dot>_q` (quality 0-1; x and y are blank while the dot is lost), then per angle `<angle>_deg` (smoothed, what is judged), `<angle>_raw_deg`, `<angle>_ref`, `<angle>_dev`, `<angle>_ok` (1 in tolerance, 0 out, blank = no reference / lost), then `all_ok` and `event` (marker label on the frame where it was pressed).
 
 ## Review tab
 *Open trial...* -> pick a `..._meta.json`. Scrub or play the video with its overlay (including the ghost), see angle-vs-time with the green tolerance band and the markers as dashed vertical lines. Pick a marker in the list to jump to it. **Window = MVIC start to end** sets the analysis window to your markers; otherwise drag the blue window on the plot. The numbers below use the window: mean, SD, min, max, **start>end** (how far the angle moved between the start and the end of the window, the slack take-up number), max deviation, % time in tolerance, lost frames. *Export summary CSV* saves them.

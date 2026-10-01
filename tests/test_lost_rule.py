@@ -174,3 +174,40 @@ def test_real_video_with_a_larger_circle_the_dot_resumes_by_itself(monkeypatch):
     assert not any(a[2] for a in ank[257:])
     for k in range(257, len(rows)):
         assert math.hypot(ank[k][0] - ref[k][0], ank[k][1] - ref[k][1]) < 8, k
+
+
+# ------------------------------------------------------------------ CSV while a dot is lost
+def test_csv_has_blank_xy_while_a_dot_is_lost_and_review_still_opens(tmp_path):
+    import csv
+
+    from limbtrack.engine import Engine
+    from limbtrack.protocol import load_protocol
+    from limbtrack.review import Trial
+
+    eng = Engine(load_protocol(ROOT / "protocol.json"), recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    eng.target = 60.0
+    eng.process(render(PTS, seed=0), 0.0)
+    for n in eng.test.dots:
+        assert eng.mark_dot(n, *(PTS[n] + 2))
+    eng.process(render(PTS, seed=1), 0.01)
+    eng.start_trial("P01")
+    for i in range(30):
+        hide = ["epicondyle"] if 10 <= i < 20 else []
+        eng.process(render(PTS, seed=i, hide=hide), 0.1 + i / 30)
+    paths = eng.stop_trial()
+
+    rows = list(csv.DictReader(open(paths["data.csv"], newline="")))
+    lost_rows = [i for i, r in enumerate(rows) if r["epicondyle_lost"] == "1"]
+    assert lost_rows == list(range(10, 20))
+    for i, r in enumerate(rows):
+        if i in lost_rows:
+            assert r["epicondyle_x"] == "" and r["epicondyle_y"] == ""
+            assert r["knee_deg"] == "" and r["hip_deg"] == ""            # angles that use it are blank too
+            assert r["trochanter_x"] != "" and r["ankle_deg"] != ""      # everything else is unaffected
+        else:
+            assert r["epicondyle_x"] != "" and r["epicondyle_y"] != "" and r["knee_deg"] != ""
+
+    tr = Trial(paths["meta.json"])
+    assert tr.drawn(5) is not None and tr.drawn(15) is not None and tr.drawn(25) is not None
+    assert np.isnan(tr.deg["knee"][15]) and np.isfinite(tr.deg["knee"][25])
