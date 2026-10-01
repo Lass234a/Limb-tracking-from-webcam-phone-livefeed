@@ -51,7 +51,7 @@ def leg_points(hip_flex=0.0, knee_flex=0.0, ankle_df=0.0, pelvic_tilt=0.0, facin
 
 
 def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, seed=0, distractors=True,
-           dot_gain=1.0):
+           dot_gain=1.0, hide=()):
     w, h = size
     rng = np.random.default_rng(seed)
     bg = 90 if kind == "white" else 170
@@ -69,6 +69,8 @@ def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, se
     col = (level, level, level)
     shift = 4
     for n in names:
+        if n in hide:                                      # dot covered (e.g. by a hand), limb still drawn
+            continue
         x, y = points[n]
         cv2.circle(img, (int(round(x * (1 << shift))), int(round(y * (1 << shift)))),
                    int(round(dot_radius * (1 << shift))), col, -1, cv2.LINE_AA, shift)
