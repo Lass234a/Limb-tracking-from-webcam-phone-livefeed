@@ -2,6 +2,7 @@
 import os
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import math
@@ -119,6 +120,31 @@ class VideoWorker(QThread):
         t_start = None           # wall-clock origin for real-time playback of a file
         last = (None, None)      # last frame shown (for redraws while paused)
         msg = "Stopped."
+        try:
+            msg = self._loop(cam, t_start, last) or msg
+        except Exception as e:  # noqa: BLE001 - the thread must never die silently
+            msg = self._report_error(e)
+        finally:
+            cam.close()
+        self.ended.emit(msg)
+
+    def _report_error(self, e):
+        """Write the full traceback to last_error.log and return a message for the operator."""
+        where = ""
+        try:
+            folder = Path(self.engine.recordings_dir)
+            folder.mkdir(parents=True, exist_ok=True)
+            log = folder / "last_error.log"
+            with open(log, "w", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "\n" + traceback.format_exc())
+            where = f" Details were saved in {log}."
+        except OSError:
+            pass
+        return f"The video stopped because of an error ({type(e).__name__}: {e}). Any recording was saved up to this point.{where}"
+
+    def _loop(self, cam, t_start, last):
+        """Read, track and show frames until stopped. Returns the reason it ended."""
+        msg = "Stopped."
         while not self._stop:
             cmd = self._next_command() if cam.is_file else None
             if cam.is_file and (self.paused or cmd):
@@ -155,8 +181,7 @@ class VideoWorker(QThread):
                 wait = t - (time.perf_counter() - t_start)
                 if wait > 0:
                     time.sleep(wait)
-        cam.close()
-        self.ended.emit(msg)
+        return msg
 
 
 class LiveTab(QWidget):
