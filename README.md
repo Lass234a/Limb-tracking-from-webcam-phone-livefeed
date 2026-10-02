@@ -16,6 +16,8 @@ Double-click **Start.bat**. (First try it without a camera: Live tab -> *Open vi
 
 ## Using it (Live tab)
 1. **Video source**: pick the camera and press *Start camera*. If it isn't listed, press *Scan cameras*.
+   A line under the buttons shows what the camera really delivers (resolution and measured frame rate) and turns orange with a warning if that differs from the 1280x720, 30 fps the app asks for. **Lock exposure and white balance** (webcams only) stops the camera from changing brightness or colour by itself; do it once the lighting is final. The app says in words whether the camera accepted it (many webcams ignore the request), and the result is saved with each trial. **Mirror the image** flips the picture left-right before tracking and recording (saved video and pixel positions are flipped too, `mirrored_image` in `meta.json`); it clears the marked dots, cannot be changed while recording, and after switching it check *Participant faces* against what you now see.
+   If something goes wrong in the video thread, the video stops with a message in the instruction line, any recording is saved up to that point, and the details go to `recordings/last_error.log`.
    For video files only: **Pause / Play** (**P**) and single-frame steps back and forward (**Left** / **Right** arrows). You can mark dots, lock, and change targets while paused and the picture updates. At the end of a file it waits on the last frame so you can step back. Stepping is switched off while recording.
 2. **Test and target**: choose the test, type the target angle for the main joint (or pick a suggested one), and set tolerances. Pick the dot colour (or leave on Auto) and which way the participant faces in the image. The smoothing tick box averages the *displayed* angles over 0.2 s; it never touches what is saved.
    **Landmarks to use (pilot)**: tick or untick which of the 8 landmarks you will put dots on, or use a preset such as "only Knee flexion". Angles that need an unticked landmark disappear (the panel lists which are available and what the others need); the rest keep working. If the main joint's landmarks are unticked, no target is judged and every remaining angle is checked against the locked position instead. Your choice stays while you switch tests, is saved with each trial (`dots_disabled` in `meta.json`, and the CSV only has the chosen dots and angles), and is forgotten when the program is closed. It cannot be changed during a recording; re-enabling a landmark means marking it again.
@@ -27,7 +29,7 @@ Double-click **Start.bat**. (First try it without a camera: Live tab -> *Open vi
    - `..._raw.mp4` - untouched video (opens in Kinovea)
    - `..._overlay.mp4` - video with the angles, trails and marker banners drawn on
    - `..._data.csv` - one row per frame (columns below)
-   - `..._meta.json` - participant, test, target, tolerances, facing, smoothing, camera, notes, markers, locked pose
+   - `..._meta.json` - participant, test, target, tolerances, facing, mirror, smoothing, camera and its settings, every tracker number (`tracker_settings`), notes, markers
 
 While the video runs, the **live trace** under it shows the last 15 s: the main angle with its tolerance band, or (switch at the top) the drift of all joints from their set position, which is the best view for spotting slow creep.
 
@@ -45,7 +47,7 @@ While the video runs, the **live trace** under it shows the last 15 s: the main 
 `frame, t_s` (seconds from trial start), `clock_s` (camera clock, for merging force data later), `locked`, then per dot `<dot>_x, <dot>_y, <dot>_lost, <dot>_q` (quality 0-1; x and y are blank while the dot is lost), then per angle `<angle>_deg` (the unsmoothed angle), `<angle>_ref`, `<angle>_dev`, `<angle>_ok` (1 in tolerance, 0 out, blank = no reference / lost; all computed from the unsmoothed angle), then `all_ok` and `event` (marker label on the frame where it was pressed).
 
 ## Review tab
-*Open trial...* -> pick a `..._meta.json`. Scrub or play the video with its overlay (including the trails), see angle-vs-time with the green tolerance band and the markers as dashed vertical lines. Pick a marker in the list to jump to it. **Window = MVIC start to end** sets the analysis window to your markers; otherwise drag the blue window on the plot. The numbers below use the window: mean, SD, min, max, **start>end** (how far the angle moved between the start and the end of the window, the slack take-up number), max deviation, % time in tolerance, lost frames. *Export summary CSV* saves them.
+*Open trial...* -> pick a `..._meta.json`. Scrub or play the video with its overlay (including the trails), see angle-vs-time (unsmoothed, as saved) with the green tolerance band and the markers as dashed vertical lines. Pick a marker in the list to jump to it. **Window = MVIC start to end** sets the analysis window to your markers; otherwise drag the blue window on the plot. The numbers below use the window and the unsmoothed saved angles (so the SD includes tracking noise): mean, SD, min, max, **start>end** (how far the angle moved between the start and the end of the window, the slack take-up number), max deviation, % time in tolerance, lost frames. *Export summary CSV* saves them.
 
 ## Changing tests, angles and conventions
 Edit `protocol.json` (plain text). An angle is the angle between two arms: an arm is a vector between two dots, "perpendicular to a line between two dots", or a fixed direction ("up", "down", "forward"). Shown value = `sign` x angle + `offset`; `signed` angles can be negative. Landmarks and arms follow Tabel 3 (goniometer alignment):
@@ -62,6 +64,7 @@ Target angles come from `ChenData/StrengthCurve/plot_proposal.m`. Signed angles 
 - Dots on straps can slide over the skin without the joint moving (and the reverse). Validate strap-mounted dots separately; prefer dots on skin or tape in the gaps where you can.
 - The display smoothing is a trailing average over 0.2 s, so a steadily changing angle is shown about 0.1 s late (about 5 deg at 50 deg/s, 0.1 deg at 1 deg/s). Untick it to see the raw angle. The saved CSV is never smoothed, so the green/red on screen can differ slightly from the `_ok` column.
 - Lens distortion is not corrected yet. Keep the participant near the centre of the frame.
+- A dot that is hidden (hand, strap) is frozen where it was last seen and its angles go blank; nothing is guessed. It picks up again only if a round dot of about the right size and brightness reappears within about two dot-widths of that spot; otherwise click it again. The video it was tuned on had dots smaller than planned, so test this with your real dots (planned size: at least 2 cm).
 - Dot tracking assumes the dots are clearly brighter (white) or darker (black) than what's around them. Good even lighting and matte dots help. Glare on shiny dots or clothing seams near a dot can confuse it. Dots closer together than about 3 dot-widths can be confused.
 
 ## Validation (do once, and again if the camera setup changes)
@@ -71,8 +74,10 @@ Target angles come from `ChenData/StrengthCurve/plot_proposal.m`. Signed angles 
 4. **Stress it**: cover a dot with a hand, change the lighting, and confirm the dot goes orange/grey and comes back correctly.
 
 ## Not built yet (planned, in this order)
-Lens calibration -> phones (Android/iPhone, via Iriun/Camo/DroidCam or a network stream) -> load cell/ADC recorded on the same clock and overlaid -> front view for hip abduction/adduction -> two cameras. The CSV already has a `clock_s` column (camera clock) so force data can be merged later.
+Ruler/scale in the app and a minimum-dot-size check (waiting for your go-ahead) -> lens calibration -> phones (Android/iPhone, via Iriun/Camo/DroidCam or a network stream) -> load cell/ADC recorded on the same clock and overlaid -> front view for hip abduction/adduction -> two cameras. The CSV already has a `clock_s` column (camera clock) so force data can be merged later.
 
 ## Developer notes
-- Python 3.12 in `.venv`. Run tests: `.venv\Scripts\python.exe -m pytest -q` (about 2 minutes).
+- Python 3.12 in `.venv`. Run tests: `.venv\Scripts\python.exe -m pytest -q` (about 2 to 4 minutes; 126 pass, 1 is skipped because the ghost pose is parked).
+- `FEATURES.md` lists every feature, whether it can change a measured number, and what is unreliable; `PARKED.md` lists what was deliberately set aside.
+- Tracking numbers are named constants at the top of `limbtrack/tracker.py` and are saved in every `meta.json`. `tests/golden_tracking.npz` pins the tracking output: if a deliberate change makes `tests/test_tracker_settings.py` fail, regenerate it with `python tests/test_tracker_settings.py` and say why in the commit message.
 - `limbtrack/`: `geometry` (angle maths), `angles` (measure an angle definition), `protocol` (protocol.json), `tracker` (dots), `filters` (display smoothing), `engine` (pipeline, no GUI), `recorder`, `overlay`, `camera`, `gui`, `review`, `synthetic` (test video generator with exact known angles).
