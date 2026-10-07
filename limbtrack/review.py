@@ -42,6 +42,8 @@ class Trial:
         self.folder = folder
         with open(folder / self.meta["files"]["data.csv"], newline="", encoding="utf-8") as fh:
             self.rows = list(csv.DictReader(fh))
+        if not self.rows:
+            raise ValueError("This trial contains no frames (nothing was recorded).")
         self.t = np.array([_f(r["t_s"]) for r in self.rows])
         self.angle_defs = [AngleDef(**a) for a in self.meta["angles"]]
         self.facing_right = self.meta.get("facing", "right") == "right"

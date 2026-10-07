@@ -88,6 +88,7 @@ class VideoWorker(QThread):
         self.paused = False
         self.camera = None
         self.lock_message = ""
+        self.at_end = False      # a video file has played to its last frame (nothing more will arrive)
         self._lock_request = False
         self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
         self._stop = False
@@ -114,6 +115,7 @@ class VideoWorker(QThread):
         if self.engine.mirror:
             frame = cv2.flip(frame, 1)          # before tracking, recording and drawing: everything sees the flipped picture
         res = self.engine.process(frame, t)
+        self.at_end = False
         self.frame_ready.emit(bgr_to_qimage(res.overlay))
         if cam.is_file:
             self.position.emit(cam.position + 1, cam.frame_count)
@@ -185,6 +187,7 @@ class VideoWorker(QThread):
             if frame is None:
                 if cam.is_file and self.engine.rec is None and last[0] is not None:
                     self.paused = True             # end of file: wait on the last frame so it can be stepped back
+                    self.at_end = True
                     self.position.emit(cam.position + 1, cam.frame_count)
                     continue
                 msg = "End of video file." if cam.is_file else "The camera stopped delivering frames."
@@ -774,6 +777,16 @@ class LiveTab(QWidget):
 
     def toggle_record(self, checked=None, force_stop=False):
         if self.btn_rec.isChecked() and not force_stop:
+            if self.worker is None or not self.worker.isRunning():
+                self.btn_rec.setChecked(False)
+                QMessageBox.warning(self, "Cannot record", "No video is coming in, so nothing would be recorded. "
+                                    "Start the camera or open a video file first.")
+                return
+            if self.worker.is_file and self.worker.at_end:
+                self.btn_rec.setChecked(False)
+                QMessageBox.warning(self, "Cannot record", "The video file has already ended, so nothing would be recorded. "
+                                    "Step back with the Left arrow key or open the file again.")
+                return
             if not self.participant.text().strip():
                 self.btn_rec.setChecked(False)
                 QMessageBox.warning(self, "Participant", "Enter a participant ID first so the files are labelled.")
@@ -797,11 +810,23 @@ class LiveTab(QWidget):
                 self.toggle_pause()
         else:
             self.btn_rec.setChecked(False)
+            n = self.engine.rec.frames if self.engine.rec is not None else None
+            duration = time.perf_counter() - self._rec_started if self._rec_started is not None else 0.0
             paths = self.engine.stop_trial()
             self.btn_rec.setText("Start recording  (R)")
             self._rec_started = None
-            self.rec_label.setText(f"Saved: {paths['data.csv'].parent.name}/{paths['raw.mp4'].name[:-8]}..." if paths
-                                   else "Not recording")
+            if not paths:
+                self.rec_label.setText("Not recording")
+            elif n == 0:
+                self.rec_label.setText("NOTHING RECORDED (no video frames arrived). Repeat the trial.")
+                self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
+                QMessageBox.warning(self, "Nothing recorded", "No video frames arrived during this recording, so the trial is empty. "
+                                    "Check the camera and repeat the trial.")
+            else:
+                short = n is not None and n < 30
+                self.rec_label.setText(f"Saved: {paths['data.csv'].parent.name}/{paths['raw.mp4'].name[:-8]}... "
+                                       f"({n} frames, {duration:.1f} s)" + ("  VERY SHORT RECORDING" if short else ""))
+                self.rec_label.setStyleSheet("color: #d97706; font-weight: bold;" if short else "")
 
     def update_camera_info(self):
         """One line on what the camera really delivers; orange when it differs from what was asked for."""
@@ -833,7 +858,13 @@ class LiveTab(QWidget):
         for w in (self.chk_tp, self.chk_tp_main, *self.tp_combos):
             w.setEnabled(not recording)
         if self._rec_started is not None:
-            self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
+            stalled = (self.engine.seconds_since_last_frame() > 0.5 and not (self.worker is not None and self.worker.paused))
+            if stalled:
+                self.rec_label.setText("NO VIDEO - nothing is being recorded")
+                self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
+            else:
+                self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
+                self.rec_label.setStyleSheet("")
         self.update_camera_info()
         if self.worker is None:
             return

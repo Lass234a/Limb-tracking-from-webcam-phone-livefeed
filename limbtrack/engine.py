@@ -11,6 +11,7 @@ How "deviation" is judged
 import copy
 import math
 import threading
+import time
 from collections import deque
 
 import numpy as np
@@ -42,6 +43,7 @@ class Engine:
         self.trackers = None
         self.kind = "auto"
         self.target = None
+        self._frame_stamp = None
         self.mark_problem = None     # why the last mark_dot failed, when it is not simply 'no dot there'
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
@@ -392,6 +394,10 @@ class Engine:
                 # PARKED-GHOST: return a.fulcrum
         # PARKED-GHOST: return None
 
+    def seconds_since_last_frame(self):
+        """Wall-clock seconds since process() last ran (infinity before the first frame). For operator warnings only."""
+        return time.perf_counter() - self._frame_stamp if self._frame_stamp is not None else float("inf")
+
     def _fps(self):
         if len(self._times) < 5:
             return 30.0
@@ -403,6 +409,7 @@ class Engine:
             gray = to_gray(frame)
             self._last_gray = gray
             self._times.append(t)
+            self._frame_stamp = time.perf_counter()
             states = self.trackers.update(gray)
             self._last_states = states
             angles = self._compute_angles(states, t)
