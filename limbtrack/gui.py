@@ -41,6 +41,31 @@ def bgr_to_qimage(img):
     return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
+class TextField(QLineEdit):
+    """A text box that tells the window when it has focus (typed letters go into it, so letter shortcuts are off)
+    and lets go of focus on Enter or Esc, so the shortcut keys work again."""
+
+    focus_changed = Signal(bool)
+
+    def __init__(self):
+        super().__init__()
+        self.returnPressed.connect(self.clearFocus)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.focus_changed.emit(True)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.focus_changed.emit(False)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.clearFocus()
+            return
+        super().keyPressEvent(e)
+
+
 class VideoView(QWidget):
     """Shows an image scaled to fit; reports clicks in image pixel coordinates."""
     clicked = Signal(float, float)
@@ -210,6 +235,8 @@ class LiveTab(QWidget):
         self.worker = None
         self._rec_started = None
         self._say_until = 0.0
+        self._marker_counts = {"start": 0, "end": 0, "other": 0}
+        self._marker_msg = ("", 0.0)
 
         self.view = VideoView()
         self.view.clicked.connect(self.on_click)
@@ -357,18 +384,25 @@ class LiveTab(QWidget):
         ml.addWidget(self.chk_trails)
 
         # --- record
-        self.participant = QLineEdit()
+        self.participant = TextField()
         self.participant.setPlaceholderText("e.g. P01")
-        self.notes = QLineEdit()
+        self.notes = TextField()
+        self.key_hint = QLabel("Typing: the letter keys are off while a text box has focus. Press Enter or Esc to leave it, "
+                               "or use F5 record, F6 MVIC start, F7 MVIC end, F8 marker, F9 lock.")
+        self.key_hint.setWordWrap(True)
+        self.key_hint.setStyleSheet("color: #d97706; font-weight: bold;")
+        self.key_hint.setVisible(False)
+        for box in (self.participant, self.notes):
+            box.focus_changed.connect(self._update_key_hint)
         self.btn_rec = QPushButton("Start recording  (R)")
         self.btn_rec.setCheckable(True)
         self.btn_rec.clicked.connect(self.toggle_record)
         self.rec_label = QLabel("Not recording")
         btn_open = QPushButton("Open recordings folder")
         btn_open.clicked.connect(lambda: (self.recordings_dir.mkdir(exist_ok=True), os.startfile(self.recordings_dir)))
-        self.btn_start_mark = QPushButton("MVIC start  (S)")
-        self.btn_end_mark = QPushButton("MVIC end  (E)")
-        self.btn_mark = QPushButton("Marker  (M)")
+        self.btn_start_mark = QPushButton("MVIC start  (S / F6)")
+        self.btn_end_mark = QPushButton("MVIC end  (E / F7)")
+        self.btn_mark = QPushButton("Marker  (M / F8)")
         self.btn_start_mark.clicked.connect(lambda: self.mark("MVIC start"))
         self.btn_end_mark.clicked.connect(lambda: self.mark("MVIC end"))
         self.btn_mark.clicked.connect(lambda: self.mark(None))
@@ -382,6 +416,7 @@ class LiveTab(QWidget):
         rf.addRow(self.btn_rec)
         rf.addRow(mrow)
         rf.addRow(self.rec_label)
+        rf.addRow(self.key_hint)
         rf.addRow(btn_open)
 
         # --- live trace (last 15 s)
@@ -432,6 +467,12 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_S), self, activated=self.btn_start_mark.click)
         QShortcut(QKeySequence(Qt.Key_E), self, activated=self.btn_end_mark.click)
         QShortcut(QKeySequence(Qt.Key_M), self, activated=self.btn_mark.click)
+        # The F-keys work even while a text box has focus (letters would be typed into it): audit GUI-13.
+        QShortcut(QKeySequence(Qt.Key_F5), self, activated=self.btn_rec.click)
+        QShortcut(QKeySequence(Qt.Key_F6), self, activated=self.btn_start_mark.click)
+        QShortcut(QKeySequence(Qt.Key_F7), self, activated=self.btn_end_mark.click)
+        QShortcut(QKeySequence(Qt.Key_F8), self, activated=self.btn_mark.click)
+        QShortcut(QKeySequence(Qt.Key_F9), self, activated=self.btn_lock.click)
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=self.btn_back.click)
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=self.btn_fwd.click)
         self.timer = QTimer(self)
@@ -770,10 +811,18 @@ class LiveTab(QWidget):
         self.refresh_view()
 
     # ---------------------------------------------------------- recording
+    def _update_key_hint(self, _=None):
+        self.key_hint.setVisible(self.participant.hasFocus() or self.notes.hasFocus())
+
     def mark(self, label):
-        """Write a marker into the recording (MVIC start/end or a numbered marker)."""
+        """Write a marker into the recording (MVIC start/end or a numbered marker) and confirm it on screen."""
         if not self.engine.add_event(label):
             self.rec_label.setText("Markers can only be added while recording.")
+            return
+        kind = "start" if label == "MVIC start" else "end" if label == "MVIC end" else "other"
+        self._marker_counts[kind] += 1
+        at = time.perf_counter() - self._rec_started if self._rec_started is not None else 0.0
+        self._marker_msg = (f"{label or 'Marker'} marked at {at:.1f} s", time.monotonic() + 3.0)
 
     def toggle_record(self, checked=None, force_stop=False):
         if self.btn_rec.isChecked() and not force_stop:
@@ -804,6 +853,8 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", str(e))
                 return
             self._rec_started = time.perf_counter()
+            self._marker_counts = {"start": 0, "end": 0, "other": 0}
+            self._marker_msg = ("", 0.0)
             self.btn_rec.setText("Stop recording  (R)")
             if self.worker is not None and self.worker.paused:      # recording needs frames flowing
                 self.btn_pause.setChecked(False)
@@ -863,7 +914,12 @@ class LiveTab(QWidget):
                 self.rec_label.setText("NO VIDEO - nothing is being recorded")
                 self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
             else:
-                self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
+                c = self._marker_counts
+                text = (f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s   "
+                        f"(MVIC start {c['start']}, end {c['end']}, other {c['other']})")
+                if time.monotonic() < self._marker_msg[1]:
+                    text += "\n" + self._marker_msg[0]
+                self.rec_label.setText(text)
                 self.rec_label.setStyleSheet("")
         self.update_camera_info()
         if self.worker is None:

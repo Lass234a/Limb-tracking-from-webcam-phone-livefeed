@@ -186,7 +186,7 @@ The method is in A7 to A10. Other items:
 | Live trace: last 15 s, main angle with tolerance band, or drift of all joints | You | Helpful | `gui.py` `update_trace`; `engine.py` `history` |
 | Header messages (locked, dot lost, weak dot, marker banner) | Added | Helpful | `engine.py` `process` |
 | Pause and frame-by-frame stepping (video files only) | You | Extra for live use (practice) | `gui.py` `VideoWorker` |
-| Keyboard keys: Space lock, R record, P pause, Left/Right step, S/E/M markers | Added | Helpful | `gui.py` |
+| Keyboard keys: Space lock, R record, P pause, Left/Right step, S/E/M markers. Letter keys are typed into the Participant/Notes boxes while those have focus, so **F5 record, F6 MVIC start, F7 MVIC end, F8 marker, F9 lock** always work; Enter or Esc leaves a text box; an orange hint shows while a box has focus; each marker is confirmed on screen with a running count (audit GUI-13) | Added | Helpful | `gui.py` `TextField`, `mark` |
 | Scrollable control panel for small screens | Added | Helpful | `gui.py` |
 | Line under "Video source" showing what the camera really delivers (resolution, measured frame rate, orange warning when it differs from the request) | You | Helpful | `camera.py` `granted`, `measured_fps`, `settings_problems`; `gui.py` `update_camera_info` |
 
