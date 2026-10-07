@@ -106,6 +106,7 @@ class DotTracker:
         self.x = self.y = 0.0
         self.vx = self.vy = 0.0
         self.diam = 12.0
+        self.marked_diam = None       # dot diameter (pixels) learned when the operator marked it; used by the dot-size check
         self.area = 100.0
         self.contrast = 40.0          # slowly adapting estimate, used for the detection threshold
         self.ref_contrast = 40.0      # contrast when the operator marked the dot, used for the quality read-out
@@ -184,6 +185,7 @@ class DotTracker:
         self.vx = self.vy = 0.0
         self.area = area
         self.diam = max(2.0 * (area / np.pi) ** 0.5, MIN_DIAMETER_PX)
+        self.marked_diam = self.diam
         self.contrast = self.ref_contrast = peak
         self.lost_frames = 0
         self.lost_radius = 0.0

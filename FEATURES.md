@@ -200,7 +200,9 @@ The method is in A7 to A10. Other items:
 - It cannot be changed while recording, and it is cleared when a new source is opened, the mirror is switched, or the dot colour setting is changed.
 - **Code:** `limbtrack/scale.py` `ScaleReference`; `engine.py` `mark_scale_dot`, `clear_scale`; `overlay.py` `_draw_scale`; `gui.py` scale box.
 
-**Still not implemented:** lens correction, camera-tilt correction. The minimum dot size of about 2 cm is a protocol requirement; checking each dot's size against it with this scale is the next step (see I).
+**Dot-size check (new):** with a scale set, the scale box lists the approximate width of the smallest dot in cm and says **TOO SMALL** for any dot under the protocol minimum of 2.0 cm. The width comes from the dot's blob size when it was marked, minus 1.3 px for soft edges (the unadjusted blob reads about 1.3 px too large on synthetic dots), divided by the scale. It is an estimate: check it once against stickers of known size under your real lighting and focus. Saved in `meta.json` as `dot_size_check` (limit, each dot's estimate, which are below). No effect on tracking or angles. Code: `engine.py` `dot_sizes_cm`, `small_dots`; `scale.py` `estimate_diameter_cm`.
+
+**Still not implemented:** lens correction, camera-tilt correction.
 
 Things that look like calibration but are not: the dot size and contrast learned when you click a dot (A1), the dot-colour auto-detect (B), the "participant faces" setting (A8), and the camera lock below.
 
@@ -221,7 +223,7 @@ Things that look like calibration but are not: the dot size and contrast learned
 `frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event, scale_px_per_cm` (the live ruler scale; blank when no ruler is marked or a ruler dot is lost). Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
 
 ### `meta.json` contents
-`software_version`, participant, notes, test, target and tolerances (main and neighbour), `dots_used`, `dots_disabled`, `locked_references_deg`, `dot_kind`, `camera` and `camera_settings` (requested, driver-reported, exposure/white-balance lock result), `mirrored_image`, `scale` (ruler length, pixels per cm, null if no ruler), `facing`, `smoothing`, `trails`, `reference_basis`, `three_point`, `tracker_settings` (every number in A1 to A6), `angles` (full definitions), the events list, frame count, written and measured frame rate. The locked dot positions that the ghost pose used are no longer saved.
+`software_version`, participant, notes, test, target and tolerances (main and neighbour), `dots_used`, `dots_disabled`, `locked_references_deg`, `dot_kind`, `camera` and `camera_settings` (requested, driver-reported, exposure/white-balance lock result), `mirrored_image`, `scale` (ruler length, pixels per cm, null if no ruler), `dot_size_check`, `facing`, `smoothing`, `trails`, `reference_basis`, `three_point`, `tracker_settings` (every number in A1 to A6), `angles` (full definitions), the events list, frame count, written and measured frame rate. The locked dot positions that the ghost pose used are no longer saved.
 
 ---
 
@@ -254,7 +256,6 @@ Closed since the first inventory: silent video-thread errors, unverified camera 
 | Feature | Note |
 |---|---|
 | Strap and anchor dots, pull angle and moment arm, displacement output (agreed order, 2026-10-07): optional dots on the strap where it meets the person and at the fixed anchor (tracked, not judged, not blocking Lock); the angle between the line of pull and the shank, and the perpendicular distance from the joint to the line of pull (in cm with the scale); per-dot displacement in pixels and cm in the CSV and Review | Ruler scale is done (section F). A pull toward or away from the camera is invisible in a 2D picture |
-| Minimum dot size (about 2 cm): show each dot's size in cm using the scale and warn below 2 cm | Next step after the scale; the size comes from the blob area, so it is approximate |
 | Test of white and black dots in the same video | Synthetic test first; a per-dot colour override only if Auto fails |
 
 ### Parked (see `PARKED.md`)

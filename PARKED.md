@@ -18,4 +18,4 @@ Decided on 2026-10-01 after reviewing FEATURES.md. "Parked" means: no further wo
 ## Proposed, not added
 | Item | Note |
 |---|---|
-| Fixed pixel floor for dot size | Stickers will be at least 2 cm. The app has no centimetre scale, so a floor can only be set in pixels, and the right number depends on camera distance and resolution. The existing check against the size learned at marking stays. In the 2026-09-30 test video the dots measured 9.5, 7.5 and 5.8 px across, and they were not spec-sized, so the floor cannot be chosen from that video |
+| Fixed pixel floor for dot size | **Replaced 2026-10-07** by a check in centimetres once a ruler scale is set (dots under 2 cm are flagged). A fixed pixel floor is still not added. Original note: stickers will be at least 2 cm. The app has no centimetre scale, so a floor can only be set in pixels, and the right number depends on camera distance and resolution. The existing check against the size learned at marking stays. In the 2026-09-30 test video the dots measured 9.5, 7.5 and 5.8 px across, and they were not spec-sized, so the floor cannot be chosen from that video |

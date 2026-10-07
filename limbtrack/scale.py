@@ -17,7 +17,15 @@ from .tracker import DotState, TrackerSet
 NAMES = ("ruler_a", "ruler_b")
 MIN_LENGTH_PX = 60        # a ruler shorter than this in the picture gives a coarse scale
 DRIFT_WARN = 0.03         # live scale differing from the marked one by more than 3 % is flagged
+MIN_DOT_DIAMETER_CM = 2.0  # protocol requirement: stickers at least this wide
+EDGE_BLUR_PX = 1.3        # the size read from the picture runs this many pixels too large (soft edges); measured on synthetic dots
 MIN_SEPARATION_PX = 20    # the two ruler dots must be this far apart (otherwise the same dot was clicked twice)
+
+
+def estimate_diameter_cm(diameter_px, px_per_cm):
+    """Approximate real dot width. The tracker measures the blob above half its peak brightness; with soft edges this
+    reads about EDGE_BLUR_PX too large, which is removed here. Verify with real stickers of known size."""
+    return max(diameter_px - EDGE_BLUR_PX, 0.0) / px_per_cm
 
 
 class ScaleReference:

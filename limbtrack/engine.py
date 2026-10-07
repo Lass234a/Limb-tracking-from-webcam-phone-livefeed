@@ -24,7 +24,7 @@ from .angles import measure, segment_pairs
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
-from .scale import ScaleReference
+from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
@@ -241,6 +241,19 @@ class Engine:
                 return False
             ok, self.mark_problem = self.scale.mark(index, self._last_gray, x, y)
             return ok
+
+    def dot_sizes_cm(self):
+        """Approximate width in cm of each marked dot (from its size when marked and the ruler scale); {} without a scale."""
+        with self.lock:
+            ppc = self.scale.px_per_cm
+            if not ppc:
+                return {}
+            return {n: estimate_diameter_cm(self.trackers.trackers[n].marked_diam, ppc) for n in self.active_dots
+                    if self.trackers.trackers[n].marked_diam}
+
+    def small_dots(self):
+        """Dots whose approximate width is under the protocol minimum, as {name: cm}."""
+        return {n: d for n, d in self.dot_sizes_cm().items() if d < MIN_DOT_DIAMETER_CM}
 
     def clear_scale(self):
         with self.lock:
@@ -502,6 +515,15 @@ class Engine:
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
 
+    def _dot_size_check(self):
+        sizes = self.dot_sizes_cm()
+        if not sizes:
+            return None
+        return {"min_dot_diameter_cm": MIN_DOT_DIAMETER_CM, "px_per_cm": round(self.scale.px_per_cm, 4),
+                "dots_cm_estimate": {n: round(v, 2) for n, v in sizes.items()},
+                "below_minimum": sorted(self.small_dots()),
+                "note": "approximate: from the blob size when the dot was marked, minus an allowance for soft edges"}
+
     def stop_trial(self):
         with self.lock:
             if self.rec is None:
@@ -538,6 +560,7 @@ class Engine:
                 # PARKED-GHOST: "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
                 # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
                 "scale": self.scale.meta(self._scale_values),
+                "dot_size_check": self._dot_size_check(),
                 "three_point": list(self.three_point) if self.three_point else None,
                 "angles": [asdict(a) for a in self.active_angles],
             }

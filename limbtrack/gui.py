@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
 
 from .camera import CameraSource, list_cameras
 from .engine import Engine
+from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
 
 BIG = "font-size: 15pt; font-weight: bold;"
@@ -841,8 +842,13 @@ class LiveTab(QWidget):
         problems = sc.problems()
         if problems:
             text += "\n" + "\n".join(problems)
+        sizes, small = self.engine.dot_sizes_cm(), self.engine.small_dots()
+        if sizes:
+            text += f"\nDots (approx.): smallest {min(sizes.values()):.1f} cm, minimum {MIN_DOT_DIAMETER_CM:g} cm"
+            if small:
+                text += "\nTOO SMALL: " + ", ".join(f"{self.engine.test.dot_title(n)} {v:.1f} cm" for n, v in small.items())
         self.scale_label.setText(text)
-        self.scale_label.setStyleSheet("color: #d97706; font-weight: bold;" if problems else "")
+        self.scale_label.setStyleSheet("color: #d97706; font-weight: bold;" if (problems or small) else "")
 
     def say(self, text, seconds=4.0):
         """Show a message on the instruction line and keep it there (the status timer would overwrite it within 0.2 s)."""
