@@ -51,6 +51,7 @@ class Engine:
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
         self.locked = False
+        self._optional_seen = set()   # optional dots that have been offered once (they start switched off)
         self.disabled_dots = set()   # landmarks the operator chose not to use (kept when switching test)
         self.three_point = None      # (first, middle, last) dot names of the operator's own angle, or None
         self.three_point_main = True # judge it against the target (instead of the test's own main joint)
@@ -87,14 +88,18 @@ class Engine:
             self.tolerance = self.test.tolerance_deg
             self.neighbour_tolerance = self.test.neighbour_tolerance_deg
             self.target = self.test.targets[0] if self.test.targets else None
-            self.disabled_dots &= set(self.test.dots)
+            self.disabled_dots &= set(self.test.all_dots)
+            for n in self.test.optional_dots:               # optional dots (strap, anchor) start switched off; a choice is kept
+                if n not in self._optional_seen:
+                    self._optional_seen.add(n)
+                    self.disabled_dots.add(n)
             if self.three_point and not set(self.three_point) <= set(self.test.dots):
                 self.three_point = None
             self.reset_dots()
 
     def reset_dots(self):
         with self.lock:
-            self.trackers = TrackerSet(self.test.dots, self.kind)
+            self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
             self._last_angles = []
@@ -108,7 +113,7 @@ class Engine:
     # ----------------------------------------------------- landmark selection
     @property
     def active_dots(self):
-        return [n for n in self.test.dots if n not in self.disabled_dots]
+        return [n for n in self.test.all_dots if n not in self.disabled_dots]
 
     def _three_point_def(self):
         if not self.three_point:
@@ -200,7 +205,7 @@ class Engine:
         with self.lock:
             if self.rec is not None:
                 raise RuntimeError("Stop recording before changing which landmarks are used.")
-            if name not in self.test.dots or (name not in self.disabled_dots) == bool(on):
+            if name not in self.test.all_dots or (name not in self.disabled_dots) == bool(on):
                 return
             if on:
                 self.disabled_dots.discard(name)
@@ -538,7 +543,8 @@ class Engine:
                 "target_deg": self.target if self.primary_angle else None,
                 "tolerance_deg": self.tolerance,
                 "dots_used": self.active_dots,
-                "dots_disabled": sorted(self.disabled_dots),
+                "dots_disabled": sorted(n for n in self.disabled_dots if n not in t.optional_dots),   # landmarks the operator switched off
+                "optional_dots_used": [n for n in t.optional_dots if n not in self.disabled_dots],   # strap / anchor, when switched on
                 "neighbour_tolerance_deg": self.neighbour_tolerance,
                 "position_locked": self.locked,
                 "locked_references_deg": self._refs,

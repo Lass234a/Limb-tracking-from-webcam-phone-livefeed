@@ -535,7 +535,7 @@ class LiveTab(QWidget):
             self.lm_holder.removeWidget(cb)
             cb.deleteLater()
         self.lm_checks = {}
-        for n in t.dots:
+        for n in t.all_dots:
             cb = QCheckBox(t.dot_title(n))
             cb.setChecked(n not in self.engine.disabled_dots)
             cb.toggled.connect(lambda on, name=n: self.on_landmark_toggled(name, on))
@@ -544,6 +544,8 @@ class LiveTab(QWidget):
         self.rebuild_three_point_choices()
         self.lm_preset.clear()
         self.lm_preset.addItem("Preset: all landmarks", list(t.dots))
+        if t.optional_dots:
+            self.lm_preset.addItem("Preset: all landmarks + strap and anchor", list(t.all_dots))
         for a in t.angles:
             self.lm_preset.addItem(f"Preset: only {a.title}", list(dict.fromkeys(a.dots)))
         self.update_landmark_info()
@@ -616,7 +618,7 @@ class LiveTab(QWidget):
     def apply_landmark_preset(self, index):
         wanted = set(self.lm_preset.itemData(index))
         try:
-            for n in self.engine.test.dots:
+            for n in self.engine.test.all_dots:
                 self.engine.set_dot_enabled(n, n in wanted)
         except RuntimeError as e:
             QMessageBox.warning(self, "Landmarks", str(e))

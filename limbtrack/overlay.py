@@ -36,6 +36,7 @@ TRAIL_COLOURS = [(60, 76, 231), (219, 152, 52), (113, 204, 46), (182, 89, 155),
                  (15, 196, 241), (156, 188, 26), (34, 126, 230), (166, 166, 127)]   # BGR, one per dot in turn
 
 
+ROPE_COLOUR = (255, 0, 255)           # BGR magenta
 SCALE_COLOUR = (255, 200, 0)      # BGR: cyan-blue, unlike any dot or angle colour
 SCALE_WARN_COLOUR = (0, 165, 255)
 
@@ -110,6 +111,9 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
         _draw_trails(img, trails, s)
     if scale:
         _draw_scale(img, scale, s)
+    a, b = dots.get("strap"), dots.get("anchor")          # the rope/chain between the strap marker and the anchor marker
+    if a is not None and b is not None and not a.lost and not b.lost:
+        cv2.line(img, (int(a.x), int(a.y)), (int(b.x), int(b.y)), ROPE_COLOUR, max(1, int(round(2 * s))), cv2.LINE_AA)
 
     for a in angles:
         col = COLOURS[a.status]

@@ -12,8 +12,12 @@
     "fibular_head": "fibular head",
     "malleolus": "lateral malleolus",
     "mt5_base": "5th metatarsal base",
-    "mt5_head": "5th metatarsal head"
+    "mt5_head": "5th metatarsal head",
+    "strap": "strap marker (on the person, where the strap attaches)",
+    "anchor": "anchor marker (fixed end of the strap, rope or chain)"
   },
+  "_optional_dots_note": "Extra dots that are tracked and recorded but not part of any angle. They start switched off; tick them in Landmarks to use them. Per test you can override with \"optional_dots\".",
+  "optional_dots": ["strap", "anchor"],
 
   "angle_library": {
     "hip": {

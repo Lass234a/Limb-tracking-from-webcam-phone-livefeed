@@ -36,6 +36,12 @@ class TestDef:
     tolerance_deg: float = 3.0
     neighbour_tolerance_deg: float = 5.0
     dot_labels: dict = field(default_factory=dict)
+    optional_dots: list = field(default_factory=list)   # extra tracked dots (strap, anchor): off until switched on, never part of an angle
+
+    @property
+    def all_dots(self):
+        """The angle landmarks followed by the optional dots."""
+        return list(self.dots) + [d for d in self.optional_dots if d not in self.dots]
 
     @property
     def primary(self):
@@ -103,5 +109,6 @@ def load_protocol(path):
             tolerance_deg=t.get("tolerance_deg", data.get("tolerance_deg", 3.0)),
             neighbour_tolerance_deg=t.get("neighbour_tolerance_deg", data.get("neighbour_tolerance_deg", 5.0)),
             dot_labels=labels,
+            optional_dots=list(t.get("optional_dots", data.get("optional_dots", []))),
         )
     return tests

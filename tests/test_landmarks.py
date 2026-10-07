@@ -15,6 +15,7 @@ from limbtrack.synthetic import leg_points, render  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
+OPTIONAL = {"strap", "anchor"}
 PTS = leg_points(hip_flex=70, knee_flex=60, ankle_df=5, pelvic_tilt=3)
 
 
@@ -113,7 +114,7 @@ def test_choice_survives_switching_test_and_lock_is_dropped(tmp_path):
     eng.set_dot_enabled("mt5_head", False)
     assert eng.locked is False                                          # references would be stale
     eng.set_test("hip_extension")
-    assert eng.disabled_dots == {"mt5_head"} and eng.primary_angle.name == "hip"
+    assert eng.disabled_dots - OPTIONAL == {"mt5_head"} and eng.primary_angle.name == "hip"
     assert "mt5_head" not in eng.active_dots
 
 
@@ -136,11 +137,13 @@ def test_landmark_checkboxes_and_presets_in_the_window(tmp_path):
     app = QApplication.instance() or QApplication([])
     win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
     live = win.live
-    assert len(live.lm_checks) == 8 and all(cb.isChecked() for cb in live.lm_checks.values())
+    assert len(live.lm_checks) == 10                                    # 8 landmarks + the optional strap and anchor dots
+    assert all(cb.isChecked() for n, cb in live.lm_checks.items() if n not in OPTIONAL)
+    assert not any(live.lm_checks[n].isChecked() for n in OPTIONAL)       # the optional dots start switched off
     assert live.lm_preset.itemText(0) == "Preset: all landmarks"
 
     live.lm_checks["asis"].setChecked(False)
-    assert win.engine.disabled_dots == {"asis"}
+    assert win.engine.disabled_dots - OPTIONAL == {"asis"}
     assert "✗" in live.lm_info.text() and "ASIS" in live.lm_info.text()
     assert "✓ Knee flexion" in live.lm_info.text()
 
@@ -148,12 +151,13 @@ def test_landmark_checkboxes_and_presets_in_the_window(tmp_path):
     live.lm_preset.setCurrentIndex(knee_preset)
     live.apply_landmark_preset(knee_preset)
     assert win.engine.active_dots == ["trochanter", "epicondyle", "fibular_head", "malleolus"]
-    assert [cb.isChecked() for cb in live.lm_checks.values()] == [False, False, True, True, True, True, False, False]
+    assert [cb.isChecked() for cb in live.lm_checks.values()] == [False, False, True, True, True, True, False, False, False, False]
 
     live.apply_landmark_preset(0)                                       # back to everything
-    assert win.engine.disabled_dots == set() and all(cb.isChecked() for cb in live.lm_checks.values())
+    assert win.engine.disabled_dots == OPTIONAL                          # all landmarks, optional dots still off
+    assert all(cb.isChecked() for n, cb in live.lm_checks.items() if n not in OPTIONAL)
 
     live.lm_checks["psis"].setChecked(False)
     live.test_combo.setCurrentIndex(3)                                  # another test keeps the choice
-    assert not live.lm_checks["psis"].isChecked() and win.engine.disabled_dots == {"psis"}
+    assert not live.lm_checks["psis"].isChecked() and win.engine.disabled_dots - OPTIONAL == {"psis"}
     win.close()
