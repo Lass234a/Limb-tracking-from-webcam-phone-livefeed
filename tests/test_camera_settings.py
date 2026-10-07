@@ -153,3 +153,27 @@ def test_lock_button_is_only_available_for_a_live_camera(tmp_path):
     assert not win.live.btn_lock_cam.isEnabled()                       # a file has no exposure to lock
     win.live.stop_camera()
     win.close()
+
+
+def test_scan_cameras_is_disabled_while_a_source_runs_and_never_probes_then(tmp_path, monkeypatch):
+    """CAM-06: releasing a probe handle on the streaming webcam kills the stream."""
+    import limbtrack.gui as gui
+
+    app = QApplication.instance() or QApplication([])
+    probed = []
+    monkeypatch.setattr(gui, "list_cameras", lambda: probed.append(1) or [])
+    win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
+    live = win.live
+    assert live.btn_scan.isEnabled()
+    video = tmp_path / "demo.mp4"
+    w = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 30, (1280, 720))
+    for i in range(30):
+        w.write(render(leg_points(hip_flex=80, knee_flex=20 + i, ankle_df=5), seed=i))
+    w.release()
+    live.start_source(str(video))
+    assert not live.btn_scan.isEnabled()
+    live.scan_cameras()                                                  # even if called directly
+    assert probed == []
+    live.stop_camera()
+    assert live.btn_scan.isEnabled()
+    win.close()

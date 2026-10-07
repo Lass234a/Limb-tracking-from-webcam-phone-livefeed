@@ -214,8 +214,9 @@ class LiveTab(QWidget):
         # --- source
         self.cam_combo = QComboBox()
         self.cam_combo.addItem("Camera 0", 0)
-        scan = QPushButton("Scan cameras")
-        scan.clicked.connect(self.scan_cameras)
+        self.btn_scan = QPushButton("Scan cameras")
+        self.btn_scan.setToolTip("Only available while no camera or video is running: scanning would switch off a running webcam.")
+        self.btn_scan.clicked.connect(self.scan_cameras)
         self.btn_start = QPushButton("Start camera")
         self.btn_start.clicked.connect(self.toggle_camera)
         btn_file = QPushButton("Open video file (practice)...")
@@ -224,7 +225,7 @@ class LiveTab(QWidget):
         sl = QVBoxLayout(src)
         row = QHBoxLayout()
         row.addWidget(self.cam_combo, 1)
-        row.addWidget(scan)
+        row.addWidget(self.btn_scan)
         sl.addLayout(row)
         sl.addWidget(self.btn_start)
         sl.addWidget(btn_file)
@@ -582,6 +583,8 @@ class LiveTab(QWidget):
 
     # ------------------------------------------------------------ source
     def scan_cameras(self):
+        if self.worker is not None:        # opening and releasing a camera that is streaming kills the stream (audit CAM-06)
+            return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             found = list_cameras()
@@ -616,6 +619,7 @@ class LiveTab(QWidget):
         self.worker.ended.connect(lambda msg, w=self.worker: self.on_ended(msg, w))
         self.worker.start()
         self.btn_start.setText("Stop camera")
+        self.btn_scan.setEnabled(False)
 
     def stop_camera(self):
         if self.btn_rec.isChecked():
@@ -625,6 +629,7 @@ class LiveTab(QWidget):
             self.worker.wait(3000)
             self.worker = None
         self.btn_start.setText("Start camera")
+        self.btn_scan.setEnabled(True)
         self._set_file_controls(False)
         self.update_camera_info()
 
@@ -637,6 +642,7 @@ class LiveTab(QWidget):
             self.worker.wait(3000)      # 'ended' is emitted just before the thread finishes
             self.worker = None
             self.btn_start.setText("Start camera")
+            self.btn_scan.setEnabled(True)
             self._set_file_controls(False)
             self.update_camera_info()
             if msg != "Stopped.":
