@@ -192,7 +192,15 @@ The method is in A7 to A10. Other items:
 
 ## F. Calibration
 
-**Nothing is implemented:** no lens correction, no pixel scale, no camera-tilt correction. A ruler in the trials and an in-app scale are planned (see I). The minimum dot size of about 2 cm is a protocol requirement, not checked by the app; the app only compares each dot with the size learned when you clicked it.
+**Pixel scale (new):** a ruler of 10 to 20 cm with a dot sticker centred on each end, placed at the same distance from the camera as the joint and square to it. In the "Scale (ruler)" box of the Live tab you type the length between the dot centres, press *Mark the two ruler dots* and click both. The app stores pixels per centimetre and tracks the two dots like any other dot, so it sees whether the scale changes during a trial. It shows the ruler (blue rings and a line) in the picture and in the saved overlay video.
+- **Alters numbers: none.** It does not touch any angle or dot position; it only provides the conversion from pixels to centimetres for later features (pull angle, moment arm, displacement in cm).
+- **Warnings:** ruler shorter than 60 px in the picture (coarse scale); a ruler dot lost; the live scale differing from the marked one by more than 3 % (camera or ruler moved).
+- **Saved:** CSV column `scale_px_per_cm` (live value per frame; blank if no ruler or a ruler dot is lost) and `meta.json` `scale` (ruler length, pixels per cm at marking, the two dot positions, mean/min/max during the recording, and the validity note). `scale` is null when no ruler was marked.
+- **Limits:** correct only for things at the ruler's distance from the camera; an object 5 cm nearer or farther at 2.5 m is off by about 2 %. Lens distortion is not corrected, so keep the ruler near the joint and near the middle of the picture. The accuracy also depends on how exactly the dot centres sit on the ruler marks (1 mm off on a 15 cm ruler is 0.7 %).
+- It cannot be changed while recording, and it is cleared when a new source is opened, the mirror is switched, or the dot colour setting is changed.
+- **Code:** `limbtrack/scale.py` `ScaleReference`; `engine.py` `mark_scale_dot`, `clear_scale`; `overlay.py` `_draw_scale`; `gui.py` scale box.
+
+**Still not implemented:** lens correction, camera-tilt correction. The minimum dot size of about 2 cm is a protocol requirement; checking each dot's size against it with this scale is the next step (see I).
 
 Things that look like calibration but are not: the dot size and contrast learned when you click a dot (A1), the dot-colour auto-detect (B), the "participant faces" setting (A8), and the camera lock below.
 
@@ -210,10 +218,10 @@ Things that look like calibration but are not: the dot size and contrast learned
 | `Start.bat`, README, `PARKED.md`, 126 automatic tests (one skipped), git history | Added | Extra | project root; `tests/` |
 
 ### CSV columns
-`frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event`. Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
+`frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event, scale_px_per_cm` (the live ruler scale; blank when no ruler is marked or a ruler dot is lost). Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
 
 ### `meta.json` contents
-`software_version`, participant, notes, test, target and tolerances (main and neighbour), `dots_used`, `dots_disabled`, `locked_references_deg`, `dot_kind`, `camera` and `camera_settings` (requested, driver-reported, exposure/white-balance lock result), `mirrored_image`, `facing`, `smoothing`, `trails`, `reference_basis`, `three_point`, `tracker_settings` (every number in A1 to A6), `angles` (full definitions), the events list, frame count, written and measured frame rate. The locked dot positions that the ghost pose used are no longer saved.
+`software_version`, participant, notes, test, target and tolerances (main and neighbour), `dots_used`, `dots_disabled`, `locked_references_deg`, `dot_kind`, `camera` and `camera_settings` (requested, driver-reported, exposure/white-balance lock result), `mirrored_image`, `scale` (ruler length, pixels per cm, null if no ruler), `facing`, `smoothing`, `trails`, `reference_basis`, `three_point`, `tracker_settings` (every number in A1 to A6), `angles` (full definitions), the events list, frame count, written and measured frame rate. The locked dot positions that the ghost pose used are no longer saved.
 
 ---
 
@@ -245,8 +253,8 @@ Closed since the first inventory: silent video-thread errors, unverified camera 
 ### Asked for, waiting for a go-ahead
 | Feature | Note |
 |---|---|
-| Ruler in the trials, with a scale in the app: click both ends of the ruler, type its length, store pixels per centimetre in `meta.json`, show the minimum dot size in cm | Only valid at the ruler's distance from the camera; lens distortion is not corrected. A pixel-based fallback slider was proposed |
-| Minimum dot size (about 2 cm) and brightness check in the protocol | Needs the scale above or a camera distance; the pixel floor is listed under "Proposed, not added" in `PARKED.md` |
+| Strap and anchor dots, pull angle and moment arm, displacement output (agreed order, 2026-10-07): optional dots on the strap where it meets the person and at the fixed anchor (tracked, not judged, not blocking Lock); the angle between the line of pull and the shank, and the perpendicular distance from the joint to the line of pull (in cm with the scale); per-dot displacement in pixels and cm in the CSV and Review | Ruler scale is done (section F). A pull toward or away from the camera is invisible in a 2D picture |
+| Minimum dot size (about 2 cm): show each dot's size in cm using the scale and warn below 2 cm | Next step after the scale; the size comes from the blob area, so it is approximate |
 | Test of white and black dots in the same video | Synthetic test first; a per-dot colour override only if Auto fails |
 
 ### Parked (see `PARKED.md`)

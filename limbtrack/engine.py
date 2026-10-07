@@ -24,6 +24,7 @@ from .angles import measure, segment_pairs
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
+from .scale import ScaleReference
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
@@ -44,6 +45,8 @@ class Engine:
         self.kind = "auto"
         self.target = None
         self._frame_stamp = None
+        self.scale = ScaleReference(self.kind)   # pixel-to-cm scale from a ruler with a dot at each end (limbtrack/scale.py)
+        self._scale_values = []                  # live scale per recorded frame
         self.mark_problem = None     # why the last mark_dot failed, when it is not simply 'no dot there'
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
@@ -220,6 +223,7 @@ class Engine:
         """'white', 'black' or 'auto'. Dots must be re-marked afterwards."""
         with self.lock:
             self.kind = kind
+            self.scale.reset(kind)           # the ruler dots must be marked again with the new colour setting
             self.reset_dots()
 
     def next_dot_to_mark(self):
@@ -228,6 +232,20 @@ class Engine:
                 if not self.trackers.trackers[n].initialised:
                     return n
             return None
+
+    def mark_scale_dot(self, index, x, y):
+        """Operator clicked ruler dot `index` (0 or 1). On failure, `mark_problem` says why when it is not simply 'no dot found'."""
+        with self.lock:
+            self.mark_problem = None
+            if self._last_gray is None or self.rec is not None:
+                return False
+            ok, self.mark_problem = self.scale.mark(index, self._last_gray, x, y)
+            return ok
+
+    def clear_scale(self):
+        with self.lock:
+            if self.rec is None:
+                self.scale.reset()
 
     def mark_dot(self, name, x, y):
         """Operator clicked a dot on the live image. On failure, `mark_problem` says why (None = no dot found there)."""
@@ -412,6 +430,7 @@ class Engine:
             self._frame_stamp = time.perf_counter()
             states = self.trackers.update(gray)
             self._last_states = states
+            self.scale.update(gray)
             angles = self._compute_angles(states, t)
             self._last_angles = angles
             self._record_history(t, angles)
@@ -422,6 +441,8 @@ class Engine:
             head = [first, "POSITION LOCKED" if self.locked else "position not locked"]
             if main is None:
                 head.append(f"main joint ({self.test.primary.title}) not available with the chosen landmarks")
+            for problem in self.scale.problems():
+                head.append("SCALE: " + problem)
             lost = [n for n, st in states.items() if st.lost]
             if lost:
                 head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
@@ -444,11 +465,13 @@ class Engine:
             if self.rec is not None:
                 self._update_trails(states)
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
-                               trails=self._trails if self.trails_enabled else None)
+                               trails=self._trails if self.trails_enabled else None, scale=self.scale.overlay_info())
             # PARKED-GHOST: # (with the ghost: overlay.draw(frame, states, angles, head, self.rec is not None, ghost,
             # PARKED-GHOST: #                               segment_pairs(self.active_angles), trails=...))
             if self.rec is not None:
-                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "")
+                live_scale = self.scale.live_px_per_cm()
+                self._scale_values.append(live_scale)
+                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "", live_scale)
             res = FrameResult(self.frame_index, t, img, angles, states, head)
             # PARKED-GHOST: # with the ghost: FrameResult(self.frame_index, t, img, angles, states, head, ghost)
             self.frame_index += 1
@@ -473,6 +496,7 @@ class Engine:
             self._marker_n = 0
             self._pending_event = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
+            self._scale_values = []
             self.rec_info = {"participant": participant, "notes": notes}
             # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
@@ -513,6 +537,7 @@ class Engine:
                 "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
                 # PARKED-GHOST: "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
                 # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
+                "scale": self.scale.meta(self._scale_values),
                 "three_point": list(self.three_point) if self.three_point else None,
                 "angles": [asdict(a) for a in self.active_angles],
             }

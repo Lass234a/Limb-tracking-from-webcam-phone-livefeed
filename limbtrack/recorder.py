@@ -41,7 +41,7 @@ class TrialRecorder:
             head += [f"{d}_x", f"{d}_y", f"{d}_lost", f"{d}_q"]
         for a in self.angle_names:
             head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
-        head += ["all_ok", "event"]
+        head += ["all_ok", "event", "scale_px_per_cm"]
         self._csv.writerow(head)
         self.frames = 0
         self.events = []          # {frame, t_s, label} markers added during the trial
@@ -50,7 +50,7 @@ class TrialRecorder:
         self.fps = fps
         self.frame_size = frame_size
 
-    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event=""):
+    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None):
         if self._t0 is None:
             self._t0 = t
         self._raw.write(frame)
@@ -74,6 +74,7 @@ class TrialRecorder:
             row += [_num(a.raw_value), _num(a.reference), _num(a.raw_deviation), ok]       # unsmoothed values
         row.append(0 if oks else 1)
         row.append(event or "")
+        row.append(_num(scale_px_per_cm, 4))        # live ruler scale this frame (blank: no ruler marked, or a ruler dot lost)
         if event:
             self.events.append({"frame": self.frames, "t_s": round(t - self._t0, 4), "label": event})
         self._csv.writerow(row)

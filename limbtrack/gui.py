@@ -419,6 +419,29 @@ class LiveTab(QWidget):
         rf.addRow(self.key_hint)
         rf.addRow(btn_open)
 
+        # --- scale (ruler with a dot at each end)
+        self.ruler_len = self._spin(1.0, 100.0, 1.0, " cm")
+        self.ruler_len.setValue(self.engine.scale.length_cm)
+        self.ruler_len.setToolTip("Length between the two dot centres on the ruler (the 0 mark to the far mark).")
+        self.ruler_len.valueChanged.connect(lambda v: setattr(self.engine.scale, "length_cm", float(v)))
+        self.btn_ruler = QPushButton("Mark the two ruler dots")
+        self.btn_ruler.setToolTip("Put the ruler at the same distance from the camera as the joint, square to the camera, with a dot "
+                                  "sticker centred on each end mark. Then click the two dots.")
+        self.btn_ruler.clicked.connect(self.start_ruler_marking)
+        self.btn_ruler_clear = QPushButton("Clear scale")
+        self.btn_ruler_clear.clicked.connect(self.clear_scale)
+        self.scale_label = QLabel("No scale set. Lengths in centimetres need a ruler in the picture.")
+        self.scale_label.setWordWrap(True)
+        self._ruler_marking = None          # 0 or 1 while the operator is clicking the two ruler dots
+        sc = QGroupBox("Scale (ruler, optional)")
+        sf = QFormLayout(sc)
+        sf.addRow("Ruler length", self.ruler_len)
+        srow = QHBoxLayout()
+        srow.addWidget(self.btn_ruler)
+        srow.addWidget(self.btn_ruler_clear)
+        sf.addRow(srow)
+        sf.addRow(self.scale_label)
+
         # --- live trace (last 15 s)
         self.trace_mode = QComboBox()
         self.trace_mode.addItem("Main angle, last 15 s", "main")
@@ -437,7 +460,7 @@ class LiveTab(QWidget):
         self.trace_timer.start(100)
 
         side = QVBoxLayout()
-        for g in (src, tg, lm, tpbox, mk, rc):
+        for g in (src, tg, lm, tpbox, sc, mk, rc):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -612,6 +635,7 @@ class LiveTab(QWidget):
     def on_mirror_toggled(self, on):
         self.engine.mirror = bool(on)
         self.engine.reset_dots()                  # marked positions belong to the old orientation
+        self.clear_scale()
         self.btn_lock.setChecked(False)
         self.refresh_view()
         self.instruction.setText("Image " + ("mirrored" if on else "not mirrored") + ". Mark the dots again, and check "
@@ -654,6 +678,7 @@ class LiveTab(QWidget):
 
     def start_source(self, source):
         self.engine.reset_dots()
+        self.clear_scale()
         self.btn_lock.setChecked(False)
         self.worker = VideoWorker(self.engine, source)
         self.worker.frame_ready.connect(self.view.set_image)
@@ -770,6 +795,55 @@ class LiveTab(QWidget):
             self.worker.command("refresh")
 
     # ------------------------------------------------- marking & locking
+    # ------------------------------------------------------------ scale
+    def start_ruler_marking(self):
+        if self.worker is None:
+            self.say("Start the camera or open a video first, then mark the ruler dots.")
+            return
+        if self.engine.rec is not None:
+            self.say("The scale cannot be changed while recording.")
+            return
+        self.engine.clear_scale()
+        self._ruler_marking = 0
+        self.say("Click the ruler dot at one end of the ruler.", 8.0)
+
+    def on_ruler_click(self, x, y):
+        index = self._ruler_marking
+        if self.engine.mark_scale_dot(index, x, y):
+            if index == 0:
+                self._ruler_marking = 1
+                self.say("Now click the ruler dot at the other end.", 8.0)
+            else:
+                self._ruler_marking = None
+                self.say(f"Scale set: {self.engine.scale.px_per_cm:.2f} px per cm ({self.ruler_len.value():g} cm ruler).")
+        else:
+            self.say(self.engine.mark_problem or "No dot found at that spot. Click the centre of the ruler dot.")
+        self.refresh_view()
+
+    def clear_scale(self):
+        self.engine.clear_scale()
+        self._ruler_marking = None
+        self.refresh_view()
+
+    def update_scale_label(self):
+        sc = self.engine.scale
+        recording = self._rec_started is not None
+        for w in (self.ruler_len, self.btn_ruler, self.btn_ruler_clear):
+            w.setEnabled(not recording)
+        if not sc.configured:
+            self.scale_label.setText("Marking the ruler dots..." if self._ruler_marking is not None
+                                     else "No scale set. Lengths in centimetres need a ruler in the picture.")
+            self.scale_label.setStyleSheet("")
+            return
+        live = sc.live_px_per_cm()
+        text = f"Scale {sc.px_per_cm:.2f} px/cm (ruler {sc.ref_px:.0f} px = {sc.length_cm:g} cm)"
+        text += f"; now {live:.2f} px/cm" if live is not None else "; ruler dot LOST"
+        problems = sc.problems()
+        if problems:
+            text += "\n" + "\n".join(problems)
+        self.scale_label.setText(text)
+        self.scale_label.setStyleSheet("color: #d97706; font-weight: bold;" if problems else "")
+
     def say(self, text, seconds=4.0):
         """Show a message on the instruction line and keep it there (the status timer would overwrite it within 0.2 s)."""
         self.instruction.setText(text)
@@ -780,6 +854,9 @@ class LiveTab(QWidget):
             return
         if self.engine.rec is not None:
             self.say("Stop recording to re-mark a dot. (Clicks on the video are ignored while recording.)")
+            return
+        if self._ruler_marking is not None:
+            self.on_ruler_click(x, y)
             return
         first_marking = self.engine.next_dot_to_mark()
         name = first_marking or self.engine.nearest_dot(x, y)
@@ -922,6 +999,7 @@ class LiveTab(QWidget):
                 self.rec_label.setText(text)
                 self.rec_label.setStyleSheet("")
         self.update_camera_info()
+        self.update_scale_label()
         if self.worker is None:
             return
         if time.monotonic() < self._say_until:

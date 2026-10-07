@@ -36,6 +36,23 @@ TRAIL_COLOURS = [(60, 76, 231), (219, 152, 52), (113, 204, 46), (182, 89, 155),
                  (15, 196, 241), (156, 188, 26), (34, 126, 230), (166, 166, 127)]   # BGR, one per dot in turn
 
 
+SCALE_COLOUR = (255, 200, 0)      # BGR: cyan-blue, unlike any dot or angle colour
+SCALE_WARN_COLOUR = (0, 165, 255)
+
+
+def _draw_scale(img, scale, s):
+    """The ruler: a ring on each of its two dots, a line between them and a label."""
+    col = SCALE_WARN_COLOUR if scale.get("warn") else SCALE_COLOUR
+    pts = scale["points"]
+    for x, y, lost in pts:
+        cv2.circle(img, (int(x), int(y)), int(9 * s), (128, 128, 128) if lost else col, max(1, int(2 * s)), cv2.LINE_AA)
+    if len(pts) == 2 and not (pts[0][2] or pts[1][2]):
+        cv2.line(img, (int(pts[0][0]), int(pts[0][1])), (int(pts[1][0]), int(pts[1][1])), col, 1, cv2.LINE_AA)
+    if scale.get("text") and pts:
+        x, y = pts[0][0], pts[0][1]
+        _text(img, scale["text"], (x + 14 * s, y - 14 * s), 0.5 * s, col, 1)
+
+
 def _draw_trails(img, trails, s):
     """Thin coloured path of every dot. `trails`: dot name -> list of segments (each a list of (x, y)).
 
@@ -75,7 +92,7 @@ def _dashed(img, p, q, col, thick, dash=12):
     # PARKED-GHOST: return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
 
 
-def draw(frame, dots, angles, header_lines=(), recording=False, trails=None):
+def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, scale=None):
 # PARKED-GHOST: # with the ghost: def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=(), trails=None)
     """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost.
 
@@ -91,6 +108,8 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None):
         # PARKED-GHOST: img = _draw_ghost(img, ghost, ghost_segments, dots, s, thick)
     if trails:
         _draw_trails(img, trails, s)
+    if scale:
+        _draw_scale(img, scale, s)
 
     for a in angles:
         col = COLOURS[a.status]
