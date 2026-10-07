@@ -200,7 +200,7 @@ Things that look like calibration but are not: the dot size and contrast learned
 
 | Feature | Who | Need | Code |
 |---|---|---|---|
-| Webcam input. Requests MJPG, 1280x720, 30 fps, buffer size 1. The granted values and measured rate are now shown and saved (E, `meta.json` `camera_settings`) | You | Essential | `camera.py` |
+| Webcam input. Requests 1280x720 and 30 fps first and the compressed MJPG format last (the other order made some DirectShow webcams fall back to uncompressed YUY2 at about 10 fps; audit CAM-04), buffer size 1. The granted values, the video format the camera reports and the measured rate are shown and saved (E, `meta.json` `camera_settings`). A slow rate with a non-MJPG format is explained as such; otherwise the warning names dim light or a computer that cannot keep up | You | Essential | `camera.py` |
 | "Lock exposure and white balance" button (webcams only). It switches automatic exposure and white balance off and holds the current values, then reports in words whether the camera accepted it and stores the raw read-back in `meta.json` (`camera_settings.exposure_wb_lock`). **Not tried on a real webcam**; many webcams accept the request and ignore it | You | Helpful | `camera.py` `lock_exposure_wb`, `lock_summary` |
 | Errors in the video thread no longer freeze the picture silently: the video stops, a message appears on the instruction line, any recording is closed and saved, and the traceback goes to `recordings/last_error.log` | You | Essential | `gui.py` `VideoWorker.run`, `_report_error` |
 | Video-file input, practice video, synthetic test-video generator | Added (file input approved) | Extra | `camera.py`; `synthetic.py` |

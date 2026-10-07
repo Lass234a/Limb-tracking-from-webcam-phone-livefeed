@@ -177,3 +177,63 @@ def test_scan_cameras_is_disabled_while_a_source_runs_and_never_probes_then(tmp_
     live.stop_camera()
     assert live.btn_scan.isEnabled()
     win.close()
+
+
+# ---- CAM-04: set the size before the video format, report the format, and do not blame light for a format problem
+def fourcc_int(text):
+    return sum(ord(c) << (8 * i) for i, c in enumerate(text))
+
+
+def test_size_and_frame_rate_are_set_before_the_video_format(monkeypatch):
+    import limbtrack.camera as camera
+
+    calls = []
+
+    class RecordingCap:
+        def __init__(self, *a, **k):
+            pass
+
+        def set(self, prop, value):
+            calls.append(prop)
+            return True
+
+        def get(self, prop):
+            return 0
+
+        def isOpened(self):
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(camera.cv2, "VideoCapture", RecordingCap)
+    camera.CameraSource(0)
+    i = calls.index
+    assert i(cv2.CAP_PROP_FOURCC) > max(i(cv2.CAP_PROP_FRAME_WIDTH), i(cv2.CAP_PROP_FRAME_HEIGHT), i(cv2.CAP_PROP_FPS))
+
+
+def test_the_video_format_is_reported_and_saved():
+    cam = fake_camera((1280, 720, 30))
+    cam.cap.v[cv2.CAP_PROP_FOURCC] = fourcc_int("MJPG")
+    assert cam.granted()["fourcc"] == "MJPG"
+    cam._granted = cam.granted()
+    assert cam.info()["granted_by_driver"]["fourcc"] == "MJPG"
+    cam.cap.v[cv2.CAP_PROP_FOURCC] = 0
+    assert cam.granted()["fourcc"] == ""                                 # unknown is not a format
+
+
+def test_a_slow_uncompressed_format_is_named_instead_of_blaming_light():
+    cam = fake_camera((1280, 720, 30), arrival_fps=10.0)
+    cam.cap.v[cv2.CAP_PROP_FOURCC] = fourcc_int("YUY2")
+    cam._granted = cam.granted()
+    text = " ".join(cam.settings_problems())
+    assert "uncompressed" in text and "YUY2" in text and "low light" not in text
+
+
+def test_slow_mjpg_or_unknown_format_gets_the_general_message():
+    for fourcc in (fourcc_int("MJPG"), 0):
+        cam = fake_camera((1280, 720, 30), arrival_fps=15.0)
+        cam.cap.v[cv2.CAP_PROP_FOURCC] = fourcc
+        cam._granted = cam.granted()
+        text = " ".join(cam.settings_problems())
+        assert "dim light" in text and "cannot keep up" in text and "uncompressed" not in text

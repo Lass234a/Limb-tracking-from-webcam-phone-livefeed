@@ -15,10 +15,12 @@ class CameraSource:
         self.is_live = not self.is_file
         if isinstance(source, int):
             self.cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            # Order matters on DirectShow: asking for compressed MJPG *before* the size makes some webcams fall back
+            # to uncompressed YUY2 when the size is set, which runs at only ~10 fps at 1280x720 (audit CAM-04).
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             self.cap.set(cv2.CAP_PROP_FPS, fps)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         else:
             self.cap = cv2.VideoCapture(source)
@@ -40,7 +42,13 @@ class CameraSource:
     def granted(self):
         """What the camera driver says it is delivering. (Drivers can report the requested value without honouring it.)"""
         return {"width": int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)), "height": int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                "fps": round(self.cap.get(cv2.CAP_PROP_FPS) or 0.0, 3)}
+                "fps": round(self.cap.get(cv2.CAP_PROP_FPS) or 0.0, 3), "fourcc": self._fourcc_str()}
+
+    def _fourcc_str(self):
+        """The video format the camera reports (for example 'MJPG' or 'YUY2'); '' if unknown."""
+        code = int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)
+        text = "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
+        return text.strip() if code and all(32 <= ord(c) < 127 for c in text) else ""
 
     def measured_fps(self):
         """Frames per second actually arriving over the last few seconds (live sources only), or None until known."""
@@ -58,7 +66,13 @@ class CameraSource:
             out.append(f"asked for {r['width']}x{r['height']} but the camera delivers {g['width']}x{g['height']}")
         m = self.measured_fps()
         if m is not None and m < 0.85 * r["fps"]:
-            out.append(f"asked for {r['fps']:g} fps but only {m:.1f} fps are arriving (low light often makes webcams slow down)")
+            fmt = g.get("fourcc", "")
+            if fmt and fmt != "MJPG" and r["width"] * r["height"] > 640 * 480:
+                out.append(f"asked for {r['fps']:g} fps but only {m:.1f} fps are arriving: the camera is sending uncompressed video "
+                           f"({fmt}), which is limited to about 10 fps at this size; try a lower resolution or another camera")
+            else:
+                out.append(f"asked for {r['fps']:g} fps but only {m:.1f} fps are arriving: the camera may slow down in dim light, "
+                           f"or this computer cannot keep up (frames are dropped while recording)")
         return out
 
     def lock_exposure_wb(self):
