@@ -10,3 +10,14 @@ recordings/
 # Local files
 last_error.log
 tests/_out/
+
+# Videos of people and project documents - never commit (the repo is public)
+*.mp4
+*.avi
+*.mov
+*.mkv
+!demo/*.mp4
+*.pdf
+
+# Audit working folder (decide separately whether to publish it)
+audit/
