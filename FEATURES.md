@@ -155,7 +155,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 | 8 sagittal landmarks from your table (ASIS, PSIS, greater trochanter, lateral femoral epicondyle, fibular head, lateral malleolus, 5th metatarsal base and head) | You | No | Essential | `protocol.json` |
 | Choose which landmarks to use, with presets such as "only Knee flexion"; angles that need a switched-off landmark disappear | You | Changes which angles exist; nothing else | Helpful (pilot) | `engine.py` `set_dot_enabled`, `angle_availability` |
 | Message when Lock is refused, listing which angle needs which dot (replaces the confusing "every dot must be marked") | You | No | Helpful | `engine.py` `lock_problem` |
-| Re-mark one dot by clicking it (nearest dot within 60 px) | Added | No | Helpful | `engine.py` `nearest_dot` |
+| Re-mark one dot by clicking it. A lost dot is chosen first (nearest lost dot within 150 px of where it froze); a tracked dot only if the click is within twice its diameter (at least 15 px). A re-mark onto a dot another tracker holds is refused and the old marker is kept. The result is announced ("Re-marked: ..."). **Clicks on the video are ignored while recording** (audit GUI-01, DOC-10) | Added | No | Helpful | `engine.py` `nearest_dot`, `mark_dot`; `gui.py` `on_click` |
 | Dot quality: current contrast / contrast at marking; "weak" below 0.6, shown as an orange ring and a header warning | Approved | No (diagnostic) | Helpful | `tracker.py` `DotState.weak` |
 
 ## C. Tracking

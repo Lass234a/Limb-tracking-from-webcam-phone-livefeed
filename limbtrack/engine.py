@@ -8,6 +8,7 @@ How "deviation" is judged
                       At that moment their current values become the reference,
                       and from then on any drift beyond the neighbour tolerance turns red.
 """
+import copy
 import math
 import threading
 from collections import deque
@@ -23,10 +24,12 @@ from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
 from .results import LOST, OK, OUT, FrameResult
-from .tracker import DotState, TrackerSet, to_gray
+from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
 SOFTWARE_VERSION = "0.2.0"
+LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
+RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
 
 
@@ -39,6 +42,7 @@ class Engine:
         self.trackers = None
         self.kind = "auto"
         self.target = None
+        self.mark_problem = None     # why the last mark_dot failed, when it is not simply 'no dot there'
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
         self.locked = False
@@ -224,25 +228,47 @@ class Engine:
             return None
 
     def mark_dot(self, name, x, y):
-        """Operator clicked a dot on the live image."""
+        """Operator clicked a dot on the live image. On failure, `mark_problem` says why (None = no dot found there)."""
         with self.lock:
+            self.mark_problem = None
             if self._last_gray is None or name in self.disabled_dots:
                 return False
+            old = copy.deepcopy(self.trackers.trackers[name])      # a re-mark must never damage a working tracker
             if not self.trackers.init_dot(name, self._last_gray, x, y):
                 return False
             t = self.trackers.trackers[name]
+            if old.initialised:                                       # re-mark: never onto a dot another tracker holds
+                for other, o in self.trackers.trackers.items():
+                    if other == name or not o.initialised or other not in self.trackers.enabled or o.lost_frames:
+                        continue
+                    if (o.x - t.x) ** 2 + (o.y - t.y) ** 2 < (NEIGHBOUR_EXCLUSION_FACTOR * o.diam) ** 2:
+                        self.trackers.trackers[name] = old
+                        self.mark_problem = f"That is the {self.test.dot_title(other)} dot, not the {self.test.dot_title(name)} dot."
+                        return False
             self._last_states[name] = DotState(name, t.x, t.y, False, 0)   # usable at once, e.g. by Lock
             self._last_angles = []
             return True
 
-    def nearest_dot(self, x, y, max_dist=60):
-        """Name of the marked dot closest to (x, y), or None. Used to re-mark a single dot."""
+    def nearest_dot(self, x, y, lost_dist=LOST_CLICK_REACH_PX):
+        """Name of the marked dot a click at (x, y) is meant to re-mark, or None. Used to re-mark a single dot.
+
+        A lost dot sits frozen where it was last seen, so it is chosen first (the nearest lost dot within
+        `lost_dist`). Otherwise the nearest tracked dot, but only if the click is close to it (within twice its
+        diameter): a tracked dot has no reason to be re-marked from far away.
+        """
         with self.lock:
-            best = None
+            best_lost = best_found = None
             for n, st in self._last_states.items():
                 d = ((st.x - x) ** 2 + (st.y - y) ** 2) ** 0.5
-                if d <= max_dist and (best is None or d < best[0]):
-                    best = (d, n)
+                if st.lost:
+                    if d <= lost_dist and (best_lost is None or d < best_lost[0]):
+                        best_lost = (d, n)
+                else:
+                    t = self.trackers.trackers.get(n)
+                    reach = max(2.0 * (t.diam if t else 0.0), RE_MARK_MIN_REACH_PX)
+                    if d <= reach and (best_found is None or d < best_found[0]):
+                        best_found = (d, n)
+            best = best_lost or best_found
             return best[1] if best else None
 
     def lock_position(self):

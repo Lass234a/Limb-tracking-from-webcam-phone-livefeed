@@ -206,6 +206,7 @@ class LiveTab(QWidget):
         self.engine, self.recordings_dir = engine, Path(recordings_dir)
         self.worker = None
         self._rec_started = None
+        self._say_until = 0.0
 
         self.view = VideoView()
         self.view.clicked.connect(self.on_click)
@@ -719,15 +720,30 @@ class LiveTab(QWidget):
             self.worker.command("refresh")
 
     # ------------------------------------------------- marking & locking
+    def say(self, text, seconds=4.0):
+        """Show a message on the instruction line and keep it there (the status timer would overwrite it within 0.2 s)."""
+        self.instruction.setText(text)
+        self._say_until = time.monotonic() + seconds
+
     def on_click(self, x, y):
         if self.worker is None:
             return
-        name = self.engine.next_dot_to_mark() or self.engine.nearest_dot(x, y)
-        if name is None:
+        if self.engine.rec is not None:
+            self.say("Stop recording to re-mark a dot. (Clicks on the video are ignored while recording.)")
             return
-        if not self.engine.mark_dot(name, x, y):
-            self.instruction.setText(f"No dot found at that spot for '{self.engine.test.dot_title(name)}'. Click the centre of the dot "
-                                     f"(check colour setting and lighting).")
+        first_marking = self.engine.next_dot_to_mark()
+        name = first_marking or self.engine.nearest_dot(x, y)
+        if name is None:
+            self.say("Click directly on a dot to re-mark it, or use 'Re-mark all dots'.")
+            return
+        title = self.engine.test.dot_title(name)
+        if self.engine.mark_dot(name, x, y):
+            if not first_marking:
+                self.say(f"Re-marked: {title}.")
+        elif self.engine.mark_problem:
+            self.say(self.engine.mark_problem)
+        else:
+            self.say(f"No dot found at that spot for '{title}'. Click the centre of the dot (check colour setting and lighting).")
         self.refresh_view()
 
     def remark(self):
@@ -814,6 +830,8 @@ class LiveTab(QWidget):
             self.rec_label.setText(f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s")
         self.update_camera_info()
         if self.worker is None:
+            return
+        if time.monotonic() < self._say_until:
             return
         nxt = self.engine.next_dot_to_mark()
         if nxt:
