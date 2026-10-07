@@ -151,7 +151,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 
 | Feature | Who | Alters numbers? | Need | Code |
 |---|---|---|---|---|
-| White / black / Auto dot colour. Auto compares a 5x5 patch at the click with the median of the 81x81 window, once per dot, so white and black dots can in principle share one video (white on dark shorts, black on skin). **Not tested together yet.** Re-marking a dot keeps the colour it was first given | Added | Indirectly (selects top-hat or black-hat) | Essential | `tracker.py` `init_at` |
+| White / black / Auto dot colour. Auto applies both the white-dot and the black-dot filter to the 81x81 window and takes the one that responds more strongly near the click, **on every click**; the choice is kept only if the marking succeeds, so a failed click can no longer leave a dot stuck on the wrong colour (audit TRK-03). White and black dots can in principle share one video (white on dark shorts, black on skin) because each dot decides for itself. **Not tested together yet** | Added | Indirectly (selects top-hat or black-hat) | Essential | `tracker.py` `init_at` |
 | 8 sagittal landmarks from your table (ASIS, PSIS, greater trochanter, lateral femoral epicondyle, fibular head, lateral malleolus, 5th metatarsal base and head) | You | No | Essential | `protocol.json` |
 | Choose which landmarks to use, with presets such as "only Knee flexion"; angles that need a switched-off landmark disappear | You | Changes which angles exist; nothing else | Helpful (pilot) | `engine.py` `set_dot_enabled`, `angle_availability` |
 | Message when Lock is refused, listing which angle needs which dot (replaces the confusing "every dot must be marked") | You | No | Helpful | `engine.py` `lock_problem` |

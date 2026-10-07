@@ -101,7 +101,8 @@ class DotState:
 class DotTracker:
     def __init__(self, name, kind="auto"):
         self.name = name
-        self.kind = kind  # "white", "black" or "auto"
+        self.kind = kind  # "white" or "black"; "auto" until a click has succeeded
+        self.auto = kind == "auto"   # decide the colour again on every click, never from a click that failed
         self.x = self.y = 0.0
         self.vx = self.vy = 0.0
         self.diam = 12.0
@@ -114,11 +115,11 @@ class DotTracker:
         self.initialised = False
 
     # ------------------------------------------------------------------ helpers
-    def _enhance(self, roi, diam):
+    def _enhance(self, roi, diam, kind=None):
         """Top-hat / black-hat: keeps only features smaller than the kernel."""
         k = _odd(max(diam * KERNEL_DIAM_FACTOR, KERNEL_MIN_PX))
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
-        op = cv2.MORPH_TOPHAT if self.kind == "white" else cv2.MORPH_BLACKHAT
+        op = cv2.MORPH_TOPHAT if (kind or self.kind) == "white" else cv2.MORPH_BLACKHAT
         return cv2.morphologyEx(cv2.GaussianBlur(roi, (BLUR_KERNEL, BLUR_KERNEL), 0), op, kernel)
 
     @staticmethod
@@ -154,15 +155,23 @@ class DotTracker:
         x0, y0, roi = self._window(gray, x, y, r)
         if roi.size == 0:
             return False
-        if self.kind == "auto":
-            cx, cy = int(x - x0), int(y - y0)
-            centre = float(np.mean(roi[max(cy - 2, 0):cy + 3, max(cx - 2, 0):cx + 3]))
-            self.kind = "white" if centre >= float(np.median(roi)) else "black"
-        enh = self._enhance(roi, MARKING_KERNEL_DIAM)
         cx, cy = int(x - x0), int(y - y0)
         b = MARKING_PEAK_BOX_PX
-        near = enh[max(cy - b, 0):cy + b + 1, max(cx - b, 0):cx + b + 1]
-        peak = float(near.max()) if near.size else 0.0
+
+        def strongest(enh):
+            near = enh[max(cy - b, 0):cy + b + 1, max(cx - b, 0):cx + b + 1]
+            return float(near.max()) if near.size else 0.0
+
+        if self.auto:
+            # Auto: whichever of white-dot / black-dot filtering responds more strongly near the click
+            # (a tie goes to white). Decided anew on every click and kept only if the marking succeeds.
+            enh_w, enh_b = self._enhance(roi, MARKING_KERNEL_DIAM, "white"), self._enhance(roi, MARKING_KERNEL_DIAM, "black")
+            kind = "white" if strongest(enh_w) >= strongest(enh_b) else "black"
+            enh = enh_w if kind == "white" else enh_b
+        else:
+            kind = self.kind
+            enh = self._enhance(roi, MARKING_KERNEL_DIAM, kind)
+        peak = strongest(enh)
         if peak < MIN_CONTRAST:
             return False
         blobs = self._blobs(enh, MARKING_BLOB_FRACTION * peak)
@@ -178,6 +187,7 @@ class DotTracker:
         self.contrast = self.ref_contrast = peak
         self.lost_frames = 0
         self.lost_radius = 0.0
+        self.kind = kind            # only now: a failed click leaves the dot exactly as it was
         self.initialised = True
         return True
 
