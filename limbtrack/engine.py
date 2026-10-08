@@ -36,7 +36,37 @@ RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked do
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
 
 
+class _FrozenWhileRecording:
+    """A setting that cannot change while a trial is being recorded (it would make the saved trial inconsistent)."""
+
+    def __init__(self, label):
+        self.label = label
+
+    def __set_name__(self, owner, name):
+        self.name = "_" + name
+
+    def __get__(self, obj, objtype=None):
+        return self if obj is None else getattr(obj, self.name)
+
+    def __set__(self, obj, value):
+        if getattr(obj, "rec", None) is not None:
+            raise RuntimeError(f"Stop recording before changing {self.label}.")
+        setattr(obj, self.name, value)
+
+
+# Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
+SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
+                 "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
+                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "angles"]
+
+
 class Engine:
+    target = _FrozenWhileRecording("the target")
+    tolerance = _FrozenWhileRecording("the tolerance")
+    neighbour_tolerance = _FrozenWhileRecording("the tolerance for the other joints")
+    facing_right = _FrozenWhileRecording("which way the participant faces")
+    mirror = _FrozenWhileRecording("the mirror setting")
+
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
         self.recordings_dir = recordings_dir
@@ -48,6 +78,7 @@ class Engine:
         self._frame_stamp = None
         self.scale = ScaleReference(self.kind)   # pixel-to-cm scale from a ruler with a dot at each end (limbtrack/scale.py)
         self._scale_values = []                  # live scale per recorded frame
+        self._meta_start = {}                    # settings at the start of the current recording
         self.mark_problem = None     # why the last mark_dot failed, when it is not simply 'no dot there'
         self.tolerance = 3.0
         self.neighbour_tolerance = 5.0
@@ -85,6 +116,7 @@ class Engine:
     # ----------------------------------------------------------------- set-up
     def set_test(self, key):
         with self.lock:
+            self._forbid_while_recording("the test")
             self.test = self.tests[key]
             self.tolerance = self.test.tolerance_deg
             self.neighbour_tolerance = self.test.neighbour_tolerance_deg
@@ -98,8 +130,13 @@ class Engine:
                 self.three_point = None
             self.reset_dots()
 
+    def _forbid_while_recording(self, what):
+        if self.rec is not None:
+            raise RuntimeError(f"Stop recording before changing {what}.")
+
     def reset_dots(self):
         with self.lock:
+            self._forbid_while_recording("the marked dots")
             self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
@@ -228,6 +265,7 @@ class Engine:
     def set_dot_kind(self, kind):
         """'white', 'black' or 'auto'. Dots must be re-marked afterwards."""
         with self.lock:
+            self._forbid_while_recording("the dot colour")
             self.kind = kind
             self.scale.reset(kind)           # the ruler dots must be marked again with the new colour setting
             self.reset_dots()
@@ -295,6 +333,9 @@ class Engine:
         """Operator clicked a dot on the live image. On failure, `mark_problem` says why (None = no dot found there)."""
         with self.lock:
             self.mark_problem = None
+            if self.rec is not None:
+                self.mark_problem = "Stop recording before re-marking a dot."
+                return False
             if self._last_gray is None or name in self.disabled_dots:
                 return False
             old = copy.deepcopy(self.trackers.trackers[name])      # a re-mark must never damage a working tracker
@@ -338,6 +379,7 @@ class Engine:
     def lock_position(self):
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
+            self._forbid_while_recording("the locked position")
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
                 return False
@@ -545,6 +587,7 @@ class Engine:
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
             self._scale_values = []
             self.rec_info = {"participant": participant, "notes": notes}
+            self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
             # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
@@ -569,48 +612,60 @@ class Engine:
                 "below_minimum": sorted(self.small_dots()),
                 "note": "approximate: from the blob size when the dot was marked, minus an allowance for soft edges"}
 
+    def _trial_meta(self):
+        t = self.test
+        meta = {
+            "software_version": SOFTWARE_VERSION,
+            "participant": self.rec_info.get("participant"),
+            "notes": self.rec_info.get("notes"),
+            "test_key": t.key,
+            "test_label": t.label,
+            "target_deg": self.target if self.primary_angle else None,
+            "tolerance_deg": self.tolerance,
+            "dots_used": self.active_dots,
+            "dots_disabled": sorted(n for n in self.disabled_dots if n not in t.optional_dots),   # landmarks the operator switched off
+            "optional_dots_used": [n for n in t.optional_dots if n not in self.disabled_dots],   # strap / anchor, when switched on
+            "neighbour_tolerance_deg": self.neighbour_tolerance,
+            "position_locked": self.locked,
+            "locked_references_deg": self._refs,
+            "dot_kind": self.kind,
+            "tracker_settings": tracker_settings(),
+            "camera": self.camera_desc,
+            "camera_settings": self.camera_info,
+            "lens_calibration": None,
+            "facing": "right" if self.facing_right else "left",
+            "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
+            "smoothing": {
+                "enabled": self.smoothing,
+                "type": "moving_average",
+                "window_s": SMOOTHING_WINDOW_S,
+                "applies_to": "screen, live trace and overlay video only; CSV angles, deviations and flags are unsmoothed",
+            },
+            "trails": {"shown_in_overlay_video": self.trails_enabled, "min_step_px": TRAIL_MIN_STEP_PX},
+            "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
+            # PARKED-GHOST: "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
+            # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
+            "scale": self.scale.meta(self._scale_values),
+            "dot_size_check": self._dot_size_check(),
+            "pull": self._pull_meta(),
+            "three_point": list(self.three_point) if self.three_point else None,
+            "angles": [asdict(a) for a in self.active_angles],
+        }
+        return meta
+
     def stop_trial(self):
         with self.lock:
             if self.rec is None:
                 return None
-            t = self.test
-            meta = {
-                "software_version": SOFTWARE_VERSION,
-                "participant": self.rec_info.get("participant"),
-                "notes": self.rec_info.get("notes"),
-                "test_key": t.key,
-                "test_label": t.label,
-                "target_deg": self.target if self.primary_angle else None,
-                "tolerance_deg": self.tolerance,
-                "dots_used": self.active_dots,
-                "dots_disabled": sorted(n for n in self.disabled_dots if n not in t.optional_dots),   # landmarks the operator switched off
-                "optional_dots_used": [n for n in t.optional_dots if n not in self.disabled_dots],   # strap / anchor, when switched on
-                "neighbour_tolerance_deg": self.neighbour_tolerance,
-                "position_locked": self.locked,
-                "locked_references_deg": self._refs,
-                "dot_kind": self.kind,
-                "tracker_settings": tracker_settings(),
-                "camera": self.camera_desc,
-                "camera_settings": self.camera_info,
-                "lens_calibration": None,
-                "facing": "right" if self.facing_right else "left",
-                "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
-                "smoothing": {
-                    "enabled": self.smoothing,
-                    "type": "moving_average",
-                    "window_s": SMOOTHING_WINDOW_S,
-                    "applies_to": "screen, live trace and overlay video only; CSV angles, deviations and flags are unsmoothed",
-                },
-                "trails": {"shown_in_overlay_video": self.trails_enabled, "min_step_px": TRAIL_MIN_STEP_PX},
-                "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
-                # PARKED-GHOST: "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
-                # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
-                "scale": self.scale.meta(self._scale_values),
-                "dot_size_check": self._dot_size_check(),
-                "pull": self._pull_meta(),
-                "three_point": list(self.three_point) if self.three_point else None,
-                "angles": [asdict(a) for a in self.active_angles],
-            }
+            end_meta = self._trial_meta()
+            meta = dict(end_meta)
+            changed = {}
+            for k in SNAPSHOT_KEYS:                     # report the settings as they were when the recording started
+                if self._meta_start.get(k) != end_meta.get(k):
+                    changed[k] = [self._meta_start.get(k), end_meta.get(k)]
+                meta[k] = self._meta_start.get(k)
+            if changed:
+                meta["changed_during_recording"] = changed      # should never happen: the settings are frozen while recording
             paths = self.rec.close(meta)
             self.rec = None
             return paths

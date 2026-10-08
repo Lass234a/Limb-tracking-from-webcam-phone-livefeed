@@ -42,6 +42,32 @@ def bgr_to_qimage(img):
     return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
+class NoWheelComboBox(QComboBox):
+    """A drop-down that ignores the mouse wheel unless it has focus, so scrolling the side panel cannot change it."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    def __init__(self):
+        super().__init__()
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
+
+
 class TextField(QLineEdit):
     """A text box that tells the window when it has focus (typed letters go into it, so letter shortcuts are off)
     and lets go of focus on Enter or Esc, so the shortcut keys work again."""
@@ -236,6 +262,7 @@ class LiveTab(QWidget):
         self.worker = None
         self._rec_started = None
         self._say_until = 0.0
+        self._combo_index = {"test": 0, "kind": 0, "facing": 0}     # last accepted choice, restored if the engine refuses a change
         self._marker_counts = {"start": 0, "end": 0, "other": 0}
         self._marker_msg = ("", 0.0)
 
@@ -243,7 +270,7 @@ class LiveTab(QWidget):
         self.view.clicked.connect(self.on_click)
 
         # --- source
-        self.cam_combo = QComboBox()
+        self.cam_combo = NoWheelComboBox()
         self.cam_combo.addItem("Camera 0", 0)
         self.btn_scan = QPushButton("Scan cameras")
         self.btn_scan.setToolTip("Only available while no camera or video is running: scanning would switch off a running webcam.")
@@ -291,23 +318,23 @@ class LiveTab(QWidget):
         self._set_file_controls(False)
 
         # --- test
-        self.test_combo = QComboBox()
+        self.test_combo = NoWheelComboBox()
         for k, t in engine.tests.items():
             self.test_combo.addItem(t.label, k)
         self.test_combo.currentIndexChanged.connect(self.on_test_changed)
         self.target_spin = self._spin(-90, 180, 1, " deg")
-        self.target_spin.valueChanged.connect(lambda v: (setattr(engine, "target", v), self.refresh_view()))
-        self.suggest = QComboBox()
+        self.target_spin.valueChanged.connect(lambda v: self._set_setting("target", self.target_spin, v))
+        self.suggest = NoWheelComboBox()
         self.suggest.activated.connect(lambda i: self.target_spin.setValue(float(self.suggest.itemText(i).split()[0])))
         self.tol_spin = self._spin(0.5, 30, 0.5, " deg")
-        self.tol_spin.valueChanged.connect(lambda v: (setattr(engine, "tolerance", v), self.refresh_view()))
+        self.tol_spin.valueChanged.connect(lambda v: self._set_setting("tolerance", self.tol_spin, v))
         self.ntol_spin = self._spin(0.5, 45, 0.5, " deg")
-        self.ntol_spin.valueChanged.connect(lambda v: (setattr(engine, "neighbour_tolerance", v), self.refresh_view()))
-        self.kind_combo = QComboBox()
+        self.ntol_spin.valueChanged.connect(lambda v: self._set_setting("neighbour_tolerance", self.ntol_spin, v))
+        self.kind_combo = NoWheelComboBox()
         for label, k in (("Auto (white or black)", "auto"), ("White dots", "white"), ("Black dots", "black")):
             self.kind_combo.addItem(label, k)
         self.kind_combo.currentIndexChanged.connect(self.on_kind_changed)
-        self.facing_combo = QComboBox()
+        self.facing_combo = NoWheelComboBox()
         self.facing_combo.addItem("Right side of the image", True)
         self.facing_combo.addItem("Left side of the image", False)
         self.facing_combo.currentIndexChanged.connect(self.on_facing_changed)
@@ -327,7 +354,7 @@ class LiveTab(QWidget):
         f.addRow(self.chk_smooth)
 
         # --- landmarks to use (pilot testing)
-        self.lm_preset = QComboBox()
+        self.lm_preset = NoWheelComboBox()
         self.lm_preset.activated.connect(self.apply_landmark_preset)
         self.lm_checks = {}
         self.lm_holder = QVBoxLayout()
@@ -341,7 +368,7 @@ class LiveTab(QWidget):
 
         # --- three-point angle
         self.chk_tp = QCheckBox("Use a three-point angle")
-        self.tp_combos = [QComboBox() for _ in range(3)]
+        self.tp_combos = [NoWheelComboBox() for _ in range(3)]
         self.chk_tp_main = QCheckBox("Use it as the main joint (the target above applies to it)")
         self.chk_tp_main.setChecked(True)
         self.tp_info = QLabel()
@@ -361,8 +388,8 @@ class LiveTab(QWidget):
         self.instruction = QLabel("Start the camera first.")
         self.instruction.setStyleSheet(BIG)
         self.instruction.setWordWrap(True)
-        btn_remark = QPushButton("Re-mark all dots")
-        btn_remark.clicked.connect(self.remark)
+        self.btn_remark = QPushButton("Re-mark all dots")
+        self.btn_remark.clicked.connect(self.remark)
         self.btn_lock = QPushButton("Lock position  (Space)")
         self.btn_lock.setCheckable(True)
         self.btn_lock.clicked.connect(self.toggle_lock)
@@ -378,7 +405,7 @@ class LiveTab(QWidget):
         mk = QGroupBox("3. Mark dots, set position, lock")
         ml = QVBoxLayout(mk)
         ml.addWidget(self.instruction)
-        ml.addWidget(btn_remark)
+        ml.addWidget(self.btn_remark)
         ml.addWidget(self.btn_lock)
         # PARKED-GHOST: ml.addWidget(self.chk_ghost)
         # PARKED-GHOST: ml.addWidget(self.chk_anchor)
@@ -444,7 +471,7 @@ class LiveTab(QWidget):
         sf.addRow(self.scale_label)
 
         # --- live trace (last 15 s)
-        self.trace_mode = QComboBox()
+        self.trace_mode = NoWheelComboBox()
         self.trace_mode.addItem("Main angle, last 15 s", "main")
         self.trace_mode.addItem("Drift from set position, all joints", "drift")
         self.trace = pg.PlotWidget()
@@ -506,7 +533,7 @@ class LiveTab(QWidget):
 
     @staticmethod
     def _spin(lo, hi, step, suffix):
-        s = QDoubleSpinBox()
+        s = NoWheelDoubleSpinBox()
         s.setRange(lo, hi)
         s.setSingleStep(step)
         s.setSuffix(suffix)
@@ -515,7 +542,12 @@ class LiveTab(QWidget):
 
     # ---------------------------------------------------------- settings
     def on_test_changed(self):
-        self.engine.set_test(self.test_combo.currentData())
+        try:
+            self.engine.set_test(self.test_combo.currentData())
+        except RuntimeError as e:
+            self._revert_combo(self.test_combo, "test", e)
+            return
+        self._combo_index["test"] = self.test_combo.currentIndex()
         t = self.engine.test
         self.suggest.clear()
         for v in t.targets:
@@ -644,12 +676,40 @@ class LiveTab(QWidget):
         self.instruction.setText("Image " + ("mirrored" if on else "not mirrored") + ". Mark the dots again, and check "
                                  "'Participant faces' against what you now see.")
 
+    def _set_setting(self, attr, spin, value):
+        """Change an engine setting from a spin box; if the engine refuses (recording), put the box back and say why."""
+        try:
+            setattr(self.engine, attr, value)
+        except RuntimeError as e:
+            spin.blockSignals(True)
+            spin.setValue(getattr(self.engine, attr))
+            spin.blockSignals(False)
+            self.say(str(e))
+            return
+        self.refresh_view()
+
+    def _revert_combo(self, combo, key, error):
+        combo.blockSignals(True)
+        combo.setCurrentIndex(self._combo_index[key])
+        combo.blockSignals(False)
+        self.say(str(error))
+
     def on_facing_changed(self):
-        self.engine.facing_right = bool(self.facing_combo.currentData())
+        try:
+            self.engine.facing_right = bool(self.facing_combo.currentData())
+        except RuntimeError as e:
+            self._revert_combo(self.facing_combo, "facing", e)
+            return
+        self._combo_index["facing"] = self.facing_combo.currentIndex()
         self.refresh_view()
 
     def on_kind_changed(self):
-        self.engine.set_dot_kind(self.kind_combo.currentData())
+        try:
+            self.engine.set_dot_kind(self.kind_combo.currentData())
+        except RuntimeError as e:
+            self._revert_combo(self.kind_combo, "kind", e)
+            return
+        self._combo_index["kind"] = self.kind_combo.currentIndex()
         self.btn_lock.setChecked(False)
 
     # ------------------------------------------------------------ source
@@ -967,7 +1027,7 @@ class LiveTab(QWidget):
     def update_camera_info(self):
         """One line on what the camera really delivers; orange when it differs from what was asked for."""
         cam = self.worker.camera if self.worker is not None else None
-        self.btn_lock_cam.setEnabled(cam is not None and not cam.is_file and isinstance(cam.source, int))
+        self.btn_lock_cam.setEnabled(cam is not None and not cam.is_file and isinstance(cam.source, int) and self._rec_started is None)
         if cam is None:
             self.cam_info.setText("")
             return
@@ -991,6 +1051,11 @@ class LiveTab(QWidget):
             cb.setEnabled(not recording)
         self.lm_preset.setEnabled(not recording)
         self.chk_mirror.setEnabled(not recording)
+        for w in (self.test_combo, self.kind_combo, self.facing_combo, self.target_spin, self.tol_spin, self.ntol_spin,
+                  self.btn_remark, self.btn_lock):
+            w.setEnabled(not recording)           # nothing that changes the measurement may change during a recording
+        main_three_point = bool(self.engine.three_point) and self.engine.three_point_main
+        self.suggest.setEnabled(not recording and not main_three_point)
         for w in (self.chk_tp, self.chk_tp_main, *self.tp_combos):
             w.setEnabled(not recording)
         if self._rec_started is not None:
