@@ -78,6 +78,7 @@ class Engine:
         self._frame_stamp = None
         self.scale = ScaleReference(self.kind)   # pixel-to-cm scale from a ruler with a dot at each end (limbtrack/scale.py)
         self._scale_values = []                  # live scale per recorded frame
+        self._ref_avg, self._ref_last = {}, {}      # unsmoothed 0.2 s average per angle, used as the neighbour reference at Lock
         self._meta_start = {}                    # settings at the start of the current recording
         self.mark_problem = None     # why the last mark_dot failed, when it is not simply 'no dot there'
         self.tolerance = 3.0
@@ -97,7 +98,7 @@ class Engine:
         self._banner = None          # (label, time) of the last marker, shown briefly on screen
         self._marker_n = 0
         self.smoothing = True        # moving average over 0.2 s for what is SHOWN (never for the CSV)
-        self._filters = {}
+        self._filters, self._ref_avg = {}, {}
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._refs = {}
@@ -141,7 +142,7 @@ class Engine:
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
             self._last_angles = []
-            self._filters = {}
+            self._filters, self._ref_avg = {}, {}
             self._hist.clear()
             self._trails, self._trail_open = {}, {}
             self.locked = False
@@ -218,7 +219,7 @@ class Engine:
 
     def _angles_changed(self):
         self._last_angles = []
-        self._filters = {}
+        self._filters, self._ref_avg = {}, {}
         self._hist.clear()
         self.unlock_position()
 
@@ -253,14 +254,14 @@ class Engine:
             self._trails, self._trail_open = {}, {}          # the set of dots changed: old trails no longer apply
             self._last_states.pop(name, None)
             self._last_angles = []
-            self._filters = {}
+            self._filters, self._ref_avg = {}, {}
             self.unlock_position()
 
     def set_smoothing(self, on):
         """Switch the display smoothing on or off. The recorded angles are unaffected."""
         with self.lock:
             self.smoothing = bool(on)
-            self._filters = {}
+            self._filters, self._ref_avg = {}, {}
 
     def set_dot_kind(self, kind):
         """'white', 'black' or 'auto'. Dots must be re-marked afterwards."""
@@ -383,7 +384,7 @@ class Engine:
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
                 return False
-            self._refs = {a.name: a.value for a in angles if not a.primary}
+            self._refs = {a.name: self._ref_last.get(a.name, a.raw_value) for a in angles if not a.primary}   # unsmoothed, whatever the smoothing switch says
             # PARKED-GHOST: self._ghost = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
             # PARKED-GHOST: if self.rec is not None:
                 # PARKED-GHOST: self.rec_info["ghost"] = dict(self._ghost)
@@ -397,6 +398,16 @@ class Engine:
             # PARKED-GHOST: self._ghost = None
 
     # --------------------------------------------------------------- per frame
+    def _reference_value(self, name, raw, t):
+        """The value stored as a neighbour's reference at Lock: the unsmoothed angle averaged over the same 0.2 s as the
+        display smoothing, but ALWAYS, so the saved reference does not depend on the smoothing switch (audit DOC-02)."""
+        if t is None:
+            return raw
+        f = self._ref_avg.get(name)
+        if f is None:
+            f = self._ref_avg[name] = MovingAverage(SMOOTHING_WINDOW_S)
+        return f(raw, t)
+
     def _smooth(self, name, raw, t):
         if t is None or not self.smoothing:
             return raw
@@ -413,8 +424,11 @@ class Engine:
             if r.status == LOST:
                 r.raw_status = LOST
                 self._filters.pop(a.name, None)         # do not average across a gap
+                self._ref_avg.pop(a.name, None)
+                self._ref_last.pop(a.name, None)
             else:
                 r.raw_value = r.value
+                self._ref_last[a.name] = self._reference_value(a.name, r.raw_value, t)
                 if a.primary:
                     r.reference, r.tolerance = self.target, self.tolerance
                 elif a.name in self.test.neighbour_targets:        # required neighbour angle (Tabel 2): judged from the start
