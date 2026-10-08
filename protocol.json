@@ -28,6 +28,7 @@
     "knee": {
       "label": "Knee flexion",
       "vectors": [["trochanter", "epicondyle"], ["fibular_head", "malleolus"]],
+      "signed": true,
       "fulcrum": "epicondyle"
     },
     "ankle": {
@@ -43,40 +44,54 @@
   },
 
   "tests": {
+    "_note_tests": "Sagittal tests from Tabel 2 of the protocol draft 2026-09-28 (19 positions in all, 4 of them hip abduction/adduction in the frontal plane, which this app does not do). 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative).",
     "knee_extension": {
-      "label": "Knee extension (MVIC)",
+      "label": "Knee extension, hip 90 (MVIC)",
       "primary": "knee",
-      "targets": [20, 65, 110],
+      "targets": [20, 70, 110],
+      "neighbour_targets": {"hip": 90},
       "angles": ["knee", "hip", "ankle", "pelvic_tilt"]
     },
     "knee_flexion": {
-      "label": "Knee flexion (MVIC)",
+      "label": "Knee flexion, hip 90 (MVIC)",
       "primary": "knee",
-      "targets": [15, 50, 85],
+      "targets": [20, 90],
+      "neighbour_targets": {"hip": 90},
       "angles": ["knee", "hip", "ankle", "pelvic_tilt"]
     },
-    "hip_extension": {
-      "label": "Hip extension (MVIC)",
+    "hip_extension_k0": {
+      "label": "Hip extension, knee straight (MVIC)",
       "primary": "hip",
-      "targets": [0, 45, 90],
+      "targets": [0, 45],
+      "neighbour_targets": {"knee": 0},
+      "angles": ["hip", "knee", "ankle", "pelvic_tilt"]
+    },
+    "hip_extension_k90": {
+      "label": "Hip extension, knee 90 (MVIC)",
+      "primary": "hip",
+      "targets": [0, 90],
+      "neighbour_targets": {"knee": 90},
       "angles": ["hip", "knee", "ankle", "pelvic_tilt"]
     },
     "hip_flexion": {
-      "label": "Hip flexion (MVIC)",
+      "label": "Hip flexion, knee 90 (MVIC)",
       "primary": "hip",
-      "targets": [0, 45],
+      "targets": [0, 90],
+      "neighbour_targets": {"knee": 90},
       "angles": ["hip", "knee", "ankle", "pelvic_tilt"]
     },
     "ankle_plantarflexion": {
-      "label": "Ankle plantarflexion (MVIC)",
+      "label": "Ankle plantarflexion, knee straight (MVIC)",
       "primary": "ankle",
-      "targets": [-20, 0, 20],
+      "targets": [0, -20],
+      "neighbour_targets": {"knee": 0},
       "angles": ["ankle", "knee", "hip", "pelvic_tilt"]
     },
     "ankle_dorsiflexion": {
-      "label": "Ankle dorsiflexion (MVIC)",
+      "label": "Ankle dorsiflexion, knee straight (MVIC)",
       "primary": "ankle",
-      "targets": [-10, 10],
+      "targets": [0, -20],
+      "neighbour_targets": {"knee": 0},
       "angles": ["ankle", "knee", "hip", "pelvic_tilt"]
     },
     "belt_squat": {

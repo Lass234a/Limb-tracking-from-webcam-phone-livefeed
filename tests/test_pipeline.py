@@ -40,9 +40,9 @@ def test_protocol_loads_with_goniometer_landmarks():
     t = TESTS["knee_extension"]
     assert t.dots == ["asis", "psis", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"]
     assert t.primary.name == "knee"
-    assert TESTS["hip_extension"].primary.name == "hip"
+    assert TESTS["hip_extension_k90"].primary.name == "hip"
     assert TESTS["ankle_dorsiflexion"].primary.name == "ankle"
-    assert set(TESTS) == {"knee_extension", "knee_flexion", "hip_extension", "hip_flexion",
+    assert set(TESTS) == {"knee_extension", "knee_flexion", "hip_extension_k0", "hip_extension_k90", "hip_flexion",
                           "ankle_plantarflexion", "ankle_dorsiflexion", "belt_squat"}
 
 
@@ -95,7 +95,7 @@ def test_facing_flag_mirrors_signs():
 
 
 def _seq(n, knee_of, tilt=2.0):
-    return [leg_points(hip_flex=70, knee_flex=knee_of(i), ankle_df=5, pelvic_tilt=tilt) for i in range(n)]
+    return [leg_points(hip_flex=90, knee_flex=knee_of(i), ankle_df=5, pelvic_tilt=tilt) for i in range(n)]       # hip 90: the required neighbour angle in the knee tests
 
 
 def test_tracking_a_moving_knee_and_recording(tmp_path):

@@ -92,7 +92,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 ### A8. Angle definition and conventions
 - **What:** an angle is measured between two "arms". An arm is a vector between two dots, "perpendicular to the line between two dots pointing toward the feet" (the pelvis midline), or a fixed direction (up, down, forward).
 - **Alters numbers:** yes.
-  - Shown value = `sign x angle + offset`. Hip: signed, sign -1 (flexion +, extension -). Knee: unsigned. Ankle: unsigned, sign -1, offset +90 (dorsiflexion +). Pelvic tilt: signed, sign +1 (anterior +).
+  - Shown value = `sign x angle + offset`. Hip: signed, sign -1 (flexion +, extension -). Knee: signed (flexion +, hyperextension -). Ankle: unsigned, sign -1, offset +90 (dorsiflexion +). Pelvic tilt: signed, sign +1 (anterior +).
   - If "participant faces left" is chosen, the x-direction of dot-based arms is mirrored so signs mean the same either way. A wrong setting flips the sign of hip and pelvic tilt without any warning; knee and ankle are unaffected. "Faces" refers to the picture on screen, so after switching the mirror (E3) it must be set again.
 - **Who:** *You* (landmarks and ASIS-PSIS perpendicular; you chose to keep the definitions); the facing setting and sign/offset mechanism were *Added*.
 - **Need:** Essential.
@@ -109,7 +109,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **What:** decides whether an angle is "in position".
 - **Alters numbers:** the verdicts and deviation columns.
   - Main joint: `deviation = value - target`, where the target is what the operator types.
-  - Other joints: after Lock, each is compared with the value that was **shown** at the moment of locking (a single smoothed frame, not averaged).
+  - Neighbour joints with a required angle in the protocol (Tabel 2: hip 90, knee 0 or knee 90): that angle, from the start. Other joints: after Lock, each is compared with the value that was **shown** at the moment of locking (a single smoothed frame, not averaged).
   - In tolerance when `|deviation| <= tolerance` (inclusive, no hysteresis). Defaults: 3 deg main joint, 5 deg other joints; both adjustable.
   - The CSV `_dev` and `_ok` are computed from the unsmoothed angle against these references.
 - **Who:** *You* (you chose to keep it); the design was *Added*.
@@ -197,7 +197,8 @@ The method is in A7 to A10. Other items:
 
 | Feature | Who | Alters numbers? | Need | Code |
 |---|---|---|---|---|
-| 7 tests with main joint and suggested target angles (from your `plot_proposal.m`): knee extension/flexion, hip extension/flexion, ankle plantar/dorsiflexion, belt squat | You | No | Essential | `protocol.json`; `protocol.py` `load_protocol` |
+| 8 tests from Tabel 2 of the protocol draft (2026-09-28), with suggested positions and the required angle of the neighbouring joint: knee extension (hip 90) 20/70/110; knee flexion (hip 90) 20/90; hip extension knee 0: 0/45; hip extension knee 90: 0/90; hip flexion (knee 90) 0/90; ankle plantarflexion and dorsiflexion (knee 0) 0/-20; plus belt squat (no positions). The required neighbour angle (`neighbour_targets` in `protocol.json`) is judged from the start with the neighbour tolerance (5 deg), is the `_ref` in the CSV and is saved in `meta.json` (`neighbour_targets_deg`); other neighbours still use their value at Lock. The 4 frontal hip abduction/adduction positions are not in this app. The ankle row follows Tabel 2 (0/-20), not section 2.7 (-20/0/20), because only Tabel 2 gives the stated 19 positions | You | Changes the verdicts of the neighbour joints (A10) | Essential | `protocol.json`; `protocol.py` `load_protocol`; `engine.py` `_compute_angles` |
+| protocol.json is checked at start-up: every mistake is listed with its place and a did-you-mean hint (audit COD-06); `python -m limbtrack.protocol check` checks without starting | Added | No | Essential | `protocol.py` `validate_protocol` |
 | Pelvic tilt tracked as a neighbour in every test (ASIS-PSIS vs horizontal; parked, left as built) | Added | Assumes a level camera | Helpful | `protocol.json` |
 | Angles drop out automatically when a needed landmark is switched off | You | No | Helpful | `engine.py` `active_angles` |
 | Editable `protocol.json` (dots, arms, signs, offsets, targets, tolerances) | Added | Defines the angles | Essential | `protocol.py` |

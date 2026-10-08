@@ -83,7 +83,7 @@ def test_the_engine_measures_the_pull_against_the_shank_in_a_knee_test(tmp_path)
 
 
 def test_the_segment_follows_the_test_thigh_for_hip_and_foot_for_ankle(tmp_path):
-    eng, _ = make(tmp_path, "hip_extension")
+    eng, _ = make(tmp_path, "hip_extension_k90")
     assert eng.pull_segment() == ("trochanter", "epicondyle", "trochanter")
     eng, _ = make(tmp_path, "ankle_dorsiflexion")
     assert eng.pull_segment() == ("mt5_base", "mt5_head", "malleolus")

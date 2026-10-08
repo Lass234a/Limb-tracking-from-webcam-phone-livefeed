@@ -24,7 +24,8 @@ def test_the_shipped_protocol_is_valid_and_loads():
 
 def test_the_old_kind_points_spelling_still_loads(tmp_path):
     d = mutated(lambda d: d["tests"]["knee_extension"].update(
-        angles=[{"name": "legacy_knee", "kind": "joint", "points": ["trochanter", "epicondyle", "malleolus"]}], primary="legacy_knee"))
+        angles=[{"name": "legacy_knee", "kind": "joint", "points": ["trochanter", "epicondyle", "malleolus"]}], primary="legacy_knee",
+        neighbour_targets={}))
     assert validate_protocol(d) == []
 
 

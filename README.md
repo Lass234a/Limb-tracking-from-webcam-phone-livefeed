@@ -58,7 +58,7 @@ Edit `protocol.json` (plain text). The program checks the file every time it sta
 - ankle = fibula vs 5th metatarsal (base -> head); dorsiflexion +, 90 deg between the arms = 0
 - pelvic tilt = ASIS-PSIS line vs horizontal; anterior tilt +
 
-Target angles come from `ChenData/StrengthCurve/plot_proposal.m`. Signed angles assume which way the participant faces, so set "Participant faces" correctly. **Check all of this against your final protocol.**
+Tests, positions and required neighbour angles follow Tabel 2 of the protocol draft of 2026-09-28 (15 sagittal positions; the 4 hip abduction/adduction positions are frontal and not in this app): knee extension (hip 90) 20/70/110; knee flexion (hip 90) 20/90; hip extension with a straight knee 0/45 and with the knee at 90 0/90; hip flexion (knee 90) 0/90; ankle plantarflexion and dorsiflexion (knee straight) 0/-20. The neighbouring joint's required angle (hip 90, knee 0 or knee 90) is judged from the start, with the "other joints" tolerance, not only after Lock; the other joints are still compared with their value at Lock. The knee angle is signed: hyperextension reads negative. Where the draft contradicts itself (section 2.7 lists -20/0/20 for the ankle) Tabel 2 was used, because it gives the stated total of 19 positions. Signed angles assume which way the participant faces, so set "Participant faces" correctly. **Check all of this against your final protocol.**
 
 ## Where the numbers can go wrong (read this)
 - The angle is the **2D angle in the image**. It is only the true joint angle if the limb moves in a plane facing the camera. Put the camera level, at joint height, square to the sagittal plane, and don't let the participant rotate.

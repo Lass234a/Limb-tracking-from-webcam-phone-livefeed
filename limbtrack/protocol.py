@@ -37,6 +37,7 @@ class TestDef:
     tolerance_deg: float = 3.0
     neighbour_tolerance_deg: float = 5.0
     dot_labels: dict = field(default_factory=dict)
+    neighbour_targets: dict = field(default_factory=dict)   # angle name -> required angle of that neighbouring joint (Tabel 2: H 90, K 0, K 90)
     optional_dots: list = field(default_factory=list)   # extra tracked dots (strap, anchor): off until switched on, never part of an angle
 
     @property
@@ -186,6 +187,8 @@ def validate_protocol(data):
         errs.append("tests: needs at least one test")
         return errs
     for key, t in tests.items():
+        if str(key).startswith("_"):          # comment lines
+            continue
         path = f"tests.{key}"
         if not isinstance(t, dict):
             errs.append(f"{path}: must be an object")
@@ -253,6 +256,8 @@ def load_protocol(path):
     labels = data.get("dot_labels", {})
     tests = {}
     for key, t in data["tests"].items():
+        if key.startswith("_"):
+            continue
         angles = []
         for item in t["angles"]:
             if isinstance(item, str):
@@ -285,6 +290,7 @@ def load_protocol(path):
             neighbour_tolerance_deg=t.get("neighbour_tolerance_deg", data.get("neighbour_tolerance_deg", 5.0)),
             dot_labels=labels,
             optional_dots=list(t.get("optional_dots", data.get("optional_dots", []))),
+            neighbour_targets=dict(t.get("neighbour_targets", {})),
         )
     return tests
 

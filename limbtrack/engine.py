@@ -56,7 +56,7 @@ class _FrozenWhileRecording:
 
 # Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
-                 "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
+                 "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "angles"]
 
 
@@ -417,6 +417,8 @@ class Engine:
                 r.raw_value = r.value
                 if a.primary:
                     r.reference, r.tolerance = self.target, self.tolerance
+                elif a.name in self.test.neighbour_targets:        # required neighbour angle (Tabel 2): judged from the start
+                    r.reference, r.tolerance = float(self.test.neighbour_targets[a.name]), self.neighbour_tolerance
                 elif self.locked and a.name in self._refs:
                     r.reference, r.tolerance = self._refs[a.name], self.neighbour_tolerance
                 if r.reference is not None:                         # recorded verdict: from the raw angle
@@ -626,6 +628,7 @@ class Engine:
             "dots_disabled": sorted(n for n in self.disabled_dots if n not in t.optional_dots),   # landmarks the operator switched off
             "optional_dots_used": [n for n in t.optional_dots if n not in self.disabled_dots],   # strap / anchor, when switched on
             "neighbour_tolerance_deg": self.neighbour_tolerance,
+            "neighbour_targets_deg": dict(self.test.neighbour_targets),
             "position_locked": self.locked,
             "locked_references_deg": self._refs,
             "dot_kind": self.kind,
@@ -642,7 +645,7 @@ class Engine:
                 "applies_to": "screen, live trace and overlay video only; CSV angles, deviations and flags are unsmoothed",
             },
             "trails": {"shown_in_overlay_video": self.trails_enabled, "min_step_px": TRAIL_MIN_STEP_PX},
-            "reference_basis": "main joint: typed target; other joints: the value shown when the position was locked",
+            "reference_basis": "main joint: typed target; neighbour joints with a required angle (neighbour_targets_deg): that angle; other joints: their value when the position was locked",
             # PARKED-GHOST: "locked_positions_px": self._ghost or self.rec_info.get("ghost"),
             # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
             "scale": self.scale.meta(self._scale_values),

@@ -112,7 +112,7 @@ def test_meta_lists_optional_dots_as_not_used_when_off(tmp_path):
 
 def test_the_choice_survives_switching_test(tmp_path):
     eng, _ = engine(tmp_path)
-    eng.set_test("hip_extension")
+    eng.set_test("hip_extension_k90")
     assert "strap" in eng.active_dots and "anchor" in eng.active_dots
     eng.set_dot_enabled("anchor", False)
     eng.set_test("knee_extension")

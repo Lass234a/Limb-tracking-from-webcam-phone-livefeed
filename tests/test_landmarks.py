@@ -83,7 +83,9 @@ def test_main_joint_unavailable_means_no_target_but_neighbours_still_work(tmp_pa
     assert [a.name for a in eng.active_angles] == ["hip", "pelvic_tilt"]
     mark_all(eng)
     res = eng.process(render(PTS, seed=2), 0.06)
-    assert all(a.status == "info" and not a.primary for a in res.angles)   # nothing is judged against a target
+    assert all(not a.primary for a in res.angles)
+    assert {a.name: a.status for a in res.angles}["pelvic_tilt"] == "info"   # no target, no lock yet: not judged
+    assert next(a for a in res.angles if a.name == "hip").reference == 90.0     # the required neighbour angle is judged from the start
     assert any("not available" in line for line in res.header)
     h = eng.history()
     assert h["target"] is None and h["primary"] == "hip"
@@ -113,7 +115,7 @@ def test_choice_survives_switching_test_and_lock_is_dropped(tmp_path):
     assert eng.lock_position()
     eng.set_dot_enabled("mt5_head", False)
     assert eng.locked is False                                          # references would be stale
-    eng.set_test("hip_extension")
+    eng.set_test("hip_extension_k90")
     assert eng.disabled_dots - OPTIONAL == {"mt5_head"} and eng.primary_angle.name == "hip"
     assert "mt5_head" not in eng.active_dots
 
