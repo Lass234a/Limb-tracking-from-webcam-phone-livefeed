@@ -165,7 +165,7 @@ def test_in_the_window_the_exact_situation_from_the_screenshot(tmp_path, monkeyp
     live.chk_tp.setChecked(True)                                              # defaults: trochanter / epicondyle / malleolus
     assert eng.three_point == THREE and eng.primary_angle.name == "three_point"
     assert not live.suggest.isEnabled() and "180" in live.tp_info.text()
-    assert "✓ Angle at lateral femoral epicondyle" in live.lm_info.text()
+    assert "✓ Interior angle at lateral femoral epicondyle" in live.lm_info.text()
     eng.process(render(pts, seed=3), 0.1)
     live.btn_lock.setChecked(True)
     live.toggle_lock()
@@ -206,3 +206,96 @@ def test_real_video_three_dots_give_a_three_point_angle(tmp_path):
     good = vals[np.isfinite(vals)]
     assert 60 < good.min() and good.max() < 180
     assert 0 <= vals[2] <= 180
+
+
+# ---- ANG-05: the protocol's targets are flexion; the interior angle is its mirror image around 90
+def tp_engine(tmp_path, flexion=None, test="knee_extension", knee=70.0):
+    from limbtrack.synthetic import leg_points, render
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test(test)
+    p = leg_points(hip_flex=90, knee_flex=knee, ankle_df=5)
+    eng.process(render(p, seed=0), 0.0)
+    for n in ("trochanter", "epicondyle", "malleolus"):
+        eng.set_dot_enabled(n, True)
+    eng.set_three_point("trochanter", "epicondyle", "malleolus", main=True, flexion=flexion)
+    for n in eng.active_dots:
+        eng.mark_dot(n, *(p[n] + 2))
+    for i in range(6):
+        res = eng.process(render(p, seed=i), 0.1 + i / 30)
+    return eng, res
+
+
+def interior_from_dots(knee):
+    """Interior angle at the epicondyle between trochanter and malleolus, worked out from the dots themselves."""
+    import numpy as np
+    from limbtrack.synthetic import leg_points
+    p = leg_points(hip_flex=90, knee_flex=knee, ankle_df=5)
+    a, b = np.array(p["trochanter"]) - np.array(p["epicondyle"]), np.array(p["malleolus"]) - np.array(p["epicondyle"])
+    return float(np.degrees(np.arccos(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))))
+
+
+def tp_value(res):
+    return next(a for a in res.angles if a.name == "three_point")
+
+
+def test_the_interior_convention_reads_180_minus_the_flexion(tmp_path):
+    eng, res = tp_engine(tmp_path, flexion=False, knee=70.0)
+    assert tp_value(res).raw_value == pytest.approx(interior_from_dots(70.0), abs=1.0)
+    assert "Interior angle" in tp_value(res).title and "180 = straight" in tp_value(res).title
+
+
+def test_the_flexion_convention_reads_like_the_protocol(tmp_path):
+    eng, res = tp_engine(tmp_path, flexion=True, knee=70.0)
+    assert tp_value(res).raw_value == pytest.approx(180.0 - interior_from_dots(70.0), abs=1.0)
+    assert "0 = straight" in tp_value(res).title
+    straight = tp_engine(tmp_path / "s", flexion=True, knee=0.0)[1]
+    # a straight knee reads near 0, but not exactly: the three dots (trochanter, epicondyle, malleolus) ignore the fibular head,
+    # which sits off the epicondyle-malleolus line (audit ANG-05), so the three-point knee differs a few degrees from the protocol knee
+    assert tp_value(straight).raw_value == pytest.approx(180.0 - interior_from_dots(0.0), abs=1.0)
+    assert tp_value(straight).raw_value < 6.0
+
+
+def test_a_flexion_suggestion_is_never_compared_with_an_interior_angle(tmp_path):
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    assert eng.target == 20.0                                         # the test's first position (a flexion angle)
+    for n in ("trochanter", "epicondyle", "malleolus"):
+        eng.set_dot_enabled(n, True)
+    eng.set_three_point("trochanter", "epicondyle", "malleolus", main=True, flexion=False)
+    assert eng.target is None                                         # not carried over into the interior convention
+    eng.set_test("knee_flexion")
+    assert eng.target is None                                         # nor reset to the next test's first position
+
+
+def test_switching_the_convention_converts_the_typed_target(tmp_path):
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    for n in ("trochanter", "epicondyle", "malleolus"):
+        eng.set_dot_enabled(n, True)
+    eng.set_three_point("trochanter", "epicondyle", "malleolus", main=True, flexion=False)
+    eng.target = 110.0                                                # interior 110 = flexion 70
+    eng.set_three_point("trochanter", "epicondyle", "malleolus", main=True, flexion=True)
+    assert eng.target == 70.0
+    eng.set_three_point("trochanter", "epicondyle", "malleolus", main=True, flexion=False)
+    assert eng.target == 110.0
+
+
+def test_flexion_mode_keeps_the_tests_own_positions(tmp_path):
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    for n in ("trochanter", "epicondyle", "malleolus"):
+        eng.set_dot_enabled(n, True)
+    eng.set_three_point("trochanter", "epicondyle", "malleolus", main=True, flexion=True)
+    assert eng.target == 20.0
+    eng.set_test("knee_flexion")
+    assert eng.target == 20.0
+
+
+def test_the_convention_is_saved_in_meta(tmp_path):
+    import json
+    eng, _ = tp_engine(tmp_path, flexion=True)
+    paths = eng.start_trial("P01")
+    eng.process(__import__("limbtrack.synthetic", fromlist=["render"]).render(
+        __import__("limbtrack.synthetic", fromlist=["leg_points"]).leg_points(hip_flex=90, knee_flex=70, ankle_df=5), seed=1), 1.0)
+    eng.stop_trial()
+    assert "flexion" in json.loads(paths["meta.json"].read_text())["three_point_convention"]

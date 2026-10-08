@@ -129,3 +129,35 @@ def evaluate_angle(defn, xy, facing_right=True):
     # PARKED-GHOST: if anchor and anchor in snapshot and anchor in live_xy:
         # PARKED-GHOST: dx, dy = live_xy[anchor][0] - snapshot[anchor][0], live_xy[anchor][1] - snapshot[anchor][1]
     # PARKED-GHOST: return {n: (x + dx, y + dy) for n, (x, y) in snapshot.items()}
+
+
+def _cross(a, b):
+    return a[0] * b[1] - a[1] * b[0]
+
+
+def view_handedness(xy):
+    """Which side of the body the picture shows: +1 for the view the setting "Participant faces: right side of the image" assumes,
+    -1 for the mirror-image view, None when it cannot be told.
+
+    Uses the sign of two turning directions that do not depend on posture (upright, seated, lying) or on the leg: the pelvis
+    (ASIS, PSIS, trochanter) and, if the pelvis dots are not available, the foot (malleolus, fibular head, 5th metatarsal base
+    and head). The result is only given when the turn is clearly not flat (so nearly collinear dots give None).
+    """
+    def pt(n):
+        return np.array(xy[n], float) if n in xy else None
+
+    a, s, t = pt("asis"), pt("psis"), pt("trochanter")
+    if a is not None and s is not None and t is not None:
+        v1, v2 = a - s, t - (a + s) / 2
+        c = _cross(v1, v2)
+        n = float(np.hypot(*v1) * np.hypot(*v2))
+    else:
+        m, f, b, h = pt("malleolus"), pt("fibular_head"), pt("mt5_base"), pt("mt5_head")
+        if any(v is None for v in (m, f, b, h)):
+            return None
+        v1, v2 = f - m, h - b
+        c = _cross(v1, v2)
+        n = float(np.hypot(*v1) * np.hypot(*v2))
+    if n < 1e-9 or abs(c) < 0.05 * n:
+        return None
+    return 1 if c > 0 else -1

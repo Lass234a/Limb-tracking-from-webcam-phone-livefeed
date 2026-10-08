@@ -20,6 +20,7 @@ from dataclasses import asdict, replace
 
 from . import overlay
 from .angles import measure, segment_pairs
+from .geometry import view_handedness
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
@@ -57,7 +58,7 @@ class _FrozenWhileRecording:
 # Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
-                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "angles", "overlay_video_saved"]
+                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved"]
 
 
 class Engine:
@@ -80,6 +81,8 @@ class Engine:
         self.scale = ScaleReference(self.kind)   # pixel-to-cm scale from a ruler with a dot at each end (limbtrack/scale.py)
         self._scale_values = []                  # live scale per recorded frame
         self.fps_source = None                   # callable giving the video source's frame rate (set by set_source)
+        self.facing_detected = None              # +1 / -1 / None: which side of the body the marked dots show (see geometry.view_handedness)
+        self._facing_bad_frames = 0              # consecutive frames in which that disagrees with 'Participant faces'
         self.last_stop_reason = None             # why the engine itself ended the last recording (picture size changed), if it did
         self._notice = None                      # (text, time) shown in the header for a few seconds
         self._ref_avg, self._ref_last = {}, {}      # unsmoothed 0.2 s average per angle, used as the neighbour reference at Lock
@@ -92,6 +95,7 @@ class Engine:
         self.disabled_dots = set()   # landmarks the operator chose not to use (kept when switching test)
         self.three_point = None      # (first, middle, last) dot names of the operator's own angle, or None
         self.three_point_main = True # judge it against the target (instead of the test's own main joint)
+        self.three_point_flexion = False   # three-point angle as flexion (0 = straight) instead of the interior angle (180 = straight)
         # PARKED-GHOST: self.ghost_enabled = True    # draw a faint copy of the locked pose
         # PARKED-GHOST: self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
         # PARKED-GHOST: self._ghost = None           # dot positions (px) when the position was locked
@@ -127,6 +131,8 @@ class Engine:
             self.tolerance = self.test.tolerance_deg
             self.neighbour_tolerance = self.test.neighbour_tolerance_deg
             self.target = self.test.targets[0] if self.test.targets else None
+            if self.three_point and self.three_point_main and not self.three_point_flexion:
+                self.target = None            # the test's flexion positions do not apply to an interior angle
             self.disabled_dots &= set(self.test.all_dots)
             for n in self.test.optional_dots:               # optional dots (strap, anchor) start switched off; a choice is kept
                 if n not in self._optional_seen:
@@ -147,6 +153,7 @@ class Engine:
 
     def _reset_dots_core(self):
         with self.lock:
+            self._facing_bad_frames, self.facing_detected = 0, None
             self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
@@ -167,7 +174,10 @@ class Engine:
         if not self.three_point:
             return None
         a, b, c = self.three_point
-        return AngleDef(name="three_point", label=f"Angle at {self.test.dot_title(b)}", vectors=[[b, a], [b, c]],
+        if self.three_point_flexion:         # 180 - interior angle: 0 = straight, like the protocol's flexion angles
+            return AngleDef(name="three_point", label=f"Flexion at {self.test.dot_title(b)} (0 = straight)", vectors=[[b, a], [b, c]],
+                            signed=False, sign=-1.0, offset=180.0, primary=self.three_point_main, fulcrum=b)
+        return AngleDef(name="three_point", label=f"Interior angle at {self.test.dot_title(b)} (180 = straight)", vectors=[[b, a], [b, c]],
                         signed=False, sign=1.0, offset=0.0, primary=self.three_point_main, fulcrum=b)
 
     @property
@@ -200,11 +210,14 @@ class Engine:
             return [(a.title, not (set(a.dots) & self.disabled_dots),
                      [self.test.dot_title(d) for d in a.dots if d in self.disabled_dots]) for a in self.all_angles]
 
-    def set_three_point(self, first, middle, last, main=True):
+    def set_three_point(self, first, middle, last, main=True, flexion=None):
         """Add an angle between three landmarks of your choice: the unsigned angle at the middle one.
 
-        A straight limb reads 180 deg. The three landmarks are switched on automatically.
+        By default the interior angle (a straight limb reads 180 deg); with flexion=True it is 180 minus that (a straight limb
+        reads 0 deg, like the protocol's flexion angles). The three landmarks are switched on automatically.
         With main=True it is judged against the target; otherwise like the other joints (against the locked position).
+        The typed target keeps its meaning: it is converted when the convention changes and cleared when a flexion
+        suggestion would otherwise be compared with an interior angle (audit ANG-05).
         """
         with self.lock:
             if self.rec is not None:
@@ -216,7 +229,16 @@ class Engine:
                 raise ValueError("That landmark is not used by this test.")
             for n in names:
                 self.set_dot_enabled(n, True)
+            was_main = bool(self.three_point) and self.three_point_main
+            was_flexion = self.three_point_flexion
+            if flexion is not None:
+                self.three_point_flexion = bool(flexion)
             self.three_point, self.three_point_main = names, bool(main)
+            if self.three_point_main and self.target is not None:
+                if was_main and self.three_point_flexion != was_flexion:
+                    self.target = 180.0 - self.target                     # same pose, other convention
+                elif not was_main and not self.three_point_flexion and self.target in self.test.targets:
+                    self.target = None                                    # a flexion position is not an interior angle
             self._angles_changed()
 
     def clear_three_point(self):
@@ -235,6 +257,8 @@ class Engine:
     def lock_problem(self):
         """Plain-English reason why the position cannot be locked right now."""
         with self.lock:
+            if self.facing_mismatch:
+                return self.facing_message() + " Change 'Participant faces' (or the mirror) to match the picture, then lock."
             if not self.active_angles:
                 return ("No angle can be computed with the chosen landmarks. Tick the missing landmarks, "
                         "or choose a three-point angle.")
@@ -390,6 +414,8 @@ class Engine:
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
             self._forbid_while_recording("the locked position")
+            if self.facing_mismatch:
+                return False
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
                 return False
@@ -534,6 +560,26 @@ class Engine:
         self.scale.reset()
         self._notice = (text + ": mark the dots (and the ruler) again.", t)
 
+    FACING_MISMATCH_FRAMES = 5
+
+    def _check_facing(self, states):
+        """Compare the side of the body the dots show with the 'Participant faces' setting (audit ANG-04)."""
+        h = view_handedness({n: (st.x, st.y) for n, st in states.items() if not st.lost})
+        self.facing_detected = h
+        expected = 1 if self.facing_right else -1
+        self._facing_bad_frames = self._facing_bad_frames + 1 if (h is not None and h != expected) else 0
+
+    @property
+    def facing_mismatch(self):
+        """True when the marked dots clearly show the other side of the body than 'Participant faces' says."""
+        return self._facing_bad_frames >= self.FACING_MISMATCH_FRAMES
+
+    def facing_message(self):
+        shown = "RIGHT" if self.facing_detected == 1 else "LEFT"
+        chosen = "RIGHT" if self.facing_right else "LEFT"
+        return (f"CHECK 'Participant faces': the dots look like a {shown}-facing view of the picture, but {chosen} is selected. "
+                "The hip and pelvic-tilt signs would be wrong.")
+
     def seconds_since_last_frame(self):
         """Wall-clock seconds since process() last ran (infinity before the first frame). For operator warnings only."""
         return time.perf_counter() - self._frame_stamp if self._frame_stamp is not None else float("inf")
@@ -577,6 +623,7 @@ class Engine:
             self._last_states = states
             self.scale.update(gray)
             angles = self._compute_angles(states, t)
+            self._check_facing(states)
             self._last_angles = angles
             self._record_history(t, angles)
             first = self.test.label
@@ -586,6 +633,8 @@ class Engine:
             head = [first, "POSITION LOCKED" if self.locked else "position not locked"]
             if main is None:
                 head.append(f"main joint ({self.test.primary.title}) not available with the chosen landmarks")
+            if self.facing_mismatch:
+                head.append(self.facing_message())
             pull = self._compute_pull(states)
             if self.pull_active:
                 head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
@@ -705,6 +754,7 @@ class Engine:
             "lens_calibration": None,
             "facing": "right" if self.facing_right else "left",
             "overlay_video_saved": self.save_overlay,
+            "facing_detected": {1: "right", -1: "left"}.get(self.facing_detected),   # what the marked dots show; should equal facing
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {
                 "enabled": self.smoothing,
@@ -720,6 +770,9 @@ class Engine:
             "dot_size_check": self._dot_size_check(),
             "pull": self._pull_meta(),
             "three_point": list(self.three_point) if self.three_point else None,
+            "three_point_convention": (None if not self.three_point else
+                                      "flexion (180 - interior angle, 0 = straight)" if self.three_point_flexion
+                                      else "interior angle (180 = straight)"),
             "angles": [asdict(a) for a in self.active_angles],
         }
         return meta

@@ -89,6 +89,10 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **Need:** Helpful, optional.
 - **Code:** `filters.py` `MovingAverage`; `engine.py` `_compute_angles`, `set_smoothing`.
 
+### A8a. Participant-faces check (new)
+- **What:** the program works out which side of the body the marked dots show, from the turning direction of the pelvis dots (ASIS, PSIS, trochanter), or of the foot dots (malleolus, fibular head, metatarsal base and head) if the pelvis is not marked, and compares it with the *Participant faces* setting. This works for either leg, with the mirror on or off, and for upright, seated or lying postures. If they disagree for 5 frames in a row, the header says "CHECK 'Participant faces' ...", the setting's box turns amber, and **Lock is refused** with the reason (the hip and pelvic-tilt signs would be wrong). `meta.json` records `facing` and `facing_detected`. With only three dots (three-point mode) there is nothing to check. Record is not blocked, but Lock is the step before it.
+- **Code:** `geometry.py` `view_handedness`; `engine.py` `_check_facing`, `facing_mismatch`, `lock_problem`.
+
 ### A8. Angle definition and conventions
 - **What:** an angle is measured between two "arms". An arm is a vector between two dots, "perpendicular to the line between two dots pointing toward the feet" (the pelvis midline), or a fixed direction (up, down, forward).
 - **Alters numbers:** yes.
@@ -99,6 +103,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **Code:** `geometry.py` `resolve_arm`, `vector_angle`, `to_display`; `angles.py` `measure`; `protocol.json`.
 
 ### A9. Three-point angle
+- **Two conventions (audit ANG-05):** *interior angle* (default; a straight limb reads 180, a knee flexed 70 reads 110) or, with the tick box *Show it as flexion*, **flexion = 180 minus the interior angle** (a straight limb reads 0, like the protocol's flexion angles and targets). The convention is in the angle's name on screen and in `meta.json` (`three_point_convention`). The typed target never silently changes meaning: switching the convention converts it (110 interior becomes 70 flexion), and in the interior convention the test's own flexion positions are not offered or carried over (the target starts as *no target*). Because the protocol targets are flexion, the flexion convention is the one to use when the protocol positions apply. The three-point knee (trochanter, epicondyle, malleolus) is a few degrees different from the protocol knee (which uses the fibular head), by how far the fibular head sits off the epicondyle-malleolus line.
 - **What:** choose any three landmarks and the app shows the unsigned interior angle at the middle one (a straight limb reads 180 deg). It switches those three landmarks on, and by default becomes the main joint so the typed target applies to it; the test's own angles are then checked against the locked position instead. A tick box shows it alongside the other angles instead.
 - **Problem / who:** only three dots are available in some pilot set-ups; the knee angle needs four. *You.*
 - **Alters numbers:** it adds one angle; the other definitions are unchanged. Saved as `three_point` in `meta.json` and as an extra angle column group in the CSV.

@@ -396,6 +396,8 @@ class LiveTab(QWidget):
         # --- three-point angle
         self.chk_tp = QCheckBox("Use a three-point angle")
         self.tp_combos = [NoWheelComboBox() for _ in range(3)]
+        self.chk_tp_flex = QCheckBox("Show it as flexion (0 = straight, like the protocol) instead of the interior angle (180 = straight)")
+        self.chk_tp_flex.setChecked(False)
         self.chk_tp_main = QCheckBox("Use it as the main joint (the target above applies to it)")
         self.chk_tp_main.setChecked(True)
         self.tp_info = QLabel()
@@ -407,9 +409,11 @@ class LiveTab(QWidget):
             tpf.addRow(label, combo)
             combo.currentIndexChanged.connect(self.apply_three_point)
         tpf.addRow(self.chk_tp_main)
+        tpf.addRow(self.chk_tp_flex)
         tpf.addRow(self.tp_info)
         self.chk_tp.toggled.connect(self.apply_three_point)
         self.chk_tp_main.toggled.connect(self.apply_three_point)
+        self.chk_tp_flex.toggled.connect(self.apply_three_point)
 
         # --- marking & lock
         self.instruction = QLabel("Start the camera first.")
@@ -640,7 +644,8 @@ class LiveTab(QWidget):
     def apply_three_point(self, *_):
         try:
             if self.chk_tp.isChecked():
-                self.engine.set_three_point(*[c.currentData() for c in self.tp_combos], main=self.chk_tp_main.isChecked())
+                self.engine.set_three_point(*[c.currentData() for c in self.tp_combos], main=self.chk_tp_main.isChecked(),
+                                            flexion=self.chk_tp_flex.isChecked())
             else:
                 self.engine.clear_three_point()
         except (ValueError, RuntimeError) as e:
@@ -650,6 +655,9 @@ class LiveTab(QWidget):
         self.btn_lock.setChecked(False)
         self.update_landmark_info()
         self.update_three_point_info()
+        self.target_spin.blockSignals(True)               # the engine may have converted or cleared the target
+        self.target_spin.setValue(self.target_spin.minimum() if self.engine.target is None else self.engine.target)
+        self.target_spin.blockSignals(False)
         self.refresh_view()
 
     def update_three_point_info(self):
@@ -659,8 +667,10 @@ class LiveTab(QWidget):
         if not e.three_point:
             self.tp_info.setText("")
         elif main:
-            self.tp_info.setText("The target is the angle at the middle dot (a straight limb reads 180 deg). "
-                                 "The test's own angles are checked against the locked position instead.")
+            self.tp_info.setText(("The target is the flexion at the middle dot (a straight limb reads 0 deg, like the protocol). "
+                                  if e.three_point_flexion else
+                                  "The target is the INTERIOR angle at the middle dot (a straight limb reads 180 deg, so a knee flexed 70 deg is 110). ")
+                                 + "The test's own angles are checked against the locked position instead.")
         else:
             self.tp_info.setText("Shown with the other joints and checked against the locked position.")
 
@@ -1110,13 +1120,15 @@ class LiveTab(QWidget):
             cb.setEnabled(not recording)
         self.lm_preset.setEnabled(not recording)
         self.chk_mirror.setEnabled(not recording)
+        self.facing_combo.setStyleSheet("background-color: #fcd34d;" if self.engine.facing_mismatch else "")
+        self.facing_combo.setToolTip(self.engine.facing_message() if self.engine.facing_mismatch else "")
         self.chk_overlay.setEnabled(not recording)
         for w in (self.test_combo, self.kind_combo, self.facing_combo, self.target_spin, self.tol_spin, self.ntol_spin,
                   self.btn_remark, self.btn_lock):
             w.setEnabled(not recording)           # nothing that changes the measurement may change during a recording
         main_three_point = bool(self.engine.three_point) and self.engine.three_point_main
         self.suggest.setEnabled(not recording and not main_three_point)
-        for w in (self.chk_tp, self.chk_tp_main, *self.tp_combos):
+        for w in (self.chk_tp, self.chk_tp_main, self.chk_tp_flex, *self.tp_combos):
             w.setEnabled(not recording)
         if self._rec_started is not None and self.engine.rec is None:       # the engine ended the recording itself
             reason = self.engine.last_stop_reason
