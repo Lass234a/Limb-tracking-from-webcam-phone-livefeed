@@ -3,7 +3,15 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
-## Unreleased (after 0.3.0)
+## 0.4.0 - 2026-10-08
+
+### Operator workflow
+- **Session plan**: a list of every position of the protocol with the number of trials already saved for the typed participant (counted from the files on disk). Click a row to set the test and target; the Record box says "Next: trial 2 of 2". Positions outside the plan (a typed target) are not counted. The planned number of trials per position is `TRIALS_PER_POSITION` (2) in `limbtrack/gui.py`.
+- The panel now starts with what is needed for every position (plan, mark/lock, record, test and target); set-once-per-session items (video source, camera checklist, ruler, saved files and privacy) come after; landmarks and the three-point angle are folded under *Show advanced*.
+
+### Phone streams
+- A stream address without a path (for example DroidCam's `http://192.168.0.100:4747`) gets `/video` added, because the bare address is a web page. A bare `192.168.0.100:4747` also works.
+- *Connect to stream* stops a running camera first (not while recording). A failed connection now shows its reason, with a hint, under the video-source buttons instead of on a line that may be scrolled out of view.
 
 ### Privacy (GDPR) - audit REP-05
 - Privacy crop: drag a rectangle round the leg; only that part of the picture is written to `raw.mp4` and `overlay.mp4` (about half the encoding work).

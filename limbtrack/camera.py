@@ -3,7 +3,9 @@
 Phones will appear here as well: apps such as Iriun / Camo / DroidCam show up as an
 ordinary webcam index, and a network stream is just a URL string.
 """
+import re
 import threading
+from urllib.parse import urlsplit, urlunsplit
 import time
 from pathlib import Path
 
@@ -11,6 +13,18 @@ import cv2
 
 
 STREAM_SCHEMES = ("rtsp", "rtsps", "http", "https", "rtmp", "rtmps", "udp", "tcp", "srt", "rtp")
+
+
+def normalise_stream_address(address):
+    """What the operator typed, made into an address OpenCV can open. Phone apps such as DroidCam (port 4747) and IP Webcam
+    (port 8080) serve their picture at /video; the bare address (http://192.168.0.100:4747) is a web page, not a picture."""
+    a = (address or "").strip()
+    if a and "://" not in a and re.match(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?(/.*)?$", a):
+        a = "http://" + a
+    p = urlsplit(a)
+    if p.scheme.lower() in ("http", "https") and p.netloc and p.path in ("", "/"):
+        a = urlunsplit(p._replace(path="/video"))
+    return a
 
 
 def classify_source(source):

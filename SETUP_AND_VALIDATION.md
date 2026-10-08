@@ -53,7 +53,7 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
 - This is technical help, not legal advice; the data-handling plan must be confirmed by the GDPR contact.
 
 ## 2. During each trial
-1. Choose the test and the position (target). The required neighbour joint angle (for example hip 90) is shown green/red from
+1. Click the next position in the session plan (or choose the test and target by hand). The required neighbour joint angle (for example hip 90) is shown green/red from
    the start.
 2. Check *Participant faces*. The program warns and refuses Lock if the setting contradicts the marked dots.
 3. Mark the dots, position the participant, **press Lock before Record** (it cannot be changed during a recording).

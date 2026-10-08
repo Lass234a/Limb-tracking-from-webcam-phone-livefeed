@@ -15,11 +15,12 @@ from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
-                               QVBoxLayout, QWidget)
+                               QListWidget, QVBoxLayout, QWidget)
 
 from . import privacy
-from .camera import CameraSource, camera_names, classify_source, list_cameras
+from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
+from .recorder import count_trials
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
 
@@ -42,6 +43,9 @@ def bgr_to_qimage(img):
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     h, w = rgb.shape[:2]
     return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+
+
+TRIALS_PER_POSITION = 2     # the session plan counts saved trials against this number
 
 
 class NoWheelComboBox(QComboBox):
@@ -374,7 +378,7 @@ class LiveTab(QWidget):
         self.btn_stream.clicked.connect(self.connect_stream)
         btn_file = QPushButton("Open video file (practice)...")
         btn_file.clicked.connect(self.open_file)
-        src = QGroupBox("1. Video source")
+        src = QGroupBox("Video source (set once per session)")
         sl = QVBoxLayout(src)
         row = QHBoxLayout()
         row.addWidget(self.cam_combo, 1)
@@ -440,7 +444,7 @@ class LiveTab(QWidget):
         self.chk_smooth.setToolTip("Only changes what you see. The saved CSV always has the unsmoothed angles.")
         self.chk_smooth.setChecked(True)
         self.chk_smooth.toggled.connect(lambda on: (engine.set_smoothing(on), self.refresh_view()))
-        tg = QGroupBox("2. Test and target")
+        tg = QGroupBox("Test, target and tolerances")
         f = QFormLayout(tg)
         f.addRow("Test", self.test_combo)
         f.addRow("Target (main joint)", self.target_spin)
@@ -487,7 +491,7 @@ class LiveTab(QWidget):
         self.chk_tp_flex.toggled.connect(self.apply_three_point)
 
         # --- marking & lock
-        self.instruction = QLabel("Start the camera first.")
+        self.instruction = QLabel("Start the camera first (Video source, further down in this panel).")
         self.instruction.setStyleSheet(BIG)
         self.instruction.setWordWrap(True)
         self.btn_remark = QPushButton("Re-mark all dots")
@@ -504,7 +508,7 @@ class LiveTab(QWidget):
         self.chk_trails = QCheckBox("Show trails of the dots (from Start recording)")
         self.chk_trails.setChecked(True)
         self.chk_trails.toggled.connect(lambda v: (setattr(engine, "trails_enabled", v), self.refresh_view()))
-        mk = QGroupBox("3. Mark dots, set position, lock")
+        mk = QGroupBox("Mark dots, set position, lock")
         ml = QVBoxLayout(mk)
         ml.addWidget(self.instruction)
         ml.addWidget(self.btn_remark)
@@ -534,6 +538,9 @@ class LiveTab(QWidget):
         self.btn_rec.setCheckable(True)
         self.btn_rec.clicked.connect(self.toggle_record)
         self.rec_label = QLabel("Not recording")
+        self.trial_label = QLabel("")
+        self.trial_label.setWordWrap(True)
+        self.trial_label.setStyleSheet("font-weight: bold;")
         self.folder_label = QLabel(f"Saving to: {self.recordings_dir}")
         self.folder_label.setWordWrap(True)
         self.btn_folder = QPushButton("Change recordings folder...")
@@ -550,17 +557,15 @@ class LiveTab(QWidget):
         mrow = QHBoxLayout()
         for b in (self.btn_start_mark, self.btn_end_mark, self.btn_mark):
             mrow.addWidget(b)
-        rc = QGroupBox("4. Record")
+        rc = QGroupBox("Record")
         rf = QFormLayout(rc)
         rf.addRow("Participant ID", self.participant)
         rf.addRow("Notes", self.notes)
-        rf.addRow(self.chk_overlay)
+        rf.addRow(self.trial_label)
         rf.addRow(self.btn_rec)
         rf.addRow(mrow)
         rf.addRow(self.rec_label)
         rf.addRow(self.key_hint)
-        rf.addRow(self.folder_label)
-        rf.addRow(self.btn_folder)
         rf.addRow(btn_open)
 
         # --- privacy: what is written to the saved videos
@@ -576,13 +581,16 @@ class LiveTab(QWidget):
         self.btn_priv_clear.clicked.connect(self.clear_privacy)
         self.view.rect_drawn.connect(self.on_privacy_rect)
         self._priv_kind = None
-        pv = QGroupBox("Privacy: what is saved to video")
+        pv = QGroupBox("Saved files and privacy (set once per session)")
         pvl = QVBoxLayout(pv)
         pvl.addWidget(self.priv_label)
         prow = QHBoxLayout()
         for b in (self.btn_crop, self.btn_mask, self.btn_priv_clear):
             prow.addWidget(b)
         pvl.addLayout(prow)
+        pvl.addWidget(self.chk_overlay)
+        pvl.addWidget(self.folder_label)
+        pvl.addWidget(self.btn_folder)
         self.update_privacy_label()
 
         # --- scale (ruler with a dot at each end)
@@ -649,8 +657,36 @@ class LiveTab(QWidget):
         self.trace_timer.timeout.connect(self.update_trace)
         self.trace_timer.start(100)
 
+        # --- session plan: every position of the protocol with the trials already saved for this participant
+        self.plan = QListWidget()
+        self.plan.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.plan.setTextElideMode(Qt.ElideRight)
+        self.plan_rows = [(key, tgt) for key, t in engine.tests.items() for tgt in (t.targets or [None])]
+        for _ in self.plan_rows:
+            self.plan.addItem("")
+        self.plan.setFixedHeight(min(len(self.plan_rows), 8) * (self.plan.fontMetrics().height() + 4) + 8)     # 8 rows, then scrolls
+        self.plan.itemClicked.connect(self.on_plan_clicked)
+        self.participant.textChanged.connect(self.refresh_plan)
+        self.target_spin.valueChanged.connect(lambda _: self.refresh_plan())
+        plan_box = QGroupBox("Session plan (click the next position)")
+        plan_l = QVBoxLayout(plan_box)
+        plan_l.addWidget(self.plan)
+        self.refresh_plan()
+
+        # --- rarely used settings, folded away until asked for
+        self.btn_adv = QPushButton("Show advanced: landmarks, three-point angle")
+        self.btn_adv.setCheckable(True)
+        self.adv_body = QWidget()
+        adv_l = QVBoxLayout(self.adv_body)
+        adv_l.setContentsMargins(0, 0, 0, 0)
+        adv_l.addWidget(lm)
+        adv_l.addWidget(tpbox)
+        self.adv_body.setVisible(False)
+        self.btn_adv.toggled.connect(lambda on: (self.adv_body.setVisible(on), self.btn_adv.setText(
+            "Hide advanced" if on else "Show advanced: landmarks, three-point angle")))
+
         side = QVBoxLayout()
-        for g in (src, cs, tg, lm, tpbox, sc, mk, pv, rc):
+        for g in (plan_box, mk, rc, tg, src, cs, sc, pv, self.btn_adv, self.adv_body):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -724,6 +760,7 @@ class LiveTab(QWidget):
         self.ntol_spin.setValue(self.engine.neighbour_tolerance)
         self.btn_lock.setChecked(False)
         self.rebuild_landmarks()
+        self.refresh_plan()
 
     # ------------------------------------------------- landmark selection
     def rebuild_landmarks(self):
@@ -918,17 +955,24 @@ class LiveTab(QWidget):
         self.camera_check_label.setStyleSheet("" if result["ok"] else "color: #d97706; font-weight: bold;")
 
     def connect_stream(self):
-        address = self.stream_box.text().strip()
-        if self.worker is not None:
-            self.say("Stop the running camera or video first.")
-            return
+        typed = self.stream_box.text().strip()
+        address = normalise_stream_address(typed)
         try:
             kind = classify_source(address) if address else None
         except ValueError:
             kind = None
         if kind != "stream":
             self.say("That is not a stream address. It should start with http://, https://, rtsp:// or similar.")
+            self._source_note = "That is not a stream address. It should look like http://192.168.0.100:4747/video"
+            self.update_camera_info()
             return
+        if self.worker is not None:
+            if self.engine.rec is not None:
+                self.say("Stop recording before switching to another video source.")
+                return
+            self.stop_camera()                       # switching source: the running camera or video is stopped first
+        if address != typed:
+            self.stream_box.setText(address)        # show what is really being opened
         self.start_source(address)
 
     def fill_cameras(self, found):
@@ -965,6 +1009,7 @@ class LiveTab(QWidget):
             self.start_source(path)
 
     def start_source(self, source):
+        self._source_note = ""
         self.engine.reset_dots()
         self.clear_scale()
         self.btn_lock.setChecked(False)
@@ -1007,6 +1052,16 @@ class LiveTab(QWidget):
             self.update_camera_info()
             if msg != "Stopped.":
                 self.instruction.setText(msg)
+                self._source_note = msg
+                try:
+                    stream = classify_source(worker.source) == "stream"
+                except ValueError:
+                    stream = False
+                if stream:
+                    self._source_note += ("\nCheck that the phone app is running, that the phone and this PC are on the same Wi-Fi "
+                                          "(or use USB), and that the address is right (DroidCam: http://PHONE-IP:4747/video). "
+                                          "Easier: install the DroidCam Client on the PC and choose 'DroidCam Video' in the camera list.")
+                self.update_camera_info()
 
     # ------------------------------------------------------- live trace
     def update_trace(self):
@@ -1140,6 +1195,55 @@ class LiveTab(QWidget):
         self.scale_label.setText(text)
         self.scale_label.setStyleSheet("color: #d97706; font-weight: bold;" if (problems or small) else "")
 
+    # ------------------------------------------------------------ session plan
+    def _plan_text(self, key, tgt):
+        t = self.engine.tests[key]
+        return t.label.replace(" (MVIC)", "") + (f", {tgt:g} deg" if tgt is not None else ", no target")
+
+    def refresh_plan(self):
+        """Update the trial counts (read from the saved files), mark the current position and say which trial is next."""
+        if not hasattr(self, "plan_rows"):
+            return
+        pid = self.participant.text().strip()
+        valid = privacy.check_participant_id(pid) is None
+        cur_key, cur_tgt = self.engine.test.key, (self.engine.target if self.engine.primary_angle else None)
+        current, n_cur = None, 0
+        for i, (key, tgt) in enumerate(self.plan_rows):
+            n = count_trials(self.recordings_dir, pid, key, tgt) if valid else 0
+            mark = "-" if not valid else ("done" if n >= TRIALS_PER_POSITION else f"{n}/{TRIALS_PER_POSITION}")
+            text = f"{mark:>5}   {self._plan_text(key, tgt)}"
+            item = self.plan.item(i)
+            if item.text() != text:
+                item.setText(text)
+            if key == cur_key and ((tgt is None and cur_tgt is None) or (tgt is not None and cur_tgt is not None and abs(tgt - cur_tgt) < 1e-6)):
+                current, n_cur = i, n
+        self.plan.blockSignals(True)
+        self.plan.setCurrentRow(-1 if current is None else current)
+        self.plan.blockSignals(False)
+        if current is not None:
+            self.plan.scrollToItem(self.plan.item(current))
+        where = self._plan_text(cur_key, cur_tgt)
+        if not valid:
+            self.trial_label.setText("Enter the participant code (P01, ...) to count trials.")
+        elif current is None:
+            self.trial_label.setText(f"{where}: not a position of the plan (trials are not counted).")
+        elif n_cur >= TRIALS_PER_POSITION:
+            self.trial_label.setText(f"{where}: {n_cur} trials already saved (planned {TRIALS_PER_POSITION}). Another is trial {n_cur + 1}.")
+        else:
+            self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}\n{where}")
+
+    def on_plan_clicked(self, item):
+        key, tgt = self.plan_rows[self.plan.row(item)]
+        idx = self.test_combo.findData(key)
+        if idx != self.test_combo.currentIndex():
+            self.test_combo.setCurrentIndex(idx)
+            if self.engine.test.key != key:               # the engine refused (recording)
+                self.refresh_plan()
+                return
+        self.target_spin.setValue(float(tgt) if tgt is not None else self.target_spin.minimum())
+        self.say("Position set. Mark the dots if needed, check the angles, then lock.", 5.0)
+        self.refresh_plan()
+
     # ------------------------------------------------------------ privacy and folder
     folder_changed = Signal(str)
 
@@ -1198,6 +1302,7 @@ class LiveTab(QWidget):
         self.engine.recordings_dir = Path(d)
         self.set_recordings_dir(Path(d))
         self.folder_changed.emit(str(d))
+        self.refresh_plan()
 
     def set_recordings_dir(self, path):
         self.recordings_dir = Path(path)
@@ -1295,6 +1400,7 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", str(e))
                 return
             self._rec_started = time.perf_counter()
+            self.refresh_plan()
             self._marker_counts = {"start": 0, "end": 0, "other": 0}
             self._marker_msg = ("", 0.0)
             self.btn_rec.setText("Stop recording  (R)")
@@ -1318,6 +1424,7 @@ class LiveTab(QWidget):
                 return
             self.btn_rec.setText("Start recording  (R)")
             self._rec_started = None
+            self.refresh_plan()
             if not paths:
                 self.rec_label.setText("Not recording")
             elif n == 0:
@@ -1336,7 +1443,9 @@ class LiveTab(QWidget):
         cam = self.worker.camera if self.worker is not None else None
         self.btn_lock_cam.setEnabled(False)       # switched off: on some webcams the lock blacks out the picture (audit CAM-05)
         if cam is None:
-            self.cam_info.setText("")
+            note = getattr(self, "_source_note", "")
+            self.cam_info.setText(("WARNING: " + note) if note else "")
+            self.cam_info.setStyleSheet("color: #d97706; font-weight: bold;" if note else "")
             return
         g, m = cam._granted, cam.measured_fps()
         if cam.is_file:
@@ -1357,6 +1466,7 @@ class LiveTab(QWidget):
 
     def refresh_status(self):
         recording = self._rec_started is not None
+        self.plan.setEnabled(not recording)
         for w in (self.btn_crop, self.btn_mask, self.btn_priv_clear, self.btn_folder):
             w.setEnabled(not recording)
         self.update_privacy_label()

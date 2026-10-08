@@ -4,6 +4,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -120,4 +121,33 @@ def test_the_window_connects_only_to_stream_addresses(tmp_path):
     live.stream_box.setText("")
     live.connect_stream()
     assert live.worker is None
+    win.close()
+
+
+def test_phone_app_addresses_get_the_video_path():
+    from limbtrack.camera import normalise_stream_address as n
+    assert n("http://192.168.0.100:4747") == "http://192.168.0.100:4747/video"            # DroidCam's page is not a picture
+    assert n("192.168.0.100:4747") == "http://192.168.0.100:4747/video"
+    assert n(" http://192.168.0.100:8080/ ") == "http://192.168.0.100:8080/video"
+    assert n("http://192.168.0.100:4747/video") == "http://192.168.0.100:4747/video"
+    assert n("http://phone/stream.mjpg") == "http://phone/stream.mjpg"                  # a given path is respected
+    assert n("rtsp://cam/stream") == "rtsp://cam/stream" and n("clip.mp4") == "clip.mp4" and n("") == ""
+
+
+def test_connecting_to_a_stream_fixes_the_address_and_shows_a_failure_where_it_can_be_seen(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
+    live = win.live
+    seen = []
+    monkeypatch.setattr(live, "start_source", lambda a: seen.append(a))
+    live.stream_box.setText("http://192.168.0.100:4747")
+    live.connect_stream()
+    assert seen == ["http://192.168.0.100:4747/video"] and live.stream_box.text() == seen[0]
+    live._source_note = ""
+
+    class W:                                       # a stream that could not be opened
+        source = "http://192.168.0.100:4747/video"
+    live.worker = SimpleNamespace(wait=lambda *a: None, source=W.source)
+    live.on_ended("Could not open the video source.", live.worker)
+    assert "DroidCam" in live.cam_info.text() and "Could not open" in live.cam_info.text()
     win.close()

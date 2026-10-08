@@ -25,6 +25,15 @@ def _num(v, nd=3):
     return "" if v is None or (isinstance(v, float) and math.isnan(v)) else round(float(v), nd)
 
 
+def count_trials(root, participant, test_key, target):
+    """How many trials of this test and position are already saved for this participant (counted from the files on disk)."""
+    folder = Path(root) / _safe(participant)
+    if not folder.is_dir():
+        return 0
+    tgt = "" if target is None else f"_{target:g}deg"
+    return len(list(folder.glob(f"{_safe(participant)}_{_safe(test_key)}{tgt}_????????-??????_meta.json")))
+
+
 class FrameSizeChanged(RuntimeError):
     """A frame arrived with another size than the videos were opened for (phone rotated, camera changed resolution)."""
 
