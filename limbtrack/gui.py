@@ -322,7 +322,8 @@ class LiveTab(QWidget):
         for k, t in engine.tests.items():
             self.test_combo.addItem(t.label, k)
         self.test_combo.currentIndexChanged.connect(self.on_test_changed)
-        self.target_spin = self._spin(-90, 180, 1, " deg")
+        self.target_spin = self._spin(-91, 180, 1, " deg")
+        self.target_spin.setSpecialValueText("no target")         # the lowest value means: the main joint is shown, not judged
         self.target_spin.valueChanged.connect(lambda v: self._set_setting("target", self.target_spin, v))
         self.suggest = NoWheelComboBox()
         self.suggest.activated.connect(lambda i: self.target_spin.setValue(float(self.suggest.itemText(i).split()[0])))
@@ -552,8 +553,9 @@ class LiveTab(QWidget):
         self.suggest.clear()
         for v in t.targets:
             self.suggest.addItem(f"{v:g} deg")
-        self.target_spin.setValue(self.engine.target if self.engine.target is not None else 0.0)
-        self.engine.target = self.target_spin.value()
+        self.target_spin.blockSignals(True)
+        self.target_spin.setValue(self.engine.target if self.engine.target is not None else self.target_spin.minimum())
+        self.target_spin.blockSignals(False)                    # the engine already holds the test's first position (or none)
         self.tol_spin.setValue(self.engine.tolerance)
         self.ntol_spin.setValue(self.engine.neighbour_tolerance)
         self.btn_lock.setChecked(False)
@@ -678,11 +680,14 @@ class LiveTab(QWidget):
 
     def _set_setting(self, attr, spin, value):
         """Change an engine setting from a spin box; if the engine refuses (recording), put the box back and say why."""
+        if attr == "target" and value <= spin.minimum():
+            value = None                                             # "no target"
         try:
             setattr(self.engine, attr, value)
         except RuntimeError as e:
             spin.blockSignals(True)
-            spin.setValue(getattr(self.engine, attr))
+            current = getattr(self.engine, attr)
+            spin.setValue(spin.minimum() if current is None else current)
             spin.blockSignals(False)
             self.say(str(e))
             return

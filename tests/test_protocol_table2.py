@@ -97,3 +97,25 @@ def test_the_knee_is_signed_so_hyperextension_reads_negative(tmp_path):
         res = eng.process(render(p, seed=i), 0.1 + i / 30)
     knee = angle(res, "knee")
     assert knee.raw_value == pytest.approx(-8.0, abs=0.7) and knee.reference == 0.0 and knee.raw_status == OUT    # K 0 +/- 5: -8 is out
+
+
+# ---- a test without positions (belt squat) is shown but not judged until a target is typed
+def test_a_test_without_positions_has_no_target_and_is_not_judged():
+    from PySide6.QtWidgets import QApplication
+
+    from limbtrack.gui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        win = MainWindow(TESTS, d)
+        live = win.live
+        live.test_combo.setCurrentIndex(live.test_combo.findData("belt_squat"))
+        assert win.engine.target is None and live.target_spin.text().startswith("no target")
+        live.target_spin.setValue(60.0)                      # typing a target switches judging on
+        assert win.engine.target == 60.0
+        live.target_spin.setValue(live.target_spin.minimum())
+        assert win.engine.target is None
+        live.test_combo.setCurrentIndex(0)
+        assert win.engine.target == 20.0                     # a test with positions starts on its first one
+        win.close()

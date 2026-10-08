@@ -109,7 +109,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **What:** decides whether an angle is "in position".
 - **Alters numbers:** the verdicts and deviation columns.
   - Main joint: `deviation = value - target`, where the target is what the operator types.
-  - Neighbour joints with a required angle in the protocol (Tabel 2: hip 90, knee 0 or knee 90): that angle, from the start. Other joints: after Lock, each is compared with the value that was **shown** at the moment of locking (a single smoothed frame, not averaged).
+  - Neighbour joints with a required angle in the protocol (Tabel 2: hip 90, knee 0 or knee 90): that angle, from the start. Other joints: after Lock, each is compared with the **unsmoothed angle averaged over the 0.2 s before Lock**. This is the same whether the display smoothing is on or off (audit DOC-02), so the saved `_ref` and `locked_references_deg` do not depend on that switch.
   - In tolerance when `|deviation| <= tolerance` (inclusive, no hysteresis). Defaults: 3 deg main joint, 5 deg other joints; both adjustable.
   - The CSV `_dev` and `_ok` are computed from the unsmoothed angle against these references.
 - **Who:** *You* (you chose to keep it); the design was *Added*.
@@ -213,6 +213,7 @@ The method is in A7 to A10. Other items:
 | Pause and frame-by-frame stepping (video files only) | You | Extra for live use (practice) | `gui.py` `VideoWorker` |
 | Keyboard keys: Space lock, R record, P pause, Left/Right step, S/E/M markers. Letter keys are typed into the Participant/Notes boxes while those have focus, so **F5 record, F6 MVIC start, F7 MVIC end, F8 marker, F9 lock** always work; Enter or Esc leaves a text box; an orange hint shows while a box has focus; each marker is confirmed on screen with a running count (audit GUI-13) | Added | Helpful | `gui.py` `TextField`, `mark` |
 | Scrollable control panel for small screens | Added | Helpful | `gui.py` |
+| "Target" can be set to *no target* (lowest value of the box): the main joint is shown but not judged, with no target in the file name and `meta.json`. Tests without positions (belt squat) start that way instead of with a forced 0 deg (audit GUI-05) | You | Changes the verdicts of that test only | Helpful | `gui.py` `_set_setting` |
 | Line under "Video source" showing what the camera really delivers (resolution, measured frame rate, orange warning when it differs from the request) | You | Helpful | `camera.py` `granted`, `measured_fps`, `settings_problems`; `gui.py` `update_camera_info` |
 
 ## F. Calibration
