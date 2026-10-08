@@ -25,13 +25,15 @@ from .geometry import view_handedness
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import FrameSizeChanged, TrialRecorder
+from . import provenance
 from .pull import compute_pull, describe as describe_pull
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.2.0"
+SOFTWARE_VERSION = "0.3.0"
+META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
@@ -72,6 +74,7 @@ class Engine:
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
         self.recordings_dir = recordings_dir
+        self.protocol_path = None    # set by the window: the protocol.json in use (its hash goes into meta.json)
         self.lock = threading.RLock()
         self.test = None
         self.trackers = None
@@ -737,6 +740,8 @@ class Engine:
         t = self.test
         meta = {
             "software_version": SOFTWARE_VERSION,
+            "meta_schema": META_SCHEMA,
+            "provenance": provenance.collect(str(self.protocol_path) if self.protocol_path else None),
             "participant": self.rec_info.get("participant"),
             "notes": self.rec_info.get("notes"),
             "test_key": t.key,

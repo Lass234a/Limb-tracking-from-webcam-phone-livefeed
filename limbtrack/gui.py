@@ -1176,6 +1176,7 @@ class MainWindow(QWidget):
         self.setWindowTitle("Limb angle tracker")
         self.resize(1400, 820)
         self.engine = Engine(tests, recordings_dir=Path(root) / "recordings")
+        self.engine.protocol_path = Path(root) / "protocol.json"
         tabs = QTabWidget()
         self.live = LiveTab(self.engine, Path(root) / "recordings")
         self.review = ReviewTab(Path(root) / "recordings")

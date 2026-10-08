@@ -1,6 +1,6 @@
 # Feature inventory
 
-Version 0.2.0 (the version string in `meta.json` has not been bumped; see H12). Rewritten 2026-10-02 to match the code at commit `77c4d7d`. Function names are given instead of line numbers because lines move.
+Version 0.3.0 (`meta.json` now stores the version, a `meta_schema`, and a `provenance` block: code hash, git commit, library versions, computer, protocol-file hash). First written 2026-10-02 at commit `77c4d7d`; many sections updated since, see CHANGELOG.md. Function names are given instead of line numbers because lines move.
 
 **Purpose of the app:** show a live view of joint positions and angles from marker dots on bone landmarks, so each participant (maximal isometric contractions, strapped into a harness with an S-type load cell) can be placed in the correct position quickly. A webcam is the current proof of concept; two cameras (frontal and sagittal) are planned and parked.
 
@@ -141,6 +141,12 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **Need:** Extra.
 - **Code:** `review.py` `Trial.summary`.
 
+### A12a. The angle during the hold (audit VAL-01)
+- **Why:** the joint angle changes between positioning and the contraction (in the literature by about 19 deg for the knee against a rigid arm), so the typed target is not the angle at which the moment was produced. The angle to report is the one measured **during the hold**.
+- **What the Review tab and the exported summary now give per angle** (all from the unsmoothed CSV angle, for the analysis window, which opens on the MVIC start-to-end markers): `plateau_mean_deg` (mean over the middle 60 % of the window: the first and last 20 % are left out as ramps), `median_deg`, `rest_mean_deg` (mean over the 1 s before the window, at least 5 valid frames), `rest_to_hold_shift_deg` (plateau minus rest), `target_deg` (the typed target for the main joint, the reference for the others) and `mean_minus_target_deg`. A window too short for a plateau or rest gives a blank (NaN), never a guess.
+- **The export** now starts with `participant, test_key, trial, tolerance_deg, software_version, window_source` so the summaries of a whole study can be put in one table; `window_source` says whether the window was the MVIC markers or set by hand. Without markers the screen says so.
+- **Which number goes to AnyBody is your decision** (plateau mean is available now; the angle at peak force needs the force signal on the same clock, which is not built).
+
 ### A12b. Dot displacement in Review (new)
 - **What:** for the chosen analysis window, the Review tab shows how far every recorded dot moved, and the export writes `<trial>_displacement.csv` next to the summary CSV.
   - **end shift:** mean of the dot's last 5 valid positions minus the mean of its first 5 valid positions in the window (a vector dx, dy and its length), in pixels and, with a ruler scale, in cm.
@@ -277,7 +283,7 @@ Things that look like calibration but are not: the dot size and contrast learned
 9. **False precision.** Angles display to 0.1 deg, but real accuracy is unknown and likely worse. On synthetic data the typical error was about 0.5 deg or less.
 10. **Stepping backwards** keeps the tracker state, so it can mis-track after a jump. Files only, and not recorded.
 11. **Marker timing:** a marker attaches to the next processed frame (up to one frame late) plus the operator's reaction time.
-12. **Methods reproducibility:** `meta.json` now stores every tracker number, the smoothing, camera settings and angle definitions, but `software_version` is still "0.2.0" although the code has changed, and the git commit is not recorded.
+12. **Methods reproducibility: closed.** `meta.json` stores every tracker number, the smoothing, camera settings, angle definitions, the version (0.3.0), a `meta_schema`, and a `provenance` block (content hash of the program files, git commit and whether files were edited, library versions, computer, hash of `protocol.json`).
 13. **Green/red flicker** at the tolerance edge (no hysteresis).
 14. **Dots of different colours in one video** (A, B) have not been tested together, and a dot's colour cannot be set by hand per dot.
 15. **No minimum dot size check, no scale.** See F and PARKED.md.

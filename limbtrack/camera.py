@@ -4,6 +4,7 @@ Phones will appear here as well: apps such as Iriun / Camo / DroidCam show up as
 ordinary webcam index, and a network stream is just a URL string.
 """
 import time
+from pathlib import Path
 
 import cv2
 
@@ -70,7 +71,8 @@ class CameraSource:
     def description(self):
         w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        return f"{self.source} ({w}x{h})"
+        name = Path(self.source).name if self.is_file else self.source      # a file's name only: no user folders in meta.json
+        return f"{name} ({w}x{h})"
 
     def granted(self):
         """What the camera driver says it is delivering. (Drivers can report the requested value without honouring it.)"""

@@ -33,6 +33,11 @@ def _f(s):
         return math.nan
 
 
+PLATEAU_TRIM = 0.2         # the plateau of a hold is its middle part: the first and last 20 % of the window are left out
+REST_SECONDS = 1.0         # "rest" is the second before the window starts
+REST_MIN_FRAMES = 5
+
+
 class Trial:
     """A recorded trial loaded from disk."""
 
@@ -172,6 +177,19 @@ class Trial:
             dev = self.dev[n][m]
             good = v[valid]
             change = float(np.mean(good[-5:]) - np.mean(good[:5])) if good.size >= 2 else math.nan
+            # The angle that matters is the one during the hold, not the one typed as the target (audit VAL-01).
+            span = t1 - t0
+            pm = (self.t >= t0 + PLATEAU_TRIM * span) & (self.t <= t1 - PLATEAU_TRIM * span)
+            pv = self.deg[n][pm]
+            pv = pv[~np.isnan(pv)]
+            plateau = float(np.mean(pv)) if pv.size >= REST_MIN_FRAMES else math.nan
+            rm = (self.t >= t0 - REST_SECONDS) & (self.t < t0)
+            rv = self.deg[n][rm]
+            rv = rv[~np.isnan(rv)]
+            rest = float(np.mean(rv)) if rv.size >= REST_MIN_FRAMES else math.nan
+            refs = self.ref[n][m]
+            refs = refs[~np.isnan(refs)]
+            target = float(np.mean(refs)) if refs.size else math.nan
             out.append({
                 "angle": a.title,
                 "role": "main" if a.primary else "neighbour",
@@ -182,6 +200,12 @@ class Trial:
                 "min_deg": float(np.min(v[valid])) if valid.any() else math.nan,
                 "max_deg": float(np.max(v[valid])) if valid.any() else math.nan,
                 "change_start_to_end_deg": change,
+                "median_deg": float(np.median(good)) if good.size else math.nan,
+                "target_deg": target,
+                "mean_minus_target_deg": (float(np.mean(good)) - target) if good.size and not math.isnan(target) else math.nan,
+                "plateau_mean_deg": plateau,
+                "rest_mean_deg": rest,
+                "rest_to_hold_shift_deg": (plateau - rest) if not (math.isnan(plateau) or math.isnan(rest)) else math.nan,
                 "max_abs_dev_deg": float(np.nanmax(np.abs(dev))) if np.any(~np.isnan(dev)) else math.nan,
                 "pct_in_tolerance": 100.0 * sum(f == "1" for f in flags) / len(flags) if flags else math.nan,
             })
@@ -365,6 +389,16 @@ class ReviewTab(QWidget):
         for r in rows:
             lines.append(f"{r['angle'][:21]:22s}{r['mean_deg']:7.1f}{r['sd_deg']:6.2f}{r['min_deg']:7.1f}{r['max_deg']:7.1f}"
                          f"{r['change_start_to_end_deg']:+10.1f}{r['max_abs_dev_deg']:8.1f}{r['pct_in_tolerance']:7.0f}%{r['frames_lost']:6d}")
+        lines += ["", f"Hold: the angle during the contraction, not the set angle  (plateau = middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window; rest = the {REST_SECONDS:g} s before it)",
+                  f"{'':22s}{'plateau':>9s}{'median':>8s}{'target':>8s}{'plat-tgt':>9s}{'rest':>8s}{'rest>hold':>10s}"]
+        for r in rows:
+            def f(v, w, signed=False):
+                return f"{'-':>{w}s}" if math.isnan(v) else f"{v:>+{w}.1f}" if signed else f"{v:>{w}.1f}"
+            pt = r["plateau_mean_deg"] - r["target_deg"] if not (math.isnan(r["plateau_mean_deg"]) or math.isnan(r["target_deg"])) else math.nan
+            lines.append(f"{r['angle'][:21]:22s}{f(r['plateau_mean_deg'], 9)}{f(r['median_deg'], 8)}{f(r['target_deg'], 8)}{f(pt, 9, True)}"
+                         f"{f(r['rest_mean_deg'], 8)}{f(r['rest_to_hold_shift_deg'], 10, True)}")
+        if not self.trial.hold_window():
+            lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
         self.disp.setText(self._displacement_text(t0, t1))
 
@@ -434,9 +468,15 @@ class ReviewTab(QWidget):
         out = self.trial.folder / f"{self.trial.base}_summary.csv"
         with open(out, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["window_start_s", "window_end_s"] + list(rows[0]))
+            ident = {"participant": self.trial.meta.get("participant"), "test_key": self.trial.meta.get("test_key"),
+                     "trial": self.trial.base, "tolerance_deg": self.trial.meta.get("tolerance_deg"),
+                     "software_version": self.trial.meta.get("software_version"),
+                     "window_source": "MVIC markers" if self.trial.hold_window() and tuple(map(float, (t0, t1))) == tuple(self.trial.hold_window())
+                     else "window as set (not the MVIC markers)"}
+            w.writerow(list(ident) + ["window_start_s", "window_end_s"] + list(rows[0]))
             for r in rows:
-                w.writerow([round(t0, 3), round(t1, 3)] + [round(v, 3) if isinstance(v, float) else v for v in r.values()])
+                w.writerow(list(ident.values()) + [round(t0, 3), round(t1, 3)]
+                           + [round(v, 3) if isinstance(v, float) else v for v in r.values()])
         extra = self.trial.folder / f"{self.trial.base}_displacement.csv"
         drows = self.trial.displacement(t0, t1)
         keys = list(dict.fromkeys(k for r in drows for k in r))
