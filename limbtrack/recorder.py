@@ -3,7 +3,9 @@ import csv
 import json
 import math
 import os
+import queue
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -25,20 +27,61 @@ class FrameSizeChanged(RuntimeError):
     """A frame arrived with another size than the videos were opened for (phone rotated, camera changed resolution)."""
 
 
+class _VideoThread(threading.Thread):
+    """Encodes the frames of one trial off the tracking thread, so tracking and encoding overlap. Frames are never
+    dropped: the queue is bounded, and when it is full the caller waits (a slow disk slows the program down instead of
+    silently desynchronising the video from the CSV)."""
+
+    QUEUE_FRAMES = 90
+
+    def __init__(self, raw, ovl):
+        super().__init__(daemon=True)
+        self.raw, self.ovl = raw, ovl
+        self.q = queue.Queue(maxsize=self.QUEUE_FRAMES)
+        self.error = None
+        self.peak = 0
+        self.written = 0
+
+    def put(self, frame, overlay, timeout=10.0):
+        self.q.put((frame, overlay), timeout=timeout)       # raises queue.Full if the writer is stuck for `timeout` seconds
+        self.peak = max(self.peak, self.q.qsize())
+
+    def run(self):
+        while True:
+            item = self.q.get()
+            if item is None:
+                return
+            if self.error is not None:
+                continue                                      # keep draining so the producer is never blocked for good
+            try:
+                self.raw.write(item[0])
+                if self.ovl is not None:
+                    self.ovl.write(item[1])
+                self.written += 1
+            except Exception as e:  # noqa: BLE001 - reported to the recording through write()/close()
+                self.error = e
+
+
 class TrialRecorder:
-    def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False):
+    def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False,
+                 save_overlay=True):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.started_at = datetime.now().isoformat(timespec="milliseconds")
         folder = Path(root) / _safe(participant)
         folder.mkdir(parents=True, exist_ok=True)
         tgt = "" if target is None else f"_{target:g}deg"
         self.base = folder / f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}"
-        self.paths = {k: Path(f"{self.base}_{k}") for k in ("raw.mp4", "overlay.mp4", "data.csv", "meta.json")}
+        self.save_overlay = bool(save_overlay)
+        names = ("raw.mp4", "overlay.mp4", "data.csv", "meta.json") if self.save_overlay else ("raw.mp4", "data.csv", "meta.json")
+        self.paths = {k: Path(f"{self.base}_{k}") for k in names}
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self._raw = cv2.VideoWriter(str(self.paths["raw.mp4"]), fourcc, fps, frame_size)
-        self._ovl = cv2.VideoWriter(str(self.paths["overlay.mp4"]), fourcc, fps, frame_size)
-        if not (self._raw.isOpened() and self._ovl.isOpened()):
-            raise RuntimeError("Could not open the video writers (check disk space and folder permissions).")
+        self._ovl = cv2.VideoWriter(str(self.paths["overlay.mp4"]), fourcc, fps, frame_size) if self.save_overlay else None
+        if not (self._raw.isOpened() and (self._ovl is None or self._ovl.isOpened())):
+            raise RuntimeError(f"Could not open the video writers at {fps:.1f} fps, {frame_size[0]}x{frame_size[1]} "
+                               "(check disk space and folder permissions).")
+        self._video = _VideoThread(self._raw, self._ovl)
+        self._video.start()
         self._fh = open(self.paths["data.csv"], "w", newline="", encoding="utf-8")
         self._csv = csv.writer(self._fh)
         self.dot_names, self.angle_names = list(dot_names), list(angle_names)
@@ -80,8 +123,12 @@ class TrialRecorder:
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
         if self._t0 is None:
             self._t0 = t
-        self._raw.write(frame)
-        self._ovl.write(overlay)
+        if self._video.error is not None:
+            raise RuntimeError(f"Saving the video failed: {self._video.error}")
+        try:
+            self._video.put(frame, overlay)
+        except queue.Full:
+            raise RuntimeError("Saving the video is not keeping up (the disk may be full or very slow).") from None
         row = [frame_index, round(t - self._t0, 5), round(t, 5), int(locked)]
         for d in self.dot_names:
             st = dots.get(d)
@@ -114,7 +161,15 @@ class TrialRecorder:
 
     def close(self, meta):
         errors = []
-        for what, fn in (("raw video", self._raw.release), ("overlay video", self._ovl.release), ("csv", self._fh.close)):
+        self._video.q.put(None)                                # the writer thread finishes everything queued, then stops
+        self._video.join(timeout=120)
+        if self._video.is_alive():
+            errors.append("video writer: did not finish within 2 minutes")
+        if self._video.error is not None:
+            errors.append(f"video writer: {self._video.error}")
+        closers = [("raw video", self._raw.release)] + ([("overlay video", self._ovl.release)] if self._ovl is not None else []) \
+            + [("csv", self._fh.close)]
+        for what, fn in closers:
             try:
                 fn()
             except Exception as e:  # noqa: BLE001 - keep closing the rest, and still write meta.json
@@ -130,6 +185,8 @@ class TrialRecorder:
             "measured_fps": round((self.frames - 1) / self.last_t, 3) if self.frames > 1 and self.last_t > 0 else None,
             "frame_size": list(self.frame_size),
             "files": {k: p.name for k, p in self.paths.items()},
+            "video_writer": {"overlay_video_saved": self.save_overlay, "frames_encoded": self._video.written,
+                             "queue_peak": self._video.peak, "queue_capacity": _VideoThread.QUEUE_FRAMES},
         })
         if errors:
             meta["close_errors"] = errors

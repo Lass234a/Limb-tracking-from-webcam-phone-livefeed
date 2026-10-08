@@ -423,6 +423,11 @@ class LiveTab(QWidget):
         self.key_hint.setVisible(False)
         for box in (self.participant, self.notes):
             box.focus_changed.connect(self._update_key_hint)
+        self.chk_overlay = QCheckBox("Also save the overlay video")
+        self.chk_overlay.setChecked(True)
+        self.chk_overlay.setToolTip("The overlay video has the angles and trails drawn on it. Switching it off makes recording lighter on the "
+                                    "computer; the Review tab can still draw the same picture from the raw video and the CSV, and can export it later.")
+        self.chk_overlay.toggled.connect(self._set_overlay_saving)
         self.btn_rec = QPushButton("Start recording  (R)")
         self.btn_rec.setCheckable(True)
         self.btn_rec.clicked.connect(self.toggle_record)
@@ -442,6 +447,7 @@ class LiveTab(QWidget):
         rf = QFormLayout(rc)
         rf.addRow("Participant ID", self.participant)
         rf.addRow("Notes", self.notes)
+        rf.addRow(self.chk_overlay)
         rf.addRow(self.btn_rec)
         rf.addRow(mrow)
         rf.addRow(self.rec_label)
@@ -668,6 +674,15 @@ class LiveTab(QWidget):
         if self.engine.primary_angle is None:
             lines.append("Main joint not available: no target is judged.")
         self.lm_info.setText("\n".join(lines))
+
+    def _set_overlay_saving(self, on):
+        try:
+            self.engine.save_overlay = bool(on)
+        except RuntimeError as e:
+            self.chk_overlay.blockSignals(True)
+            self.chk_overlay.setChecked(self.engine.save_overlay)
+            self.chk_overlay.blockSignals(False)
+            self.say(str(e))
 
     def on_mirror_toggled(self, on):
         self.engine.mirror = bool(on)
@@ -1066,6 +1081,7 @@ class LiveTab(QWidget):
             cb.setEnabled(not recording)
         self.lm_preset.setEnabled(not recording)
         self.chk_mirror.setEnabled(not recording)
+        self.chk_overlay.setEnabled(not recording)
         for w in (self.test_combo, self.kind_combo, self.facing_combo, self.target_spin, self.tol_spin, self.ntol_spin,
                   self.btn_remark, self.btn_lock):
             w.setEnabled(not recording)           # nothing that changes the measurement may change during a recording

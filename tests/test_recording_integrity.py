@@ -104,19 +104,18 @@ def test_a_failure_while_closing_still_clears_the_recording_and_writes_meta(tmp_
     eng = ready_engine(tmp_path)
     paths = eng.start_trial("P01")
     eng.process(render(PTS, seed=5), 0.3)
-    class FailsOnClose:
-        def write(self, frame):
-            pass
+    real = eng.rec._raw
 
+    class FailsOnClose:
         def release(self):
+            real.release()                                                   # (so the test leaves no file open)
             raise OSError("No space left on device")
 
-    eng.rec._raw.release()
     eng.rec._raw = FailsOnClose()
     eng.stop_trial()
     assert eng.rec is None                                                   # the next recording can start
     meta = json.loads(paths["meta.json"].read_text())
-    assert meta["status"] == "complete" and "No space left" in meta["close_errors"][0]
+    assert meta["status"] == "complete" and any("No space left" in e for e in meta["close_errors"])
     assert eng.start_trial("P01") is not None
     eng.stop_trial()
 

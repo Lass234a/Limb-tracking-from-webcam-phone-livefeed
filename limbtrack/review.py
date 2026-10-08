@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
                                QWidget)
 
 from . import overlay
@@ -204,6 +204,9 @@ class ReviewTab(QWidget):
         self.slider.valueChanged.connect(self.show_frame)
         btn_export = QPushButton("Export summary CSV")
         btn_export.clicked.connect(self.export)
+        btn_video = QPushButton("Export overlay video")
+        btn_video.setToolTip("Draws the angles and trails on every frame and saves a video (for sharing or a presentation).")
+        btn_video.clicked.connect(self.export_overlay_video)
 
         self.video = QLabel()
         self.video.setMinimumSize(560, 315)
@@ -240,6 +243,7 @@ class ReviewTab(QWidget):
         ctrl.addWidget(self.slider, 1)
         ctrl.addWidget(self.chk_trails)
         ctrl.addWidget(btn_export)
+        ctrl.addWidget(btn_video)
         left = QVBoxLayout()
         left.addWidget(self.video, 1)
         left.addLayout(ctrl)
@@ -362,6 +366,42 @@ class ReviewTab(QWidget):
                          f"{r['change_start_to_end_deg']:+10.1f}{r['max_abs_dev_deg']:8.1f}{r['pct_in_tolerance']:7.0f}%{r['frames_lost']:6d}")
         self.stats.setText("\n".join(lines))
         self.disp.setText(self._displacement_text(t0, t1))
+
+    def export_overlay_video(self):
+        """Render the overlay picture for every frame from the raw video and the CSV and save it as a video file."""
+        if self.trial is None:
+            return
+        tr = self.trial
+        out = tr.folder / f"{tr.base}_overlay_export.mp4"
+        n = len(tr.rows)
+        fps = tr.meta.get("video_fps_written") or tr.meta.get("measured_fps") or 30.0
+        writer, done = None, 0
+        progress = QProgressDialog("Drawing the overlay video...", "Cancel", 0, n, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        try:
+            for i in range(n):
+                img = tr.drawn(i, trails=self.chk_trails.isChecked())
+                if img is None:
+                    break
+                if writer is None:
+                    h, w = img.shape[:2]
+                    writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
+                    if not writer.isOpened():
+                        raise RuntimeError("Could not open the video file for writing.")
+                writer.write(img)
+                done = i + 1
+                progress.setValue(done)
+                if progress.wasCanceled():
+                    break
+        except Exception as e:  # noqa: BLE001 - shown to the operator
+            QMessageBox.warning(self, "Export failed", str(e))
+            return
+        finally:
+            if writer is not None:
+                writer.release()
+            progress.close()
+        QMessageBox.information(self, "Exported", f"Saved {out.name} ({done} of {n} frames).")
 
     def _displacement_text(self, t0, t1):
         tr = self.trial

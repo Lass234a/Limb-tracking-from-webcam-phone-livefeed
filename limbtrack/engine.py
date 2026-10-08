@@ -57,7 +57,7 @@ class _FrozenWhileRecording:
 # Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
-                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "angles"]
+                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "angles", "overlay_video_saved"]
 
 
 class Engine:
@@ -66,6 +66,7 @@ class Engine:
     neighbour_tolerance = _FrozenWhileRecording("the tolerance for the other joints")
     facing_right = _FrozenWhileRecording("which way the participant faces")
     mirror = _FrozenWhileRecording("the mirror setting")
+    save_overlay = _FrozenWhileRecording("whether the overlay video is saved")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -102,6 +103,7 @@ class Engine:
         self._marker_n = 0
         self.smoothing = True        # moving average over 0.2 s for what is SHOWN (never for the CSV)
         self._filters, self._ref_avg = {}, {}
+        self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._refs = {}
@@ -645,7 +647,8 @@ class Engine:
             self.rec = TrialRecorder(
                 self.recordings_dir, participant or "unnamed", self.test.key,
                 self.target if self.primary_angle else None,
-                self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active)
+                self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active,
+                save_overlay=self.save_overlay)
             self._marker_n = 0
             self._pending_event = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
@@ -701,6 +704,7 @@ class Engine:
             "camera_settings": self.camera_info,
             "lens_calibration": None,
             "facing": "right" if self.facing_right else "left",
+            "overlay_video_saved": self.save_overlay,
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {
                 "enabled": self.smoothing,
