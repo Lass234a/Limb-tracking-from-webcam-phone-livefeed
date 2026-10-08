@@ -3,6 +3,11 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.4.1 - 2026-10-08
+
+### Cameras
+- A webcam that DirectShow cannot open by index is opened through Windows Media Foundation instead. Found with a real DroidCam ("DroidCam Video"): DirectShow failed with "Could not open video source", Media Foundation delivers 1280x720 at about 30 fps. `meta.json` records `capture_backend`. The "uncompressed video" warning applies to DirectShow only.
+
 ## 0.4.0 - 2026-10-08
 
 ### Operator workflow

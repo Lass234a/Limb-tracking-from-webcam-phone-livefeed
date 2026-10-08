@@ -75,6 +75,7 @@ class CameraSource:
     failed_reads = 0       # reads that returned no frame on a live source (counted, never silent)
     reconnects = 0
     kind = "webcam"        # 'webcam', 'stream' or 'file' (set when the source is opened)
+    backend = "DSHOW"      # how a webcam was opened: DirectShow, or Media Foundation when DirectShow could not open it
     _grabber = None
 
     def __init__(self, source=0, width=1280, height=720, fps=30):
@@ -111,6 +112,20 @@ class CameraSource:
             # manual exposure can leave the picture black (audit CAM-05).
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)      # DirectShow: 0.75 = automatic
             cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+            if not cap.isOpened():
+                # Some virtual cameras (DroidCam's "DroidCam Video") cannot be opened through DirectShow by index but work through
+                # Windows Media Foundation. Only the size and rate are requested there; the format is not under our control.
+                cap.release()
+                alt = cv2.VideoCapture(source, cv2.CAP_MSMF)
+                if alt.isOpened():
+                    alt.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    alt.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    alt.set(cv2.CAP_PROP_FPS, fps)
+                    self.backend = "MSMF"
+                    return alt
+                alt.release()
+                return cv2.VideoCapture(source, cv2.CAP_DSHOW)       # (not opened: the caller reports it)
+            self.backend = "DSHOW"
             return cap
         if self.kind == "stream":   # network stream: do not wait half a minute on a stalled connection
             return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000])
@@ -200,7 +215,7 @@ class CameraSource:
             problems.append(f"only {out['fps']:.1f} fps (at least {min_fps:g} wanted)")
         if out["max_gap_s"] > max_gap_s:
             problems.append(f"a wait of {out['max_gap_s']:.2f} s for one frame")
-        if out["fourcc"] and out["fourcc"] != "MJPG" and not self.is_file and out["width"] * out["height"] > 640 * 480:
+        if self.backend == "DSHOW" and out["fourcc"] and out["fourcc"] != "MJPG" and not self.is_file and out["width"] * out["height"] > 640 * 480:
             problems.append(f"the camera sends {out['fourcc']} (uncompressed), which is slow at this size")
         out["ok"] = not problems
         out["verdict"] = (f"Camera OK: {out['width']}x{out['height']}, {out['fps']:.1f} fps, longest wait {out['max_gap_s']:.2f} s."
@@ -217,7 +232,7 @@ class CameraSource:
         m = self.measured_fps()
         if m is not None and m < 0.85 * r["fps"]:
             fmt = g.get("fourcc", "")
-            if fmt and fmt != "MJPG" and r["width"] * r["height"] > 640 * 480:
+            if self.backend == "DSHOW" and fmt and fmt != "MJPG" and r["width"] * r["height"] > 640 * 480:
                 out.append(f"asked for {r['fps']:g} fps but only {m:.1f} fps are arriving: the camera is sending uncompressed video "
                            f"({fmt}), which is limited to about 10 fps at this size; try a lower resolution or another camera")
             else:
@@ -271,7 +286,8 @@ class CameraSource:
         return {"requested": self.requested, "granted_by_driver": self._granted, "is_file": self.is_file,
                 "exposure_wb_lock": getattr(self, "lock_report", None),
                 "failed_reads": self.failed_reads, "reconnects": self.reconnects,
-                "source_kind": self.kind, "frames_discarded": self.frames_discarded}
+                "source_kind": self.kind, "frames_discarded": self.frames_discarded,
+                "capture_backend": self.backend if isinstance(self.source, int) else None}
 
     def read(self):
         """Returns (frame, t) or (None, None). For files, t follows the video's own frame rate."""

@@ -1,6 +1,6 @@
 # Feature inventory
 
-Version 0.4.0 (`meta.json` now stores the version, a `meta_schema`, and a `provenance` block: code hash, git commit, library versions, computer, protocol-file hash). First written 2026-10-02 at commit `77c4d7d`; many sections updated since, see CHANGELOG.md. Function names are given instead of line numbers because lines move.
+Version 0.4.1 (`meta.json` now stores the version, a `meta_schema`, and a `provenance` block: code hash, git commit, library versions, computer, protocol-file hash). First written 2026-10-02 at commit `77c4d7d`; many sections updated since, see CHANGELOG.md. Function names are given instead of line numbers because lines move.
 
 **Purpose of the app:** show a live view of joint positions and angles from marker dots on bone landmarks, so each participant (maximal isometric contractions, strapped into a harness with an S-type load cell) can be placed in the correct position quickly. A webcam is the current proof of concept; two cameras (frontal and sagittal) are planned and parked.
 
@@ -290,7 +290,7 @@ Does not alter any number. The tracker always sees the whole picture and the CSV
 8. **False precision.** Angles display to 0.1 deg, but real accuracy is set by placement and set-up (item 2).
 9. **Stepping a practice video backwards** keeps the tracker state, so it can mis-track after a jump. Files only; not recorded.
 10. **Marker timing:** a marker attaches to the next processed frame (up to one frame late) plus the operator's reaction time.
-11. **Not tried on real hardware:** phone-as-webcam apps (Samsung Galaxy S24/S25/S26, iPhone), network streams, the camera check and the camera list. They are tested against stand-ins (a fake camera, a local stream server).
+11. **Little tried on real hardware:** one phone-as-webcam app has been tried (DroidCam Client with an Android phone on 2026-10-08: it opens through Media Foundation, 1280x720, about 30 fps measured, no warnings). Not tried: Samsung S24/S25/S26 specifically, iPhone, Iriun, Camo, network streams on a real phone, the camera check on a real camera. The rest is tested against stand-ins (a fake camera, a local stream server).
 12. **A half-covered dot is flagged, not corrected**, and a dot only about a quarter covered is not flagged; epicondyle/fibular-head swaps are only caught when the knee is not strongly bent.
 13. **Not built:** frontal view (hip abduction/adduction), two cameras, lens calibration, force/ADC, numbers-only recording (see PARKED.md), non-Windows support.
 

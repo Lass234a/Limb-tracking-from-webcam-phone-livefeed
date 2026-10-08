@@ -103,3 +103,42 @@ def test_the_check_button_needs_a_running_camera(tmp_path):
     win.live.check_camera()
     assert "Start a camera first" in win.live.instruction.text()
     win.close()
+
+
+def test_a_camera_directshow_cannot_open_is_opened_through_media_foundation(monkeypatch):
+    """DroidCam's virtual camera opens by index only through Media Foundation (found with a real DroidCam on 2026-10-08)."""
+    import cv2
+    from limbtrack import camera as cam_mod
+
+    calls = []
+
+    class Cap:
+        def __init__(self, source, api=None, *a):
+            self.api, self.props = api, {}
+            calls.append(api)
+
+        def isOpened(self):
+            return self.api == cv2.CAP_MSMF
+
+        def set(self, k, v):
+            self.props[k] = v
+            return True
+
+        def get(self, k):
+            return {cv2.CAP_PROP_FRAME_WIDTH: 1280.0, cv2.CAP_PROP_FRAME_HEIGHT: 720.0, cv2.CAP_PROP_FPS: 30.0}.get(k, self.props.get(k, 0.0))
+
+        def read(self):
+            return True, None
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cam_mod.cv2, "VideoCapture", Cap)
+    cam = cam_mod.CameraSource(1)
+    assert cam.backend == "MSMF" and calls[:2] == [cv2.CAP_DSHOW, cv2.CAP_MSMF]
+    assert cam.info()["capture_backend"] == "MSMF"
+    assert cam.settings_problems() == []
+
+    monkeypatch.setattr(Cap, "isOpened", lambda self: False)            # neither backend opens it: the old error message
+    with pytest.raises(RuntimeError, match="Could not open video source"):
+        cam_mod.CameraSource(2)
