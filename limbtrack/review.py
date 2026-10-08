@@ -282,7 +282,8 @@ class ReviewTab(QWidget):
         self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  target {m['target_deg']} deg  |  "
                            f"{m['frames']} frames, {m['duration_s']} s"
                            + ("  |  UNFINISHED: the program stopped before saving; the video may not open" if tr.unfinished else "")
-                           + (f"  |  STOPPED: {m['stopped_because']}" if m.get("stopped_because") else ""))
+                           + (f"  |  STOPPED: {m['stopped_because']}" if m.get("stopped_because") else "")
+                           + (f"  |  GAPS: {m['gaps']['count']} (longest {m['gaps']['max_s']:.2f} s, no frames)" if (m.get('gaps') or {}).get('count') else ""))
         self.plot.clear()
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)

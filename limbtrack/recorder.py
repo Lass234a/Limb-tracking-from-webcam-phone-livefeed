@@ -5,6 +5,7 @@ import math
 import os
 import queue
 import re
+import statistics
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -100,6 +101,8 @@ class TrialRecorder:
         self.events = []          # {frame, t_s, label} markers added during the trial
         self.last_t = 0.0
         self._t0 = None
+        self.gaps = []             # {frame, t_s, gap_s}: stretches where no frame arrived
+        self._dts, self._prev_t = [], None
         self.fps = fps
         self.frame_size = frame_size
 
@@ -123,6 +126,13 @@ class TrialRecorder:
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
         if self._t0 is None:
             self._t0 = t
+        if self._prev_t is not None:
+            dt = t - self._prev_t
+            if len(self._dts) >= 5 and dt > max(3.0 * statistics.median(self._dts), 0.15):
+                self.gaps.append({"frame": self.frames, "t_s": round(t - self._t0, 4), "gap_s": round(dt, 4)})
+            else:
+                self._dts = (self._dts + [dt])[-60:]
+        self._prev_t = t
         if self._video.error is not None:
             raise RuntimeError(f"Saving the video failed: {self._video.error}")
         try:
@@ -185,6 +195,9 @@ class TrialRecorder:
             "measured_fps": round((self.frames - 1) / self.last_t, 3) if self.frames > 1 and self.last_t > 0 else None,
             "frame_size": list(self.frame_size),
             "files": {k: p.name for k, p in self.paths.items()},
+            "gaps": {"count": len(self.gaps), "total_s": round(sum(g["gap_s"] for g in self.gaps), 4),
+                     "max_s": max((g["gap_s"] for g in self.gaps), default=0.0), "list": self.gaps,
+                     "meaning": "stretches longer than 3 normal frame intervals (and 0.15 s) with no frame; the angles during a gap are unknown"},
             "video_writer": {"overlay_video_saved": self.save_overlay, "frames_encoded": self._video.written,
                              "queue_peak": self._video.peak, "queue_capacity": _VideoThread.QUEUE_FRAMES},
         })

@@ -9,21 +9,17 @@ import cv2
 
 
 class CameraSource:
+    failed_reads = 0       # reads that returned no frame on a live source (counted, never silent)
+    reconnects = 0
+
     def __init__(self, source=0, width=1280, height=720, fps=30):
         self.source = source
         self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
         self.is_live = not self.is_file
-        if isinstance(source, int):
-            self.cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-            # Order matters on DirectShow: asking for compressed MJPG *before* the size makes some webcams fall back
-            # to uncompressed YUY2 when the size is set, which runs at only ~10 fps at 1280x720 (audit CAM-04).
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self.cap.set(cv2.CAP_PROP_FPS, fps)
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        else:
-            self.cap = cv2.VideoCapture(source)
+        self._size_fps = (width, height, fps)
+        self.failed_reads = 0       # reads that returned no frame on a live source (counted, never silent)
+        self.reconnects = 0
+        self.cap = self._open_capture()
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open video source: {source}")
         self.file_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -32,6 +28,39 @@ class CameraSource:
         self._n = 0
         self._granted = self.granted()      # read once; the window may ask for it from another thread
         self._stamps = []          # recent frame arrival times (live sources): the real frame rate
+
+    def _open_capture(self):
+        source, (width, height, fps) = self.source, self._size_fps
+        if isinstance(source, int):
+            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+            # Order matters on DirectShow: asking for compressed MJPG *before* the size makes some webcams fall back
+            # to uncompressed YUY2 when the size is set, which runs at only ~10 fps at 1280x720 (audit CAM-04).
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return cap
+        if not self.is_file:        # network stream: do not wait half a minute on a stalled connection
+            return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000])
+        return cv2.VideoCapture(source)
+
+    def reopen(self):
+        """Close and open the same live source again (after it stopped delivering frames). Returns True if it opened.
+        A webcam comes back on its automatic settings, so an exposure/white-balance lock has to be pressed again."""
+        try:
+            self.cap.release()
+        except Exception:  # noqa: BLE001
+            pass
+        self.reconnects += 1
+        self.cap = self._open_capture()
+        ok = self.cap.isOpened()
+        if ok:
+            self._granted = self.granted()
+            self._stamps = []
+            if getattr(self, "lock_report", None) and self.lock_report.get("requested"):
+                self.lock_report = None
+        return ok
 
     @property
     def description(self):
@@ -119,7 +148,8 @@ class CameraSource:
     def info(self):
         """Settings record for meta.json."""
         return {"requested": self.requested, "granted_by_driver": self._granted, "is_file": self.is_file,
-                "exposure_wb_lock": getattr(self, "lock_report", None)}
+                "exposure_wb_lock": getattr(self, "lock_report", None),
+                "failed_reads": self.failed_reads, "reconnects": self.reconnects}
 
     def read(self):
         """Returns (frame, t) or (None, None). For files, t follows the video's own frame rate."""

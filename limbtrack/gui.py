@@ -141,6 +141,7 @@ class VideoWorker(QThread):
         self.camera = None
         self.lock_message = ""
         self.at_end = False      # a video file has played to its last frame (nothing more will arrive)
+        self.status_note = ""     # shown to the operator while a live source is silent
         self._lock_request = False
         self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
         self._stop = False
@@ -207,9 +208,13 @@ class VideoWorker(QThread):
             pass
         return f"The video stopped because of an error ({type(e).__name__}: {e}). Any recording was saved up to this point.{where}"
 
+    REOPEN_AFTER_S = 2.0       # a live source silent for this long is closed and opened again
+    GIVE_UP_AFTER_S = 6.0      # ...and the session ends if it is still silent after this long
+
     def _loop(self, cam, t_start, last):
         """Read, track and show frames until stopped. Returns the reason it ended."""
         msg = "Stopped."
+        silent_since, reopened = None, False
         while not self._stop:
             if self._lock_request:
                 self._lock_request = False
@@ -242,8 +247,29 @@ class VideoWorker(QThread):
                     self.at_end = True
                     self.position.emit(cam.position + 1, cam.frame_count)
                     continue
-                msg = "End of video file." if cam.is_file else "The camera stopped delivering frames."
-                break
+                if cam.is_file:
+                    msg = "End of video file."
+                    break
+                # A live source that delivers no frame is not the end: wait, try to open it again, give up only after a while.
+                now = time.perf_counter()
+                if silent_since is None:
+                    silent_since, reopened = now, False
+                cam.failed_reads += 1
+                waited = now - silent_since
+                self.status_note = f"No frames from the camera for {waited:.1f} s - waiting..."
+                if waited > self.REOPEN_AFTER_S and not reopened:
+                    reopened = True
+                    self.status_note = "No frames from the camera - trying to reconnect..."
+                    cam.reopen()
+                if waited > self.GIVE_UP_AFTER_S:
+                    msg = "The camera stopped delivering frames."
+                    break
+                time.sleep(0.01)
+                continue
+            if silent_since is not None:               # back after a silence: keep the counters with the recording
+                silent_since = None
+                self.status_note = ""
+                self.engine.camera_info = cam.info()
             last = (frame, t)
             self._show(frame, t, cam)
             if cam.is_file:  # play files at their own speed
@@ -1072,6 +1098,9 @@ class LiveTab(QWidget):
             text += "\nWARNING: " + "; ".join(problems)
         if self.worker.lock_message:
             text += "\n" + self.worker.lock_message
+        if self.worker.status_note:
+            text += "\nWARNING: " + self.worker.status_note
+            problems = problems + [self.worker.status_note]
         self.cam_info.setText(text)
         self.cam_info.setStyleSheet("color: #d97706; font-weight: bold;" if problems else "")
 
