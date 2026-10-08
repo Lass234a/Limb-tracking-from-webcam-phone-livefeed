@@ -275,6 +275,9 @@ class Engine:
         with self.lock:
             if self.facing_mismatch:
                 return self.facing_message() + " Change 'Participant faces' (or the mirror) to match the picture, then lock."
+            bad = self.marking_problems()
+            if bad:
+                return "The dots look mislabelled: " + "; ".join(bad) + ". Use 'Re-mark all dots' and click them in the order asked."
             if not self.active_angles:
                 return ("No angle can be computed with the chosen landmarks. Tick the missing landmarks, "
                         "or choose a three-point angle.")
@@ -392,14 +395,15 @@ class Engine:
             if not self.trackers.init_dot(name, self._last_gray, x, y):
                 return False
             t = self.trackers.trackers[name]
-            if old.initialised:                                       # re-mark: never onto a dot another tracker holds
-                for other, o in self.trackers.trackers.items():
-                    if other == name or not o.initialised or other not in self.trackers.enabled or o.lost_frames:
-                        continue
-                    if (o.x - t.x) ** 2 + (o.y - t.y) ** 2 < (NEIGHBOUR_EXCLUSION_FACTOR * o.diam) ** 2:
-                        self.trackers.trackers[name] = old
-                        self.mark_problem = f"That is the {self.test.dot_title(other)} dot, not the {self.test.dot_title(name)} dot."
-                        return False
+            # never onto a dot another tracker holds (first marking or re-mark)
+            for other, o in self.trackers.trackers.items():
+                if other == name or not o.initialised or other not in self.trackers.enabled or o.lost_frames:
+                    continue
+                if (o.x - t.x) ** 2 + (o.y - t.y) ** 2 < (NEIGHBOUR_EXCLUSION_FACTOR * o.diam) ** 2:
+                    self.trackers.trackers[name] = old
+                    self.mark_problem = (f"That is the {self.test.dot_title(other)} dot, which is already marked, not the "
+                                         f"{self.test.dot_title(name)} dot.")
+                    return False
             self._last_states[name] = DotState(name, t.x, t.y, False, 0)   # usable at once, e.g. by Lock
             self._last_angles = []
             return True
@@ -430,7 +434,7 @@ class Engine:
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
             self._forbid_while_recording("the locked position")
-            if self.facing_mismatch:
+            if self.facing_mismatch or self.marking_problems():
                 return False
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
@@ -576,6 +580,32 @@ class Engine:
         self.scale.reset()
         self._notice = (text + ": mark the dots (and the ruler) again.", t)
 
+    # Distances that hold for any body posture (upright, seated, lying) and either leg: (longer pair, shorter pair, what is wrong,
+    # smallest allowed ratio longer/shorter). They catch dots clicked in the wrong order or two labels swapped (audit GUI-14).
+    LABEL_CHECKS = [
+        (("malleolus", "mt5_head"), ("malleolus", "mt5_base"),
+         "the 5th metatarsal head should be farther from the lateral malleolus than the base is (head and base swapped?)", 1.0),
+        (("fibular_head", "malleolus"), ("mt5_base", "mt5_head"),
+         "the foot (metatarsal base to head) should be shorter than the shank (fibular head to malleolus)", 1.0),
+        (("trochanter", "epicondyle"), ("asis", "psis"),
+         "the thigh (trochanter to epicondyle) should be longer than the pelvis line (ASIS to PSIS)", 1.0),
+        (("epicondyle", "malleolus"), ("fibular_head", "malleolus"),
+         "the lateral malleolus should be farther from the epicondyle than from the fibular head (epicondyle and fibular head swapped?)", 0.97),
+    ]
+
+    def marking_problems(self):
+        """Plain-English reasons to doubt that the dots were marked in the right order (empty if all is plausible)."""
+        with self.lock:
+            xy = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost and n in self.active_dots}
+        out = []
+        for (a1, a2), (b1, b2), text, ratio in self.LABEL_CHECKS:
+            if all(n in xy for n in (a1, a2, b1, b2)):
+                dl = math.hypot(xy[a1][0] - xy[a2][0], xy[a1][1] - xy[a2][1])
+                ds = math.hypot(xy[b1][0] - xy[b2][0], xy[b1][1] - xy[b2][1])
+                if ds > 1e-6 and dl < ratio * ds:
+                    out.append(text)
+        return out
+
     FACING_MISMATCH_FRAMES = 5
 
     def _check_facing(self, states):
@@ -651,6 +681,8 @@ class Engine:
                 head.append(f"main joint ({self.test.primary.title}) not available with the chosen landmarks")
             if self.facing_mismatch:
                 head.append(self.facing_message())
+            for text in self.marking_problems():
+                head.append("CHECK LABELS: " + text)
             pull = self._compute_pull(states)
             if self.pull_active:
                 head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
