@@ -13,6 +13,7 @@ bright enough (see RESUME_MIN_QUALITY), so a shadow or a different object cannot
 taken for the dot. A dot that moved further than the circle while hidden stays lost
 until the operator marks it again. The angle is never computed from a lost dot.
 """
+import math
 from dataclasses import dataclass
 
 import cv2
@@ -70,6 +71,7 @@ def settings():
             "area_average": {"old": AREA_KEEP, "new": AREA_NEW}, "contrast_average": {"old": CONTRAST_KEEP, "new": CONTRAST_NEW},
             "min_diameter_px": MIN_DIAMETER_PX, "neighbour_exclusion_factor": NEIGHBOUR_EXCLUSION_FACTOR,
             "duplicate_factor": DUPLICATE_FACTOR, "weak_below_quality": WEAK_BELOW,
+            "neighbour_exclusion_centre": "predicted position, widened by the dot's step", "duplicate_resolution": "prediction_residual",
         },
         "lost_dot": {
             "search_radius_diam_factor": LOST_RADIUS_FACTOR, "resume_min_quality": RESUME_MIN_QUALITY,
@@ -297,12 +299,18 @@ class TrackerSet:
 
     def update(self, gray):
         active = {n: t for n, t in self.trackers.items() if t.initialised and n in self.enabled}
-        held = {n: (t.x, t.y, NEIGHBOUR_EXCLUSION_FACTOR * t.diam) for n, t in active.items() if t.lost_frames == 0}
+        # Where each dot is expected this frame (a lost dot: where it froze). Taken before any tracker moves.
+        expected = {n: ((t.x + t.vx, t.y + t.vy) if t.lost_frames == 0 else (t.x, t.y)) for n, t in active.items()}
+        # A neighbour that is moving must be protected where it WILL be, with a margin for how far it moves in a frame;
+        # otherwise a covered dot's search can take a fast neighbour (audit TRK-01).
+        held = {n: (*expected[n], NEIGHBOUR_EXCLUSION_FACTOR * t.diam + math.hypot(t.vx, t.vy))
+                for n, t in active.items() if t.lost_frames == 0}
         states = {}
         for n, t in active.items():
             claimed = [v for k, v in held.items() if k != n]
             states[n] = t.update(gray, claimed)
-        # Two trackers must never sit on the same dot: the later one is declared lost.
+        # Two trackers must never sit on the same dot. The one that fits its own expectation worse gives it up (on a tie the
+        # later one), is put back where it was and declared lost.
         names = list(states)
         for i, a in enumerate(names):
             for b in names[i + 1:]:
@@ -311,7 +319,10 @@ class TrackerSet:
                     continue
                 lim = DUPLICATE_FACTOR * min(self.trackers[a].diam, self.trackers[b].diam)
                 if (sa.x - sb.x) ** 2 + (sa.y - sb.y) ** 2 < lim ** 2:
-                    t = self.trackers[b]
+                    resid_a = math.hypot(sa.x - expected[a][0], sa.y - expected[a][1])
+                    resid_b = math.hypot(sb.x - expected[b][0], sb.y - expected[b][1])
+                    loser = a if resid_a > resid_b else b
+                    t = self.trackers[loser]
                     t.undo_update()        # back to its previous position, lost
-                    states[b] = DotState(b, t.x, t.y, True, t.lost_frames, 0.0)
+                    states[loser] = DotState(loser, t.x, t.y, True, t.lost_frames, 0.0)
         return states

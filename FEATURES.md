@@ -58,7 +58,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **Code:** `tracker.py` `_blobs`.
 
 ### A5. Neighbour exclusion
-- **What:** a tracker ignores blobs within `0.8 x diam` of another tracked dot (one that is currently found). A second rule declares the later tracker lost if two end up within `0.5 x diam` of each other; that tracker is then put back at its previous position (`undo_update`).
+- **What:** a tracker ignores blobs within `0.8 x diam` of where another tracked dot is **expected** this frame (its last position plus its step, with the circle widened by the length of that step), so a fast-moving neighbour cannot be taken by a covered dot (audit TRK-01). A second rule handles two trackers ending up within `0.5 x diam` of each other: the one that fits its own expectation worse (distance from its predicted position, or from where it froze if it was lost) gives the dot up, is put back at its previous position (`undo_update`) and declared lost; on a tie the later one. Normal tracking output is unchanged (checked against the saved reference run and `Bundepus.mp4`); a dot moving faster than about 360 deg/s may now be lost instead of mis-tracked.
 - **Problem / who:** when a dot is hidden, its tracker could jump onto a neighbouring dot (this happened in a test). *Added (bug fix); you chose to keep it.*
 - **Alters numbers:** yes; it changes which blob a dot is allowed to take.
 - **Need:** Helpful, important when dots sit close together.
