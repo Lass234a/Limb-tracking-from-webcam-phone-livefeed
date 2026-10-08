@@ -3,19 +3,70 @@
 Phones will appear here as well: apps such as Iriun / Camo / DroidCam show up as an
 ordinary webcam index, and a network stream is just a URL string.
 """
+import threading
 import time
 from pathlib import Path
 
 import cv2
 
 
+STREAM_SCHEMES = ("rtsp", "rtsps", "http", "https", "rtmp", "rtmps", "udp", "tcp", "srt", "rtp")
+
+
+def classify_source(source):
+    """'webcam' (an integer index), 'stream' (a network address such as http://... or rtsp://...) or 'file'."""
+    if isinstance(source, int):
+        return "webcam"
+    if isinstance(source, str):
+        if "://" in source and source.split("://", 1)[0].lower() in STREAM_SCHEMES:
+            return "stream"
+        return "file"
+    raise ValueError(f"not a camera, stream address or file: {source!r}")
+
+
+class _LatestFrame(threading.Thread):
+    """Reads a network stream as fast as it delivers and keeps only the newest frame, so a slow consumer never falls behind
+    the stream (a backlog of old frames would make the live picture lag by a third of a second or more)."""
+
+    def __init__(self, cap):
+        super().__init__(daemon=True)
+        self.cap = cap
+        self.cond = threading.Condition()
+        self.frame, self.t, self.seq, self.taken = None, None, 0, 0
+        self.discarded = 0           # frames that were replaced before anyone read them
+        self.stopped = False
+
+    def run(self):
+        while not self.stopped:
+            ok, frame = self.cap.read()
+            if not ok:
+                time.sleep(0.01)
+                continue
+            with self.cond:
+                if self.seq > self.taken:
+                    self.discarded += 1                        # the previous frame was never read: it is replaced
+                self.frame, self.t, self.seq = frame, time.perf_counter(), self.seq + 1
+                self.cond.notify_all()
+
+    def next(self, timeout=1.5):
+        """The newest frame that has not been returned yet, or (None, None) after `timeout` seconds without one."""
+        with self.cond:
+            if not self.cond.wait_for(lambda: self.seq > self.taken or self.stopped, timeout):
+                return None, None
+            self.taken = self.seq
+            return self.frame, self.t
+
+
 class CameraSource:
     failed_reads = 0       # reads that returned no frame on a live source (counted, never silent)
     reconnects = 0
+    kind = "webcam"        # 'webcam', 'stream' or 'file' (set when the source is opened)
+    _grabber = None
 
     def __init__(self, source=0, width=1280, height=720, fps=30):
         self.source = source
-        self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
+        self.kind = classify_source(source)
+        self.is_file = self.kind == "file"
         self.is_live = not self.is_file
         self._size_fps = (width, height, fps)
         self.failed_reads = 0       # reads that returned no frame on a live source (counted, never silent)
@@ -23,6 +74,7 @@ class CameraSource:
         self.cap = self._open_capture()
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open video source: {source}")
+        self._grabber = self._start_grabber()
         self.file_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.requested = {"width": width, "height": height, "fps": fps} if isinstance(source, int) else None
         self._t0 = time.perf_counter()
@@ -46,13 +98,35 @@ class CameraSource:
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)      # DirectShow: 0.75 = automatic
             cap.set(cv2.CAP_PROP_AUTO_WB, 1)
             return cap
-        if not self.is_file:        # network stream: do not wait half a minute on a stalled connection
+        if self.kind == "stream":   # network stream: do not wait half a minute on a stalled connection
             return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000])
         return cv2.VideoCapture(source)
+
+    def _start_grabber(self):
+        if self.kind != "stream":
+            return None
+        g = _LatestFrame(self.cap)
+        g.start()
+        return g
+
+    def _stop_grabber(self):
+        g, self._grabber = getattr(self, "_grabber", None), None
+        if g is not None:
+            g.stopped = True
+            with g.cond:
+                g.cond.notify_all()
+            g.join(timeout=3.0)
+
+    @property
+    def frames_discarded(self):
+        """Frames of a network stream that arrived faster than they could be processed and were skipped (0 for other sources)."""
+        g = getattr(self, "_grabber", None)
+        return g.discarded if g is not None else 0
 
     def reopen(self):
         """Close and open the same live source again (after it stopped delivering frames). Returns True if it opened.
         A webcam comes back on its automatic settings, so an exposure/white-balance lock has to be pressed again."""
+        self._stop_grabber()
         try:
             self.cap.release()
         except Exception:  # noqa: BLE001
@@ -61,6 +135,7 @@ class CameraSource:
         self.cap = self._open_capture()
         ok = self.cap.isOpened()
         if ok:
+            self._grabber = self._start_grabber()
             self._granted = self.granted()
             self._stamps = []
             if getattr(self, "lock_report", None) and self.lock_report.get("requested"):
@@ -181,15 +256,22 @@ class CameraSource:
         """Settings record for meta.json."""
         return {"requested": self.requested, "granted_by_driver": self._granted, "is_file": self.is_file,
                 "exposure_wb_lock": getattr(self, "lock_report", None),
-                "failed_reads": self.failed_reads, "reconnects": self.reconnects}
+                "failed_reads": self.failed_reads, "reconnects": self.reconnects,
+                "source_kind": self.kind, "frames_discarded": self.frames_discarded}
 
     def read(self):
         """Returns (frame, t) or (None, None). For files, t follows the video's own frame rate."""
-        ok, frame = self.cap.read()
+        if self._grabber is not None:
+            frame, t = self._grabber.next()
+            ok = frame is not None
+        else:
+            ok, frame = self.cap.read()
+            t = time.perf_counter()
         if not ok:
             return None, None
         self._n += 1
-        t = time.perf_counter() if self.is_live else (self._n - 1) / self.file_fps
+        if self.is_file:
+            t = (self._n - 1) / self.file_fps
         if self.is_live:
             self._stamps.append(t)
             if len(self._stamps) > 400:
@@ -211,6 +293,7 @@ class CameraSource:
         self._n = index
 
     def close(self):
+        self._stop_grabber()
         self.cap.release()
 
 

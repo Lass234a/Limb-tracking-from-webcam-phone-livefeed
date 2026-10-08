@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
                                QVBoxLayout, QWidget)
 
-from .camera import CameraSource, camera_names, list_cameras
+from .camera import CameraSource, camera_names, classify_source, list_cameras
 from .engine import Engine
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
@@ -143,7 +143,7 @@ class VideoWorker(QThread):
         self.at_end = False      # a video file has played to its last frame (nothing more will arrive)
         self.status_note = ""     # shown to the operator while a live source is silent
         self._lock_request = False
-        self.is_file = isinstance(source, str) and not source.lower().startswith(("rtsp://", "http://", "https://"))
+        self.is_file = classify_source(source) == "file"
         self._stop = False
         self._cmds = []
         self._cmd_lock = threading.Lock()
@@ -304,6 +304,11 @@ class LiveTab(QWidget):
         self.btn_scan.clicked.connect(self.scan_cameras)
         self.btn_start = QPushButton("Start camera")
         self.btn_start.clicked.connect(self.toggle_camera)
+        self.stream_box = TextField()
+        self.stream_box.setPlaceholderText("stream address, e.g. http://192.168.1.20:8080/video or rtsp://...")
+        self.stream_box.setToolTip("For a phone app that publishes a network stream (IP Webcam, DroidCam over Wi-Fi, an RTSP app). Wi-Fi adds delay and drops; USB is steadier.")
+        self.btn_stream = QPushButton("Connect to stream")
+        self.btn_stream.clicked.connect(self.connect_stream)
         btn_file = QPushButton("Open video file (practice)...")
         btn_file.clicked.connect(self.open_file)
         src = QGroupBox("1. Video source")
@@ -314,6 +319,8 @@ class LiveTab(QWidget):
         sl.addLayout(row)
         sl.addWidget(self.btn_start)
         sl.addWidget(btn_file)
+        sl.addWidget(self.stream_box)
+        sl.addWidget(self.btn_stream)
         self.btn_pause = QPushButton("Pause  (P)")
         self.btn_pause.setCheckable(True)
         self.btn_pause.clicked.connect(self.toggle_pause)
@@ -816,6 +823,20 @@ class LiveTab(QWidget):
         self.camera_check_label.setText(result["verdict"])
         self.camera_check_label.setStyleSheet("" if result["ok"] else "color: #d97706; font-weight: bold;")
 
+    def connect_stream(self):
+        address = self.stream_box.text().strip()
+        if self.worker is not None:
+            self.say("Stop the running camera or video first.")
+            return
+        try:
+            kind = classify_source(address) if address else None
+        except ValueError:
+            kind = None
+        if kind != "stream":
+            self.say("That is not a stream address. It should start with http://, https://, rtsp:// or similar.")
+            return
+        self.start_source(address)
+
     def fill_cameras(self, found):
         """Put (index, name) pairs in the camera box, keeping the same camera selected if it is still there."""
         keep = self.cam_combo.currentData()
@@ -857,11 +878,12 @@ class LiveTab(QWidget):
         self.worker.frame_ready.connect(self.view.set_image)
         self.worker.position.connect(self.on_position)
         self._pos = (0, 0)
-        self._set_file_controls(isinstance(source, str) and not source.lower().startswith(("rtsp://", "http")))
+        self._set_file_controls(classify_source(source) == "file")
         self.worker.ended.connect(lambda msg, w=self.worker: self.on_ended(msg, w))
         self.worker.start()
         self.btn_start.setText("Stop camera")
         self.btn_scan.setEnabled(False)
+        self.btn_stream.setEnabled(False)
 
     def stop_camera(self):
         if self.btn_rec.isChecked():
@@ -872,6 +894,7 @@ class LiveTab(QWidget):
             self.worker = None
         self.btn_start.setText("Start camera")
         self.btn_scan.setEnabled(True)
+        self.btn_stream.setEnabled(True)
         self._set_file_controls(False)
         self.update_camera_info()
 
@@ -885,6 +908,7 @@ class LiveTab(QWidget):
             self.worker = None
             self.btn_start.setText("Start camera")
             self.btn_scan.setEnabled(True)
+            self.btn_stream.setEnabled(True)
             self._set_file_controls(False)
             self.update_camera_info()
             if msg != "Stopped.":
