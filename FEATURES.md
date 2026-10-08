@@ -135,6 +135,16 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **Need:** Extra.
 - **Code:** `review.py` `Trial.summary`.
 
+### A12b. Dot displacement in Review (new)
+- **What:** for the chosen analysis window, the Review tab shows how far every recorded dot moved, and the export writes `<trial>_displacement.csv` next to the summary CSV.
+  - **end shift:** mean of the dot's last 5 valid positions minus the mean of its first 5 valid positions in the window (a vector dx, dy and its length), in pixels and, with a ruler scale, in cm.
+  - **max shift:** the largest distance from the starting position at any frame in the window. A single bad tracking frame shows up here; check the trails.
+  - **vs anchor:** the same numbers for the dot's position relative to the anchor marker (when it was used). This removes movement of the whole picture (a camera that was bumped). It does **not** separate the person shifting from a strap sliding on the skin; for the strap, use the pull numbers.
+  - **Pull section** (only when strap and anchor dots were used): mean, min, max and start>end for the pull angle, moment arm and strap-to-joint distance (cm with a scale).
+- **Start of the hold:** the window now **opens on the MVIC start-to-end window when both markers were pressed**, otherwise on the whole trial, so the displacement (and all Review statistics) start at the hold by default. Drag the blue window or press *Window = MVIC start to end* to change it. (This changes the default window of the existing Review statistics too.)
+- **Alters numbers:** none are measured; all are computed afterwards from the CSV positions (and the scale in `meta.json`). Lost frames are skipped, never filled in. Image pixels are the picture's, so displacement in cm is only right at the ruler's distance from the camera.
+- **Code:** `limbtrack/displacement.py`; `review.py` `Trial.displacement`, `pull_summary`, `ReviewTab._displacement_text`, `export`.
+
 ### A13. Ghost pose: parked, not active
 - The dashed copy of the locked pose is commented out (code and checkboxes), marked `# PARKED-GHOST:`; its tests are skipped. See `PARKED.md`. It never altered numbers.
 
@@ -230,7 +240,7 @@ Things that look like calibration but are not: the dot size and contrast learned
 | Video-file input, practice video, synthetic test-video generator | Added (file input approved) | Extra | `camera.py`; `synthetic.py` |
 | Recording: raw video, overlay video, per-frame CSV, trial details JSON. **Record is refused** when no video is coming in (source stopped or dead) or a video file has already ended. While recording, the label turns red with "NO VIDEO - nothing is being recorded" if frames stop arriving for more than 0.5 s. After Stop the label shows the frame count and duration, calls an empty trial "NOTHING RECORDED" and a trial under 30 frames "VERY SHORT RECORDING"; Review explains an empty trial instead of failing (audit COD-01) | You | Extra for live use | `recorder.py`; `engine.py` `start_trial`, `stop_trial`, `seconds_since_last_frame`; `gui.py` `toggle_record` |
 | Event markers (MVIC start, MVIC end, numbered marker) | Approved | Extra | `engine.py` `add_event` |
-| Review tab: scrub, plot, markers, trails tick box, summary export | You | Extra | `review.py` |
+| Review tab: scrub, plot, markers, trails tick box, summary export, dot-displacement table and export (A12b) | You | Extra | `review.py` |
 | `Start.bat`, README, `PARKED.md`, 126 automatic tests (one skipped), git history | Added | Extra | project root; `tests/` |
 
 ### CSV columns
@@ -269,7 +279,6 @@ Closed since the first inventory: silent video-thread errors, unverified camera 
 ### Asked for, waiting for a go-ahead
 | Feature | Note |
 |---|---|
-| Displacement output (agreed order, 2026-10-07): per-dot displacement in pixels and cm (from the start of the hold and relative to a stable reference such as the anchor) in the CSV and the Review summary | Ruler scale, strap/anchor dots and pull angle are done (A15, F, B) |
 | Test of white and black dots in the same video | Synthetic test first; a per-dot colour override only if Auto fails |
 
 ### Parked (see `PARKED.md`)

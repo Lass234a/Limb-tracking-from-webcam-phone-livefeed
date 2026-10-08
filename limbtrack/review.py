@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, Q
                                QWidget)
 
 from . import overlay
+from .displacement import window_displacements
+from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
@@ -53,6 +55,11 @@ class Trial:
         self.dev = {a.name: np.array([_f(r[f"{a.name}_dev"]) for r in self.rows]) for a in self.angle_defs}
         self.ok = {a.name: [r[f"{a.name}_ok"] for r in self.rows] for a in self.angle_defs}
         self.events = [(i, self.t[i], r["event"]) for i, r in enumerate(self.rows) if r.get("event")]
+        # dot positions over the whole trial (NaN where a dot is lost) and the ruler scale, for the displacement numbers
+        self.tracks = {n: (np.array([_f(r[f"{n}_x"]) for r in self.rows]), np.array([_f(r[f"{n}_y"]) for r in self.rows]))
+                       for n in self.dot_names}
+        self.px_per_cm = (self.meta.get("scale") or {}).get("px_per_cm_at_marking")
+        self.pull = ({c: np.array([_f(r[c]) for r in self.rows]) for c in PULL_COLUMNS} if PULL_COLUMNS[0] in self.rows[0] else None)
         # trails: per dot, segments of (frame index array, xy array); a lost dot ends a segment (as when recording)
         self.trail_segments = {}
         for n in self.dot_names:
@@ -127,6 +134,29 @@ class Trial:
         end = next((t for _, t, lab in self.events if lab == "MVIC end" and t > start), None)
         return None if end is None else (float(start), float(end))
 
+    def displacement(self, t0, t1):
+        """Per dot: how far it moved from its starting position in the window (see displacement.py). Anchor-relative
+        numbers are added when the anchor marker was used."""
+        ref = "anchor" if "anchor" in self.tracks else None
+        return window_displacements(self.t, self.tracks, t0, t1, self.px_per_cm, ref)
+
+    def pull_summary(self, t0, t1):
+        """Rows of statistics for the angle of pull / moment arm columns within the window, or [] without strap and anchor dots."""
+        if self.pull is None:
+            return []
+        m = (self.t >= t0) & (self.t <= t1)
+        rows = []
+        for col in ("pull_angle_deg", "moment_arm_cm" if self.px_per_cm else "moment_arm_px",
+                    "strap_joint_cm" if self.px_per_cm else "strap_joint_px"):
+            v = self.pull[col][m]
+            good = v[~np.isnan(v)]
+            rows.append({"quantity": col, "frames_missing": int(m.sum() - good.size),
+                         "mean": float(np.mean(good)) if good.size else math.nan,
+                         "min": float(np.min(good)) if good.size else math.nan,
+                         "max": float(np.max(good)) if good.size else math.nan,
+                         "change_start_to_end": float(np.mean(good[-5:]) - np.mean(good[:5])) if good.size >= 2 else math.nan})
+        return rows
+
     def summary(self, t0, t1):
         """Rows of statistics per angle within [t0, t1] seconds."""
         m = (self.t >= t0) & (self.t <= t1)
@@ -195,6 +225,9 @@ class ReviewTab(QWidget):
         self.stats = QLabel()
         self.stats.setStyleSheet("font-family: Consolas, monospace;")
         self.stats.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.disp = QLabel()
+        self.disp.setStyleSheet("font-family: Consolas, monospace;")
+        self.disp.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         top = QHBoxLayout()
         top.addWidget(btn_open)
@@ -214,6 +247,7 @@ class ReviewTab(QWidget):
         left.addLayout(erow)
         left.addWidget(QLabel("Blue band on the plot = analysis window (drag its edges). Statistics below use it."))
         left.addWidget(self.stats)
+        left.addWidget(self.disp)
         body = QHBoxLayout()
         body.addLayout(left, 1)
         body.addWidget(self.plot, 1)
@@ -260,7 +294,7 @@ class ReviewTab(QWidget):
                                    label=lab, labelOpts={"position": 0.95, "color": (90, 90, 90), "rotateAxis": (1, 0)})
             self.plot.addItem(line)
         self.btn_hold.setEnabled(tr.hold_window() is not None)
-        self.window.setRegion((tr.t[0], tr.t[-1]))
+        self.window.setRegion(tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(tr.rows) - 1)
         self.slider.setValue(0)
@@ -322,6 +356,30 @@ class ReviewTab(QWidget):
             lines.append(f"{r['angle'][:21]:22s}{r['mean_deg']:7.1f}{r['sd_deg']:6.2f}{r['min_deg']:7.1f}{r['max_deg']:7.1f}"
                          f"{r['change_start_to_end_deg']:+10.1f}{r['max_abs_dev_deg']:8.1f}{r['pct_in_tolerance']:7.0f}%{r['frames_lost']:6d}")
         self.stats.setText("\n".join(lines))
+        self.disp.setText(self._displacement_text(t0, t1))
+
+    def _displacement_text(self, t0, t1):
+        tr = self.trial
+        cm = tr.px_per_cm is not None
+        unit = lambda px, c: f"{px:5.1f} px" + (f" ({c:4.2f} cm)" if cm else "")      # noqa: E731
+        rows = tr.displacement(t0, t1)
+        has_rel = any("rel_end_shift_px" in r for r in rows)
+        lines = ["Dot movement in the window (from the starting position; px" + (", cm from the ruler scale" if cm else ", no ruler scale") + ")",
+                 f"{'':16s}{'end shift':>20s}{'max shift':>20s}" + (f"{'end vs anchor':>20s}{'max vs anchor':>20s}" if has_rel else "")]
+        for r in rows:
+            def one(prefix):
+                px, c = r.get(f"{prefix}_px", math.nan), r.get(f"{prefix}_cm", math.nan)
+                return "-".rjust(20) if math.isnan(px) else unit(px, c).rjust(20)
+            line = f"{r['dot'][:15]:16s}{one('end_shift')}{one('max_shift')}"
+            if has_rel:
+                line += (one("rel_end_shift") + one("rel_max_shift")) if "rel_end_shift_px" in r else "-".rjust(20) * 2
+            lines.append(line)
+        pull = tr.pull_summary(t0, t1)
+        if pull:
+            lines += ["", "Pull (strap and anchor dots)", f"{'':22s}{'mean':>8s}{'min':>8s}{'max':>8s}{'start>end':>11s}"]
+            for q in pull:
+                lines.append(f"{q['quantity']:22s}{q['mean']:8.1f}{q['min']:8.1f}{q['max']:8.1f}{q['change_start_to_end']:+11.1f}")
+        return "\n".join(lines)
 
     def export(self):
         if self.trial is None:
@@ -333,4 +391,13 @@ class ReviewTab(QWidget):
             w.writerow(["window_start_s", "window_end_s"] + list(rows[0]))
             for r in rows:
                 w.writerow([round(t0, 3), round(t1, 3)] + [round(v, 3) if isinstance(v, float) else v for v in r.values()])
-        QMessageBox.information(self, "Exported", f"Saved {out.name}")
+        extra = self.trial.folder / f"{self.trial.base}_displacement.csv"
+        drows = self.trial.displacement(t0, t1)
+        keys = list(dict.fromkeys(k for r in drows for k in r))
+        with open(extra, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["window_start_s", "window_end_s"] + keys)
+            for r in drows:
+                w.writerow([round(t0, 3), round(t1, 3)] + [("" if isinstance(r.get(k), float) and math.isnan(r[k]) else
+                                                              round(r[k], 3) if isinstance(r.get(k), float) else r.get(k, "")) for k in keys])
+        QMessageBox.information(self, "Exported", f"Saved {out.name} and {extra.name}")
