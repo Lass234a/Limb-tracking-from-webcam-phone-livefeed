@@ -40,6 +40,10 @@ class CameraSource:
             cap.set(cv2.CAP_PROP_FPS, fps)
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # Start from automatic exposure and white balance: a webcam keeps manual settings from an earlier session, and a
+            # manual exposure can leave the picture black (audit CAM-05).
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)      # DirectShow: 0.75 = automatic
+            cap.set(cv2.CAP_PROP_AUTO_WB, 1)
             return cap
         if not self.is_file:        # network stream: do not wait half a minute on a stalled connection
             return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000])

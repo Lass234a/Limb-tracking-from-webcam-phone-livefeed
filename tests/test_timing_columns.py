@@ -78,4 +78,5 @@ def test_the_videos_carry_the_source_rate_and_the_csv_frame_column_counts_from_z
     rows = list(csv.DictReader(open(paths["data.csv"], newline="")))
     assert [int(r["frame"]) for r in rows] == list(range(8))        # the index in raw.mp4 / overlay.mp4
     assert [int(r["source_frame"]) for r in rows] == list(range(200, 208))
-    assert list(rows[0])[-1] == "source_frame"
+    head = list(rows[0])
+    assert head[head.index("source_frame") + 1:] == [f"{d}_partial" for d in eng.active_dots]      # then only the per-dot partial flags

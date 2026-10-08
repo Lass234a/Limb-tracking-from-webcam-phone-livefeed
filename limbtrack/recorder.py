@@ -95,13 +95,15 @@ class TrialRecorder:
         self.with_pull = with_pull
         if with_pull:
             head += PULL_COLUMNS
-        head.append("source_frame")        # last column: frame number in the source (file frame, or camera read count)
+        head.append("source_frame")        # frame number in the source (file frame, or camera read count)
+        head += [f"{d}_partial" for d in self.dot_names]      # 1 = the dot looked partly covered / cut off in this frame
         self._csv.writerow(head)
         self.frames = 0
         self.events = []          # {frame, t_s, label} markers added during the trial
         self.last_t = 0.0
         self._t0 = None
         self.gaps = []             # {frame, t_s, gap_s}: stretches where no frame arrived
+        self._partial = {d: 0 for d in self.dot_names}      # frames in which each dot looked partly covered
         self._dts, self._prev_t = [], None
         self.fps = fps
         self.frame_size = frame_size
@@ -162,8 +164,15 @@ class TrialRecorder:
         if self.with_pull:                          # angle of pull / moment arm; blank when the strap, anchor or segment dots are lost
             row += [_num((pull or {}).get(c), 2) for c in PULL_COLUMNS]
         row.append("" if source_frame is None else int(source_frame))
+        for d in self.dot_names:
+            st = dots.get(d)
+            row.append("" if st is None or st.lost else int(bool(getattr(st, "partial", False))))
         if event:
             self.events.append({"frame": self.frames, "t_s": round(t - self._t0, 4), "label": event})
+        for d in self.dot_names:
+            st = dots.get(d)
+            if st is not None and getattr(st, 'partial', False):
+                self._partial[d] += 1
         self._csv.writerow(row)
         self.frames += 1
         self.last_t = t - self._t0
@@ -195,6 +204,7 @@ class TrialRecorder:
             "measured_fps": round((self.frames - 1) / self.last_t, 3) if self.frames > 1 and self.last_t > 0 else None,
             "frame_size": list(self.frame_size),
             "files": {k: p.name for k, p in self.paths.items()},
+            "partial_dot_frames": {d: self._partial[d] for d in self.dot_names if self._partial[d]},
             "gaps": {"count": len(self.gaps), "total_s": round(sum(g["gap_s"] for g in self.gaps), 4),
                      "max_s": max((g["gap_s"] for g in self.gaps), default=0.0), "list": self.gaps,
                      "meaning": "stretches longer than 3 normal frame intervals (and 0.15 s) with no frame; the angles during a gap are unknown"},

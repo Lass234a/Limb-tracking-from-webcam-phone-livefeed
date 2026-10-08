@@ -643,6 +643,9 @@ class Engine:
             lost = [n for n, st in states.items() if st.lost]
             if lost:
                 head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
+            partial = [n for n, st in states.items() if st.partial]
+            if partial:
+                head.append("dot partly covered or cut off (its centre may be shifted): " + ", ".join(self.test.dot_title(n) for n in partial))
             weak = [n for n, st in states.items() if st.weak]
             if weak:
                 head.append("weak dot (fading): " + ", ".join(self.test.dot_title(n) for n in weak))

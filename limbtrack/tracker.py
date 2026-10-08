@@ -27,6 +27,12 @@ RESUME_AREA_RANGE = (0.5, 2.0)   # ...and with an area within this range of the 
 RESUME_MAX_ASPECT = 1.6          # ...and roughly round: longer side at most this x the shorter side + 1 (normal tracking: 2.5x + 2)
 RESUME_ASPECT_EXTRA_PX = 1
 
+# Partly covered dot (hand, strap, clothing, image edge): the centre of what is visible is not the centre of the dot
+PARTIAL_AREA_BELOW = 0.70        # visible area below this fraction of the dot's area ...
+PARTIAL_AREA_FLOOR = 0.80        # ... where that area is the running area, but at least this fraction of the area when marked
+PARTIAL_ELONGATION = 2.0         # or the blob is this much longer than wide (a dot cut off on one side)
+PARTIAL_BORDER_FACTOR = 0.5      # or its centre is within this x diameter of the image edge
+
 # Image preparation
 BLUR_KERNEL = 3                  # Gaussian blur, pixels, before the top-hat / black-hat
 KERNEL_DIAM_FACTOR = 2.5         # top-hat / black-hat kernel side = this x dot diameter ...
@@ -71,6 +77,8 @@ def settings():
             "area_average": {"old": AREA_KEEP, "new": AREA_NEW}, "contrast_average": {"old": CONTRAST_KEEP, "new": CONTRAST_NEW},
             "min_diameter_px": MIN_DIAMETER_PX, "neighbour_exclusion_factor": NEIGHBOUR_EXCLUSION_FACTOR,
             "duplicate_factor": DUPLICATE_FACTOR, "weak_below_quality": WEAK_BELOW,
+            "partial_area_below": PARTIAL_AREA_BELOW, "partial_area_floor": PARTIAL_AREA_FLOOR, "partial_elongation": PARTIAL_ELONGATION,
+            "partial_border_factor": PARTIAL_BORDER_FACTOR,
             "neighbour_exclusion_centre": "predicted position, widened by the dot's step", "duplicate_resolution": "prediction_residual",
         },
         "lost_dot": {
@@ -94,6 +102,7 @@ class DotState:
     lost: bool
     lost_frames: int = 0
     quality: float = 1.0   # contrast now / contrast when marked (0 when lost, capped at 1)
+    partial: bool = False  # the dot looks partly covered or cut off: its centre may be shifted (not lost, not judged differently)
 
     @property
     def weak(self):
@@ -108,6 +117,7 @@ class DotTracker:
         self.x = self.y = 0.0
         self.vx = self.vy = 0.0
         self.diam = 12.0
+        self.marked_area = None
         self.marked_diam = None       # dot diameter (pixels) learned when the operator marked it; used by the dot-size check
         self.area = 100.0
         self.contrast = 40.0          # slowly adapting estimate, used for the detection threshold
@@ -188,6 +198,7 @@ class DotTracker:
         self.area = area
         self.diam = max(2.0 * (area / np.pi) ** 0.5, MIN_DIAMETER_PX)
         self.marked_diam = self.diam
+        self.marked_area = area
         self.contrast = self.ref_contrast = peak
         self.lost_frames = 0
         self.lost_radius = 0.0
@@ -247,14 +258,19 @@ class DotTracker:
                     if max(w, h) > RESUME_MAX_ASPECT * min(w, h) + RESUME_ASPECT_EXTRA_PX:
                         continue           # not round (sliver, edge of an object)
                 if best is None or d < best[0]:
-                    best = (d, x0 + cx, y0 + cy, area, peak)
+                    best = (d, x0 + cx, y0 + cy, area, peak, w, h)
         if best is None:
             if not was_lost:               # first miss: freeze here and fix the search circle
                 self.lost_radius = LOST_RADIUS_FACTOR * self.diam
             self.vx = self.vy = 0.0
             self.lost_frames += 1
             return DotState(self.name, self.x, self.y, True, self.lost_frames, 0.0)
-        _, nx, ny, area, peak = best
+        _, nx, ny, area, peak, bw, bh = best
+        ih, iw = gray.shape[:2]
+        margin = PARTIAL_BORDER_FACTOR * self.diam
+        baseline = max(self.area, PARTIAL_AREA_FLOOR * (self.marked_area or 0.0))    # a covered dot must not teach us its small area
+        partial = (area < PARTIAL_AREA_BELOW * baseline or max(bw, bh) > PARTIAL_ELONGATION * min(bw, bh)
+                   or nx < margin or ny < margin or nx > iw - 1 - margin or ny > ih - 1 - margin)
         if was_lost:                       # resuming after a jump: no velocity to carry over
             self.vx = self.vy = 0.0
         else:
@@ -266,7 +282,7 @@ class DotTracker:
         if peak >= MIN_CONTRAST:
             self.contrast = CONTRAST_KEEP * self.contrast + CONTRAST_NEW * peak
         self.lost_frames = 0
-        return DotState(self.name, self.x, self.y, False, 0, min(peak / self.ref_contrast, 1.0))
+        return DotState(self.name, self.x, self.y, False, 0, min(peak / self.ref_contrast, 1.0), partial and not was_lost)
 
 
 def to_gray(frame):

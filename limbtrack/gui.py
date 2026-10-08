@@ -335,9 +335,9 @@ class LiveTab(QWidget):
                                    "Changing it clears the marked dots.")
         self.chk_mirror.toggled.connect(self.on_mirror_toggled)
         sl.addWidget(self.chk_mirror)
-        self.btn_lock_cam = QPushButton("Lock exposure and white balance")
-        self.btn_lock_cam.setToolTip("Stops the camera from changing brightness/colour by itself during a trial. "
-                                     "Do this once the lighting is final. Not every webcam allows it; the result is shown below.")
+        self.btn_lock_cam = QPushButton("Lock exposure and white balance (switched off)")
+        self.btn_lock_cam.setToolTip("Switched off: on some webcams this blacks out the picture and reports the opposite of what happened. "
+                                     "Use steady lighting, or lock exposure and white balance in the phone/camera app instead.")
         self.btn_lock_cam.clicked.connect(lambda: self.worker and self.worker.request_lock())
         self.btn_lock_cam.setEnabled(False)
         sl.addWidget(self.btn_lock_cam)
@@ -1093,7 +1093,7 @@ class LiveTab(QWidget):
     def update_camera_info(self):
         """One line on what the camera really delivers; orange when it differs from what was asked for."""
         cam = self.worker.camera if self.worker is not None else None
-        self.btn_lock_cam.setEnabled(cam is not None and not cam.is_file and isinstance(cam.source, int) and self._rec_started is None)
+        self.btn_lock_cam.setEnabled(False)       # switched off: on some webcams the lock blacks out the picture (audit CAM-05)
         if cam is None:
             self.cam_info.setText("")
             return

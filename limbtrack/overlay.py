@@ -132,7 +132,7 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
         _text(img, f"{a.value:.1f}", (fx + 36 * s, fy + 10 * s), 0.8 * s, col, thick + 1)
 
     for name, d in dots.items():
-        col = COLOURS[LOST] if d.lost else DOT_WEAK if getattr(d, 'weak', False) else DOT_OK
+        col = COLOURS[LOST] if d.lost else DOT_WEAK if (getattr(d, 'weak', False) or getattr(d, 'partial', False)) else DOT_OK
         c = (int(d.x), int(d.y))
         r = max(int(8 * s), 4)
         if d.lost:

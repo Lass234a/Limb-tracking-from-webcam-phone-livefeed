@@ -237,3 +237,31 @@ def test_slow_mjpg_or_unknown_format_gets_the_general_message():
         cam._granted = cam.granted()
         text = " ".join(cam.settings_problems())
         assert "dim light" in text and "cannot keep up" in text and "uncompressed" not in text
+
+
+def test_a_webcam_is_opened_on_automatic_exposure_and_white_balance(monkeypatch):
+    """CAM-05: manual settings survive in the driver between sessions and can leave the picture black."""
+    import limbtrack.camera as camera
+
+    calls = []
+
+    class RecordingCap:
+        def __init__(self, *a, **k):
+            pass
+
+        def set(self, prop, value):
+            calls.append((prop, value))
+            return True
+
+        def get(self, prop):
+            return 0
+
+        def isOpened(self):
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(camera.cv2, "VideoCapture", RecordingCap)
+    camera.CameraSource(0)
+    assert (cv2.CAP_PROP_AUTO_EXPOSURE, 0.75) in calls and (cv2.CAP_PROP_AUTO_WB, 1) in calls
