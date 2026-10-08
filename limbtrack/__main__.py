@@ -9,14 +9,14 @@ def main():
     from PySide6.QtWidgets import QApplication, QMessageBox
 
     from .gui import MainWindow
-    from .protocol import load_protocol
+    from .protocol import ProtocolError, load_protocol
 
     app = QApplication(sys.argv)
     try:
         tests = load_protocol(ROOT / "protocol.json")
         win = MainWindow(tests, ROOT)
-    except Exception:  # noqa: BLE001 - pythonw has no console, so show the problem
-        msg = traceback.format_exc()
+    except Exception as e:  # noqa: BLE001 - pythonw has no console, so show the problem
+        msg = str(e) if isinstance(e, ProtocolError) else traceback.format_exc()      # a protocol.json mistake needs no traceback
         (ROOT / "last_error.log").write_text(msg, encoding="utf-8")
         QMessageBox.critical(None, "Could not start", msg)
         return 1
