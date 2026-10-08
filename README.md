@@ -79,11 +79,11 @@ Tests, positions and required neighbour angles follow Tabel 2 of the protocol dr
 3. **Noise floor**: record a still participant (or a mannequin) for 60 s; the SD in Review is the tracking noise. It should be well under your tolerance.
 4. **Stress it**: cover a dot with a hand, change the lighting, and confirm the dot goes orange/grey and comes back correctly.
 
-## Not built yet (planned, in this order)
-Ruler/scale in the app and a minimum-dot-size check (waiting for your go-ahead) -> lens calibration -> phones (Android/iPhone, via Iriun/Camo/DroidCam or a network stream) -> load cell/ADC recorded on the same clock and overlaid -> front view for hip abduction/adduction -> two cameras. The CSV already has a `clock_s` column (camera clock) so force data can be merged later.
+## Not built yet
+Validation against a reference (`SETUP_AND_VALIDATION.md`) and a trial of the real camera or phone are still to do. Not built: load cell/ADC recorded on the same clock and overlaid, front view for hip abduction/adduction, two cameras, lens calibration (`PARKED.md`). The CSV already has a `clock_s` column (camera clock) so force data can be merged later.
 
 ## Developer notes
-- Python 3.12 in `.venv`. Run tests: `.venv\Scripts\python.exe -m pytest -q` (about 2 to 4 minutes; 126 pass, 1 is skipped because the ghost pose is parked).
+- Python 3.12 in `.venv`. Run tests: `.venv\Scripts\python.exe -m pytest -q` (about 6 minutes; 378 pass, 1 is skipped because the ghost pose is parked).
 - `FEATURES.md` lists every feature, whether it can change a measured number, and what is unreliable; `PARKED.md` lists what was deliberately set aside.
 - Tracking numbers are named constants at the top of `limbtrack/tracker.py` and are saved in every `meta.json`. `tests/golden_tracking.npz` pins the tracking output: if a deliberate change makes `tests/test_tracker_settings.py` fail, regenerate it with `python tests/test_tracker_settings.py` and say why in the commit message.
-- `limbtrack/`: `geometry` (angle maths), `angles` (measure an angle definition), `protocol` (protocol.json), `tracker` (dots), `filters` (display smoothing), `engine` (pipeline, no GUI), `recorder`, `overlay`, `camera`, `gui`, `review`, `synthetic` (test video generator with exact known angles).
+- `limbtrack/`: `geometry` (angle maths), `angles` (measure an angle definition), `protocol` (protocol.json), `tracker` (dots), `filters` (display smoothing), `engine` (pipeline, no GUI), `recorder`, `overlay`, `camera`, `gui`, `review`, `synthetic` (test video generator with exact known angles), `scale` (ruler), `pull` (angle of pull), `displacement`, `provenance`. `CHANGELOG.md` lists the changes by version; `SETUP_AND_VALIDATION.md` the set-up rules and the validation plan.

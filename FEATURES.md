@@ -4,11 +4,11 @@ Version 0.3.0 (`meta.json` now stores the version, a `meta_schema`, and a `prove
 
 **Purpose of the app:** show a live view of joint positions and angles from marker dots on bone landmarks, so each participant (maximal isometric contractions, strapped into a harness with an S-type load cell) can be placed in the correct position quickly. A webcam is the current proof of concept; two cameras (frontal and sagittal) are planned and parked.
 
-**Status:** everything below is tested on synthetic video, plus one real practice video (`Bundepus.mp4`, which is not in the repository) for the lost-dot rule. There are 126 automatic tests (1 skipped: the parked ghost). Nothing has been validated against a goniometer, and the dots in the practice video are smaller than the planned 2 cm.
+**Status:** everything below is tested on synthetic video, plus one real practice video (`Bundepus.mp4`, which is not in the repository) for the lost-dot rule and the partly-covered-dot flag, and stand-ins for cameras, phones and a network stream. There are 378 automatic tests (1 skipped: the parked ghost). Nothing has been validated against a goniometer or inclinometer (see `SETUP_AND_VALIDATION.md`), no phone has been tried, and the dots in the practice video are smaller than the planned 2 cm.
 
-**What the app does NOT do to the data:** no interpolation of missing dots or angles, no drift correction, no outlier rejection (other than the lost-dot rule), no frame-rate resampling, no lens-distortion correction, no camera-tilt correction, no pixel-to-centimetre scale.
+**What the app does NOT do to the data:** no interpolation of missing dots or angles, no drift correction, no outlier rejection (other than the lost-dot rule), no frame-rate resampling, no lens-distortion correction, no camera-tilt correction. A pixel-to-centimetre scale exists only if you mark a ruler (section F).
 
-**What changed since the first inventory (2026-10-01), following your decisions:** the growing search and the old lost-dot rule were replaced (A6); the One-Euro filter was replaced by a 0.2 s moving average that only changes the screen (A7); the ghost pose was commented out (A13); a three-point angle mode, trails, error handling, camera checks, exposure lock, a mirror toggle and stored tracker settings were added (sections B to G).
+**What changed since the first inventory (2026-10-01), following your decisions:** the growing search and the old lost-dot rule were replaced (A6); the One-Euro filter was replaced by a 0.2 s moving average that only changes the screen (A7); the ghost pose was commented out (A13); then a three-point angle mode, trails, a ruler scale, strap and anchor dots with the angle of pull and moment arm, dot displacement, the hold-angle report, Tabel 2 protocol positions, camera handling for webcams, phones and streams, recording safety and many checks were added. `CHANGELOG.md` lists them in one place.
 
 **Legend**
 - **Who:** *You* = you asked for it or decided it. *Approved* = I proposed it and you approved. *Added* = I added it without discussing it.
@@ -186,7 +186,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 
 | Feature | Who | Alters numbers? | Need | Code |
 |---|---|---|---|---|
-| White / black / Auto dot colour. Auto applies both the white-dot and the black-dot filter to the 81x81 window and takes the one that responds more strongly near the click, **on every click**; the choice is kept only if the marking succeeds, so a failed click can no longer leave a dot stuck on the wrong colour (audit TRK-03). White and black dots can in principle share one video (white on dark shorts, black on skin) because each dot decides for itself. **Not tested together yet** | Added | Indirectly (selects top-hat or black-hat) | Essential | `tracker.py` `init_at` |
+| White / black / Auto dot colour. Auto applies both the white-dot and the black-dot filter to the 81x81 window and takes the one that responds more strongly near the click, **on every click**; the choice is kept only if the marking succeeds, so a failed click can no longer leave a dot stuck on the wrong colour (audit TRK-03). White and black dots can in principle share one video (white on dark shorts, black on skin) because each dot decides for itself. Tested together on synthetic pictures (white dots on dark cloth, black dots on light skin, one picture); not yet on real clothing | Added | Indirectly (selects top-hat or black-hat) | Essential | `tracker.py` `init_at` |
 | 8 sagittal landmarks from your table (ASIS, PSIS, greater trochanter, lateral femoral epicondyle, fibular head, lateral malleolus, 5th metatarsal base and head) | You | No | Essential | `protocol.json` |
 | **Strap and anchor dots (new, optional):** two extra tracked dots, "strap marker" (on the person, where the strap attaches) and "anchor marker" (fixed end of the strap, rope or chain; put it on the rope itself if the anchor is out of the picture). Both start switched off; tick them in the Landmarks box (or the preset "all landmarks + strap and anchor") and they must then be marked like any landmark. They are tracked, shown (a magenta line is drawn between them) and written to the CSV like any other dot, with trails; they belong to no angle, so they cannot change an angle, be judged, or block Lock. A lost strap or anchor dot does not affect any angle. Defined by `optional_dots` in `protocol.json`; `meta.json` lists them under `optional_dots_used` (and `dots_disabled` now only lists landmarks you switched off). Place the strap dot at least about three dot-widths from the malleolus dot, or the trackers can be confused | You | No | Helpful | `protocol.py` `TestDef.all_dots`; `engine.py` `active_dots`; `overlay.py` |
 | Choose which landmarks to use, with presets such as "only Knee flexion"; angles that need a switched-off landmark disappear | You | Changes which angles exist; nothing else | Helpful (pilot) | `engine.py` `set_dot_enabled`, `angle_availability` |
@@ -277,48 +277,41 @@ Things that look like calibration but are not: the dot size and contrast learned
 
 ## H. Unfinished or unreliable
 
-1. **Mostly synthetic evidence.** The only real footage so far is one practice video with undersized dots. Thresholds are not tuned for real skin, lighting, straps or glare, and the lost-dot circle (2.0 x diameter) should be re-tested on a proper video with spec-sized dots, a hand over a dot, and white dots on dark clothing.
-2. **The "raw" video is not lossless.** Frames are re-encoded with the `mp4v` codec. It is also not exactly real-time speed (A11). With the mirror on it is the flipped picture, not the camera's original.
-3. **The main joint is judged against the typed target, not the locked pose.** If you lock at 63 deg with a target of 65 deg, the deviation shown is relative to 65. There is no "change since lock" number for the main joint (parked); the review's `start>end` partly covers it.
-4. **The locked reference is a single smoothed frame**, so its noise carries into every neighbour deviation.
-5. **Screen and CSV can disagree.** The screen colours use the smoothed angle, the CSV flags use the unsmoothed one, so near the tolerance edge the two can differ for a frame or two.
-6. **Webcam specifics are only partly handled:** the exposure/white-balance lock is untested on real hardware, dropped frames are not counted, and timestamps jitter (PC clock, not camera clock).
-7. **Camera tilt biases pelvic tilt**, which is measured against image-horizontal. The hip angle is not affected by rotation.
-8. **A wrong "participant faces" setting** flips hip and pelvic-tilt signs with no warning (also after switching the mirror).
-9. **False precision.** Angles display to 0.1 deg, but real accuracy is unknown and likely worse. On synthetic data the typical error was about 0.5 deg or less.
-10. **Stepping backwards** keeps the tracker state, so it can mis-track after a jump. Files only, and not recorded.
-11. **Marker timing:** a marker attaches to the next processed frame (up to one frame late) plus the operator's reaction time.
-12. **Methods reproducibility: closed.** `meta.json` stores every tracker number, the smoothing, camera settings, angle definitions, the version (0.3.0), a `meta_schema`, and a `provenance` block (content hash of the program files, git commit and whether files were edited, library versions, computer, hash of `protocol.json`).
-13. **Green/red flicker** at the tolerance edge (no hysteresis).
-14. **Dots of different colours in one video** (A, B) have not been tested together, and a dot's colour cannot be set by hand per dot.
-15. **No minimum dot size check, no scale.** See F and PARKED.md.
-16. **Not built:** network-stream entry (the code path exists, no box in the window), two cameras, frontal view, lens calibration, force/ADC, non-Windows support.
+1. **Mostly synthetic evidence.** The only real footage so far is one practice video with undersized dots (and one earlier recording). Thresholds are not tuned for real skin, lighting, straps or glare. Re-test, on a video with your real stickers: the lost-dot circle (2.0 x diameter), the partly-covered-dot thresholds, the dot-size estimate (1.3 px edge allowance), and white and black dots together on real clothing and skin.
+2. **No validation against a reference yet.** See `SETUP_AND_VALIDATION.md` (jig and inclinometer check, sticker placement repeatability). Until it is done, the angles are positioning data, not validated measurements. Sticker placement (a few mm) is the largest error source.
+3. **The "raw" video is not lossless and not crash-proof.** Frames are re-encoded with the `mp4v` codec into MP4 files, which can be unreadable after a hard crash or power cut (the CSV and `meta.json` are safe; Review then shows UNFINISHED). With the mirror on it is the flipped picture. An AVI container with a repair step is a possible later change.
+4. **The main joint is judged against the typed target, not the locked pose.** There is no "change since lock" number for the main joint (parked). The Review hold numbers (plateau, rest-to-hold shift) cover the analysis.
+5. **Screen and CSV can disagree.** The screen colours use the smoothed angle, the CSV flags use the unsmoothed one, so near the tolerance edge the two can differ for a frame or two. No hysteresis, so the colour can flicker at the edge.
+6. **Timestamps are the PC clock when a frame is read**, not the camera's own clock, so they jitter by a few milliseconds. Gaps are measured and flagged; dropped frames inside the camera are not counted.
+7. **2D only.** Out-of-plane rotation and camera tilt add error (camera tilt biases pelvic tilt, which is measured against the image horizontal); a pull toward or away from the camera is invisible; the ruler scale is only valid at the ruler's distance; lens distortion is not corrected.
+8. **False precision.** Angles display to 0.1 deg, but real accuracy is set by placement and set-up (item 2).
+9. **Stepping a practice video backwards** keeps the tracker state, so it can mis-track after a jump. Files only; not recorded.
+10. **Marker timing:** a marker attaches to the next processed frame (up to one frame late) plus the operator's reaction time.
+11. **Not tried on real hardware:** phone-as-webcam apps (Samsung Galaxy S24/S25/S26, iPhone), network streams, the camera check and the camera list. They are tested against stand-ins (a fake camera, a local stream server).
+12. **A half-covered dot is flagged, not corrected**, and a dot only about a quarter covered is not flagged; epicondyle/fibular-head swaps are only caught when the knee is not strongly bent.
+13. **Not built:** frontal view (hip abduction/adduction), two cameras, lens calibration, force/ADC, non-Windows support.
 
-Closed since the first inventory: silent video-thread errors, unverified camera resolution and frame rate, tracker thresholds missing from `meta.json`, no mirror toggle, the "two trackers on one dot" rule leaving a tracker on the wrong blob, Review statistics hiding noise, held x/y written while a dot is lost.
+Closed in the 2026-10 work (see CHANGELOG.md): silent video-thread errors, unverified camera format and frame rate, tracker thresholds and provenance missing from `meta.json`, no mirror toggle, trackers swapping onto fast neighbours, the Auto colour sticking after a failed click, a stray click re-marking a dot during recording, controls changeable during recording, the keyboard shortcuts dead while typing, empty and half-saved trials, camera dropouts ending the session, a wrong "Participant faces" setting, the mirror-image three-point target, swapped landmark labels, the saved reference depending on the smoothing switch, targets and tests not matching the protocol table, the exposure lock blacking out a webcam.
 
 ---
 
 ## I. Roadmap (not built)
 
-### Asked for, waiting for a go-ahead
-| Feature | Note |
+### Needs you (decisions or hardware)
+| Item | Note |
 |---|---|
-| Test of white and black dots in the same video | Synthetic test first; a per-dot colour override only if Auto fails |
+| Real-world check with the planned camera and your stickers | The remaining items in H1 and H11 can only be settled there |
+| Validation (SETUP_AND_VALIDATION.md section 4) | Jig and inclinometer; placement repeatability |
+| Which number goes to AnyBody | Plateau mean (available) or angle at peak force (needs force on the same clock) |
+| ADC and load cell | An Arduino with a 16-bit ADC (ADS1115) or an HX711 on the bare cell are candidates; needs the SIC-A2 output type and range, and a shared clock with the camera (an LED in view, or the M marker) |
 
 ### Parked (see `PARKED.md`)
-Pelvic tilt as a neighbour (stays as built), frontal view, two cameras, lens calibration, camera alignment aid, phones as cameras, ADC and load cell (an Arduino with a 16-bit ADC or an HX711 is a candidate; needs the SIC-A2 output spec), change-since-lock for the main joint, custom dots and angles, ghost pose.
+Pelvic tilt as a neighbour (stays as built), frontal view, two cameras, lens calibration, camera alignment aid, ADC and load cell, change-since-lock for the main joint, custom dots and angles beyond strap and anchor, ghost pose, the larger audit items (plug-in camera architecture, session-layout redesign, privacy masks, upper-body reuse).
 
 ### Other ideas
 | Feature | Why |
 |---|---|
-| Real-footage validation helper | Goniometer vs app readings in one table, with agreement in degrees |
-| Dropped-frame counter, git commit and version bump stored in `meta.json` | Closes H6 and H12 |
-| Stream-address box, remembered settings, session checklist, batch summary export, compare trials | Workflow |
+| AVI container with a repair step | Video that survives a hard crash |
+| Per-dot colour override | Only if Auto proves unreliable on real clothing |
+| Compare trials, batch summary export | Workflow |
 | True 3D angles | Calibrated camera pair; a separate decision |
-
-### Suggested order
-1. Real-world check of what exists (webcam test, then goniometer comparison, then a proper lost-dot video).
-2. Ruler/scale and dot-size check; white/black dot test.
-3. Phones and lens calibration, when the cameras are known.
-4. Force, once the ADC is chosen.
-5. Frontal view and two cameras.
