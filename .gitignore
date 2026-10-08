@@ -21,3 +21,6 @@ tests/_out/
 
 # Audit working folder (decide separately whether to publish it)
 audit/
+
+# local choices of this computer
+settings.json

@@ -40,6 +40,18 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
   of the picture). Both in frame. The header then shows the angle of pull and the moment arm. They are 2D values: a pull
   toward or away from the camera is not seen.
 
+**Privacy (video of a person)**
+- Best protection first: aim the camera at the leg so that the face is not in the picture at all.
+- In the *Privacy* box draw a **crop** round the leg (everything outside it is never written to disk) and, if anything
+  identifying is still inside it, add up to 3 **black masks**. Do this after the dots are marked, so the program can check
+  that no dot is near the crop edge or inside a mask. Tracking and the CSV are not affected.
+- Participant code only (`P01`, `P02`, ...). No names or personal numbers in the notes (they are refused).
+- Choose the recordings folder (*Change recordings folder*) on an encrypted drive. Video of a person must never be
+  committed to the repository (`.gitignore` blocks `*.mp4`, `recordings/`, `settings.json`).
+- Keep video of the validation subset only, if that is what the consent and AAU's GDPR contact allow. The program can be
+  changed to save no video at all (numbers only; see `PARKED.md`) if video turns out not to be permitted.
+- This is technical help, not legal advice; the data-handling plan must be confirmed by the GDPR contact.
+
 ## 2. During each trial
 1. Choose the test and the position (target). The required neighbour joint angle (for example hip 90) is shown green/red from
    the start.

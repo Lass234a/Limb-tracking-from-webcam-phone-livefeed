@@ -25,7 +25,7 @@ from .geometry import view_handedness
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import FrameSizeChanged, TrialRecorder
-from . import provenance
+from . import privacy, provenance
 from .pull import compute_pull, describe as describe_pull
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
@@ -60,7 +60,8 @@ class _FrozenWhileRecording:
 # Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
-                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist"]
+                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
+                 "privacy"]
 
 
 class Engine:
@@ -71,6 +72,8 @@ class Engine:
     mirror = _FrozenWhileRecording("the mirror setting")
     save_overlay = _FrozenWhileRecording("whether the overlay video is saved")
     camera_setup = _FrozenWhileRecording("the camera set-up checklist")
+    privacy_crop = _FrozenWhileRecording("the privacy crop")
+    privacy_masks = _FrozenWhileRecording("the privacy masks")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -113,6 +116,10 @@ class Engine:
         self._filters, self._ref_avg = {}, {}
         self.camera_setup = {}        # the operator's camera checklist (stabilisation off, zoom 1x, ...), saved with each trial
         self.camera_check = None     # result of the last 'Check the camera' (frame rate, longest wait)
+        self.privacy_crop = None     # (x, y, w, h) in picture pixels: only this part of the picture is saved to the videos
+        self.privacy_masks = []      # rectangles blacked out in the saved videos (tracking and the CSV still use the full picture)
+        self._privacy_mirror = False # the mirror setting the crop and masks were drawn under
+        self._privacy_hits = {}      # dot -> frames in which it was near the crop edge or inside a mask while recording
         self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
@@ -578,7 +585,8 @@ class Engine:
             self.stop_trial(self.last_stop_reason)
         self._reset_dots_core()
         self.scale.reset()
-        self._notice = (text + ": mark the dots (and the ruler) again.", t)
+        self._privacy_crop, self._privacy_masks = None, []      # drawn on the old picture: no longer valid
+        self._notice = (text + ": mark the dots (and the ruler) again. The privacy crop and masks were cleared.", t)
 
     # Distances that hold for any body posture (upright, seated, lying) and either leg: (longer pair, shorter pair, what is wrong,
     # smallest allowed ratio longer/shorter). They catch dots clicked in the wrong order or two labels swapped (audit GUI-14).
@@ -625,6 +633,84 @@ class Engine:
         chosen = "RIGHT" if self.facing_right else "LEFT"
         return (f"CHECK 'Participant faces': the dots look like a {shown}-facing view of the picture, but {chosen} is selected. "
                 "The hip and pelvic-tilt signs would be wrong.")
+
+    # ----------------------------------------------------------------- privacy
+    MAX_MASKS = 3
+
+    def set_privacy_rect(self, kind, x0, y0, x1, y1):
+        """Set the privacy crop ('crop') or add a black mask ('mask') from a dragged rectangle in picture pixels.
+        Returns (ok, message). Only the saved videos are affected; tracking and the CSV use the full picture."""
+        with self.lock:
+            if self._last_gray is None:
+                return False, "No picture yet."
+            h, w = self._last_gray.shape[:2]
+            rect = privacy.snap_rect(x0, y0, x1, y1, w, h)
+            if rect is None:
+                return False, f"That rectangle is too small (at least {privacy.MIN_SIDE_PX} px each way). Drag a larger one."
+            if kind == "mask":
+                if len(self._privacy_masks) >= self.MAX_MASKS:
+                    return False, f"At most {self.MAX_MASKS} masks. Clear them first."
+                self.privacy_masks = list(self._privacy_masks) + [rect]
+            else:
+                self.privacy_crop = rect
+            self._privacy_mirror = self.mirror
+            return True, ""
+
+    def clear_privacy(self):
+        with self.lock:
+            self.privacy_crop, self.privacy_masks = None, []
+
+    def privacy_problem(self):
+        """Why recording must not start with the present crop and masks (empty or None if all is well)."""
+        with self.lock:
+            crop, masks = self._privacy_crop, self._privacy_masks
+            if crop is None and not masks:
+                return None
+            if self._last_gray is None:
+                return "No picture yet."
+            h, w = self._last_gray.shape[:2]
+            if self._privacy_mirror != self.mirror:
+                return "The mirror setting changed after the privacy crop and masks were drawn. Clear them and draw them again."
+            if crop and (crop[0] + crop[2] > w or crop[1] + crop[3] > h):
+                return "The privacy crop does not fit the picture size. Clear it and draw it again."
+            for n, st in self._last_states.items():
+                if st.lost or n not in self.active_dots:
+                    continue
+                title = self.test.dot_title(n)
+                if crop and privacy.edge_distance(crop, st.x, st.y) < privacy.DOT_EDGE_MARGIN_PX:
+                    return (f"The {title} dot is outside or at the edge of the privacy crop (closer than {privacy.DOT_EDGE_MARGIN_PX} px). "
+                            "Make the crop larger.")
+                for m in masks:
+                    if privacy.mask_distance(m, st.x, st.y) <= 0:
+                        return f"The {title} dot is inside a black mask. Clear the masks and draw them again."
+            return None
+
+    def _privacy_check(self, states):
+        """While recording: header warnings for dots that come near the crop edge or into a mask; counts frames for meta.json."""
+        crop, masks = self._privacy_crop, self._privacy_masks
+        out = []
+        if crop is None and not masks:
+            return out
+        for n, st in states.items():
+            if st.lost or n not in self.active_dots:
+                continue
+            near = bool(crop) and privacy.edge_distance(crop, st.x, st.y) < privacy.DOT_WARN_MARGIN_PX
+            hidden = any(privacy.mask_distance(m, st.x, st.y) <= 0 for m in masks)
+            if near or hidden:
+                self._privacy_hits[n] = self._privacy_hits.get(n, 0) + 1
+                out.append(f"PRIVACY: {self.test.dot_title(n)} dot " + ("inside a mask" if hidden else "at the crop edge"))
+        return out
+
+    def _privacy_meta(self):
+        size = None
+        if self._last_gray is not None:
+            size = [int(self._last_gray.shape[1]), int(self._last_gray.shape[0])]
+        return {"crop_xywh": list(self._privacy_crop) if self._privacy_crop else None,
+                "masks_xywh": [list(m) for m in self._privacy_masks],
+                "full_picture_size": size,
+                "meaning": "Only the cropped part of the picture is saved to raw.mp4 and overlay.mp4; the masks are black in the saved "
+                           "videos. Tracking ran on the full picture, and all pixel positions in the CSV are in the FULL picture "
+                           "(add nothing, subtract nothing). Review pads a cropped video back to full size."}
 
     def seconds_since_last_frame(self):
         """Wall-clock seconds since process() last ran (infinity before the first frame). For operator warnings only."""
@@ -707,6 +793,8 @@ class Engine:
                 head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
             if self._notice and 0 <= t - self._notice[1] < 10.0:
                 head.append(self._notice[0])
+            if self.rec is not None:
+                head.extend(self._privacy_check(states))
             # PARKED-GHOST: ghost = None
             # PARKED-GHOST: if self.locked and self.ghost_enabled and self._ghost:
                 # PARKED-GHOST: live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
@@ -741,14 +829,18 @@ class Engine:
                 raise RuntimeError("None of the angles can be computed with the chosen landmarks.")
             if not self.trackers.is_ready():
                 raise RuntimeError("Mark all dots before recording.")
+            problem = self.privacy_problem()
+            if problem:
+                raise RuntimeError(problem)
             if frame_size is None:
                 h, w = self._last_gray.shape[:2]
                 frame_size = (w, h)
+            self._privacy_hits = {}
             self.rec = TrialRecorder(
                 self.recordings_dir, participant or "unnamed", self.test.key,
                 self.target if self.primary_angle else None,
                 self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active,
-                save_overlay=self.save_overlay)
+                save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks)
             self._marker_n = 0
             self._pending_event = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
@@ -807,6 +899,8 @@ class Engine:
             "lens_calibration": None,
             "facing": "right" if self.facing_right else "left",
             "overlay_video_saved": self.save_overlay,
+            "privacy": self._privacy_meta(),
+            "privacy_dot_warnings": {"frames_near_crop_edge_or_in_mask": dict(self._privacy_hits)},
             "camera_setup_checklist": dict(self.camera_setup),
             "camera_check": self.camera_check,
             "facing_detected": {1: "right", -1: "left"}.get(self.facing_detected),   # what the marked dots show; should equal facing

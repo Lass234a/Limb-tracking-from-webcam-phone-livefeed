@@ -13,6 +13,7 @@ Decided on 2026-10-01 after reviewing FEATURES.md. "Parked" means: no further wo
 | ADC and load cell | Not built | Hardware not available yet; the CSV already carries a camera clock column (`clock_s`) so force can be merged later |
 | Change-since-lock for the main joint | Not built | The main joint is judged against the typed target; a separate "movement since lock" number is deferred |
 | Ghost pose (dashed copy of the locked pose) | Code and checkboxes commented out, marked `# PARKED-GHOST:` in `engine.py`, `overlay.py`, `geometry.py`, `review.py`, `gui.py`, `results.py`; its tests are skipped (`tests/test_ghost.py`) | Decided to simplify the app after reviewing FEATURES.md |
+| Numbers-only mode (no video saved at all; audit REP-05 part c) | Not built. **Keep in mind as a fallback:** if video recording is not permitted (consent or ethics), record only the dot positions. The CSV and `meta.json` already hold everything needed for the angles; what is missing is a "Save video" switch (the recorder opens no video writers, Review must open a trial without a video). A numbers-only trial cannot be re-checked in Kinovea afterwards, so the validation subset should keep video. Decided 2026-10-08 to build it only if it becomes necessary |
 | Custom dots and angles | Not built (apart from two optional dots, strap and anchor, added 2026-10-07; they belong to no angle) | The 8 landmarks plus the three-point angle mode cover the pilot |
 
 ## Proposed, not added
@@ -26,7 +27,7 @@ These come from `audit/AUDIT.md` and were not done because they are large or spe
 |---|---|
 | Plug-in camera architecture, per-source capture threads, two cameras on one PC, ADC clock map, lens-calibration hook (ARC-02..04, ARC-07, ARC-10..12) | Repeats parked items or needs hardware that is not chosen yet |
 | New session layout with big readout and session plan (GUI-16), review window defaults and axes (GUI-08), notes captured at stop (GUI-03), colour-blind-safe cues and hysteresis (GUI-11) | Better designed after one real session |
-| Privacy masks, numbers-only mode (REP-05), storage and retention rules (REP-06), licence (REP-07) | Ethics and administration decisions |
+| Storage and retention rules (REP-06: how long raw video is kept, encryption), licence (REP-07) | Ethics and administration decisions (the recordings folder can now be chosen in the window) |
 | Upper-body reuse refactor (PRK-07), moment arm with a scale-free ratio method (ANG-11 part), AnyBody conversion (ANG-06), lying postures (ANG-03) | Only if those tests or that workflow are used |
 | AVI container with a repair step (DAT-01 rest), 60 fps cameras (CAM-07 rest) | Possible later if crashes or frame rates become a problem |
 | Test-suite polish: fast/slow split, tolerance tests (TST-05, 06, 09) | Convenience |

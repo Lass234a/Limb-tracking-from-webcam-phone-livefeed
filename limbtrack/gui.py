@@ -1,4 +1,5 @@
 """The window: a Live tab (camera, marking dots, lock, record) and a Review tab."""
+import json
 import os
 import threading
 import time
@@ -11,11 +12,12 @@ import cv2
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
                                QVBoxLayout, QWidget)
 
+from . import privacy
 from .camera import CameraSource, camera_names, classify_source, list_cameras
 from .engine import Engine
 from .scale import MIN_DOT_DIAMETER_CM
@@ -96,11 +98,32 @@ class TextField(QLineEdit):
 class VideoView(QWidget):
     """Shows an image scaled to fit; reports clicks in image pixel coordinates."""
     clicked = Signal(float, float)
+    rect_drawn = Signal(float, float, float, float)      # x0, y0, x1, y1 in image pixels (after set_draw_mode(True))
 
     def __init__(self):
         super().__init__()
         self.setMinimumSize(640, 360)
         self._img = None
+        self._draw_mode = False
+        self._drag = None                  # [x0, y0, x1, y1] while the mouse is down in draw mode
+        self._crop, self._masks = None, []   # privacy shapes in image pixels (shown on the screen only)
+
+    def set_draw_mode(self, on):
+        self._draw_mode = bool(on)
+        self._drag = None
+        self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+        self.update()
+
+    def set_privacy_shapes(self, crop, masks):
+        self._crop, self._masks = crop, list(masks)
+        self.update()
+
+    def _image_xy(self, e, clamp=False):
+        rect, s = self._target()
+        x, y = (e.position().x() - rect.left()) / s, (e.position().y() - rect.top()) / s
+        if clamp:
+            x, y = min(max(x, 0.0), self._img.width()), min(max(y, 0.0), self._img.height())
+        return x, y
 
     def set_image(self, qimg):
         self._img = qimg
@@ -119,14 +142,54 @@ class VideoView(QWidget):
             rect, _ = self._target()
             p.setRenderHint(QPainter.SmoothPixmapTransform)
             p.drawImage(rect, self._img)
+            _, s = self._target()
+
+            def box(r):
+                return QRectF(rect.left() + r[0] * s, rect.top() + r[1] * s, r[2] * s, r[3] * s)
+            if self._crop:                               # the part that is saved: everything outside it is dimmed
+                c = box(self._crop)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(0, 0, 0, 140)))
+                p.drawRect(QRectF(rect.left(), rect.top(), rect.width(), c.top() - rect.top()))
+                p.drawRect(QRectF(rect.left(), c.bottom(), rect.width(), rect.bottom() - c.bottom()))
+                p.drawRect(QRectF(rect.left(), c.top(), c.left() - rect.left(), c.height()))
+                p.drawRect(QRectF(c.right(), c.top(), rect.right() - c.right(), c.height()))
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(QColor(0, 200, 255), 2, Qt.DashLine))
+                p.drawRect(c)
+            for m in self._masks:                        # black in the saved videos; shown here as a see-through red box
+                p.setPen(QPen(QColor(220, 38, 38), 2))
+                p.setBrush(QBrush(QColor(220, 38, 38, 90)))
+                p.drawRect(box(m))
+            if self._drag:
+                x0, y0, x1, y1 = self._drag
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(QColor(250, 204, 21), 2, Qt.DashLine))
+                p.drawRect(QRectF(rect.left() + min(x0, x1) * s, rect.top() + min(y0, y1) * s, abs(x1 - x0) * s, abs(y1 - y0) * s))
 
     def mousePressEvent(self, e):
         if self._img is None or e.button() != Qt.LeftButton:
             return
-        rect, s = self._target()
-        x, y = (e.position().x() - rect.left()) / s, (e.position().y() - rect.top()) / s
+        if self._draw_mode:
+            x, y = self._image_xy(e, clamp=True)
+            self._drag = [x, y, x, y]
+            return
+        x, y = self._image_xy(e)
         if 0 <= x < self._img.width() and 0 <= y < self._img.height():
             self.clicked.emit(x, y)
+
+    def mouseMoveEvent(self, e):
+        if self._draw_mode and self._drag is not None and self._img is not None:
+            self._drag[2:] = self._image_xy(e, clamp=True)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._draw_mode and self._drag is not None and e.button() == Qt.LeftButton:
+            self._drag[2:] = self._image_xy(e, clamp=True)
+            x0, y0, x1, y1 = self._drag
+            self._drag = None
+            self.update()
+            self.rect_drawn.emit(x0, y0, x1, y1)
 
 
 class VideoWorker(QThread):
@@ -452,8 +515,9 @@ class LiveTab(QWidget):
 
         # --- record
         self.participant = TextField()
-        self.participant.setPlaceholderText("e.g. P01")
+        self.participant.setPlaceholderText("P01, P02, ... (code only, no names)")
         self.notes = TextField()
+        self.notes.setPlaceholderText("No names or health details")
         self.key_hint = QLabel("Typing: the letter keys are off while a text box has focus. Press Enter or Esc to leave it, "
                                "or use F5 record, F6 MVIC start, F7 MVIC end, F8 marker, F9 lock.")
         self.key_hint.setWordWrap(True)
@@ -470,6 +534,11 @@ class LiveTab(QWidget):
         self.btn_rec.setCheckable(True)
         self.btn_rec.clicked.connect(self.toggle_record)
         self.rec_label = QLabel("Not recording")
+        self.folder_label = QLabel(f"Saving to: {self.recordings_dir}")
+        self.folder_label.setWordWrap(True)
+        self.btn_folder = QPushButton("Change recordings folder...")
+        self.btn_folder.setToolTip("Where trials are saved, for example an encrypted drive. Not possible while recording.")
+        self.btn_folder.clicked.connect(self.choose_folder)
         btn_open = QPushButton("Open recordings folder")
         btn_open.clicked.connect(lambda: (self.recordings_dir.mkdir(exist_ok=True), os.startfile(self.recordings_dir)))
         self.btn_start_mark = QPushButton("MVIC start  (S / F6)")
@@ -490,7 +559,31 @@ class LiveTab(QWidget):
         rf.addRow(mrow)
         rf.addRow(self.rec_label)
         rf.addRow(self.key_hint)
+        rf.addRow(self.folder_label)
+        rf.addRow(self.btn_folder)
         rf.addRow(btn_open)
+
+        # --- privacy: what is written to the saved videos
+        self.priv_label = QLabel()
+        self.priv_label.setWordWrap(True)
+        self.btn_crop = QPushButton("Draw crop...")
+        self.btn_crop.setToolTip("Drag a rectangle round the leg. Only that part of the picture is saved to raw.mp4 and overlay.mp4.")
+        self.btn_mask = QPushButton("Add black mask...")
+        self.btn_mask.setToolTip("Drag a rectangle (for example over a face). It is black in the saved videos. At most 3.")
+        self.btn_priv_clear = QPushButton("Clear")
+        self.btn_crop.clicked.connect(lambda: self.start_privacy_drawing("crop"))
+        self.btn_mask.clicked.connect(lambda: self.start_privacy_drawing("mask"))
+        self.btn_priv_clear.clicked.connect(self.clear_privacy)
+        self.view.rect_drawn.connect(self.on_privacy_rect)
+        self._priv_kind = None
+        pv = QGroupBox("Privacy: what is saved to video")
+        pvl = QVBoxLayout(pv)
+        pvl.addWidget(self.priv_label)
+        prow = QHBoxLayout()
+        for b in (self.btn_crop, self.btn_mask, self.btn_priv_clear):
+            prow.addWidget(b)
+        pvl.addLayout(prow)
+        self.update_privacy_label()
 
         # --- scale (ruler with a dot at each end)
         self.ruler_len = self._spin(1.0, 100.0, 1.0, " cm")
@@ -557,7 +650,7 @@ class LiveTab(QWidget):
         self.trace_timer.start(100)
 
         side = QVBoxLayout()
-        for g in (src, cs, tg, lm, tpbox, sc, mk, rc):
+        for g in (src, cs, tg, lm, tpbox, sc, mk, pv, rc):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -757,6 +850,7 @@ class LiveTab(QWidget):
 
     def on_mirror_toggled(self, on):
         self.engine.mirror = bool(on)
+        self.engine.clear_privacy()               # drawn on the old orientation
         self.engine.reset_dots()                  # marked positions belong to the old orientation
         self.clear_scale()
         self.btn_lock.setChecked(False)
@@ -1046,6 +1140,69 @@ class LiveTab(QWidget):
         self.scale_label.setText(text)
         self.scale_label.setStyleSheet("color: #d97706; font-weight: bold;" if (problems or small) else "")
 
+    # ------------------------------------------------------------ privacy and folder
+    folder_changed = Signal(str)
+
+    def start_privacy_drawing(self, kind):
+        if self.worker is None:
+            self.say("Start the camera or open a video first, then draw on the picture.")
+            return
+        self._priv_kind = kind
+        self.view.set_draw_mode(True)
+        self.say("Drag a rectangle on the video around the part to KEEP; everything outside it will not be saved." if kind == "crop"
+                 else "Drag a rectangle on the video over the part to BLACK OUT in the saved videos.", 12.0)
+
+    def on_privacy_rect(self, x0, y0, x1, y1):
+        kind, self._priv_kind = self._priv_kind, None
+        self.view.set_draw_mode(False)
+        if kind is None:
+            return
+        try:
+            ok, msg = self.engine.set_privacy_rect(kind, x0, y0, x1, y1)
+        except RuntimeError as e:
+            ok, msg = False, str(e)
+        self.say(("Crop set." if kind == "crop" else "Mask added.") if ok else msg, 6.0)
+        self.update_privacy_label()
+
+    def clear_privacy(self):
+        self._priv_kind = None
+        self.view.set_draw_mode(False)
+        try:
+            self.engine.clear_privacy()
+        except RuntimeError as e:
+            self.say(str(e))
+        self.update_privacy_label()
+
+    def update_privacy_label(self):
+        e = self.engine
+        crop, masks = e.privacy_crop, e.privacy_masks
+        text = (f"Saved video is cropped to {crop[2]}x{crop[3]} px." if crop else "Saved video: the whole picture.")
+        if masks:
+            text += f" {len(masks)} black mask" + ("s." if len(masks) > 1 else ".")
+        text += "\nTracking and the CSV always use the whole picture."
+        problem = e.privacy_problem()
+        if problem:
+            text += "\nWARNING: " + problem
+        if text != self.priv_label.text():
+            self.priv_label.setText(text)
+            self.priv_label.setStyleSheet("color: #d97706; font-weight: bold;" if problem else "")
+        self.view.set_privacy_shapes(crop, masks)
+
+    def choose_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose where recordings are saved", str(self.recordings_dir))
+        if not d:
+            return
+        if self.engine.rec is not None:
+            self.say("Stop recording before changing the recordings folder.")
+            return
+        self.engine.recordings_dir = Path(d)
+        self.set_recordings_dir(Path(d))
+        self.folder_changed.emit(str(d))
+
+    def set_recordings_dir(self, path):
+        self.recordings_dir = Path(path)
+        self.folder_label.setText(f"Saving to: {self.recordings_dir}")
+
     def say(self, text, seconds=4.0):
         """Show a message on the instruction line and keep it there (the status timer would overwrite it within 0.2 s)."""
         self.instruction.setText(text)
@@ -1115,9 +1272,15 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", "The video file has already ended, so nothing would be recorded. "
                                     "Step back with the Left arrow key or open the file again.")
                 return
-            if not self.participant.text().strip():
+            id_problem = privacy.check_participant_id(self.participant.text().strip())
+            if id_problem:
                 self.btn_rec.setChecked(False)
-                QMessageBox.warning(self, "Participant", "Enter a participant ID first so the files are labelled.")
+                QMessageBox.warning(self, "Participant", id_problem)
+                return
+            notes_problem = privacy.notes_problem(self.notes.text())
+            if notes_problem:
+                self.btn_rec.setChecked(False)
+                QMessageBox.warning(self, "Notes", notes_problem + " Remove it: notes must not identify anyone.")
                 return
             if not self.engine.locked:
                 r = QMessageBox.question(self, "Not locked", "The position is not locked, so the other joints are not "
@@ -1194,6 +1357,9 @@ class LiveTab(QWidget):
 
     def refresh_status(self):
         recording = self._rec_started is not None
+        for w in (self.btn_crop, self.btn_mask, self.btn_priv_clear, self.btn_folder):
+            w.setEnabled(not recording)
+        self.update_privacy_label()
         for cb in self.lm_checks.values():
             cb.setEnabled(not recording)
         self.lm_preset.setEnabled(not recording)
@@ -1255,15 +1421,31 @@ class MainWindow(QWidget):
         super().__init__()
         self.setWindowTitle("Limb angle tracker")
         self.resize(1400, 820)
-        self.engine = Engine(tests, recordings_dir=Path(root) / "recordings")
+        self.settings_path = Path(root) / "settings.json"          # local choices of this computer (not in the repository)
+        folder = Path(root) / "recordings"
+        try:
+            saved = json.loads(self.settings_path.read_text(encoding="utf-8")).get("recordings_dir")
+            if saved:
+                folder = Path(saved)
+        except (OSError, ValueError, AttributeError):
+            pass
+        self.engine = Engine(tests, recordings_dir=folder)
         self.engine.protocol_path = Path(root) / "protocol.json"
         tabs = QTabWidget()
-        self.live = LiveTab(self.engine, Path(root) / "recordings")
-        self.review = ReviewTab(Path(root) / "recordings")
+        self.live = LiveTab(self.engine, folder)
+        self.review = ReviewTab(folder)
+        self.live.folder_changed.connect(self.on_folder_changed)
         tabs.addTab(self.live, "Live")
         tabs.addTab(self.review, "Review")
         lay = QVBoxLayout(self)
         lay.addWidget(tabs)
+
+    def on_folder_changed(self, path):
+        self.review.dir = Path(path)
+        try:
+            self.settings_path.write_text(json.dumps({"recordings_dir": path}, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def closeEvent(self, e):
         self.live.shutdown()

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import cv2
 
+from . import privacy
 from .pull import COLUMNS as PULL_COLUMNS
 from .results import LOST, OK, OUT
 
@@ -65,7 +66,14 @@ class _VideoThread(threading.Thread):
 
 class TrialRecorder:
     def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False,
-                 save_overlay=True):
+                 save_overlay=True, crop=None, masks=()):
+        # `frame_size` is the size of the picture the program works on. With a privacy crop the saved videos are smaller
+        # (crop width x height); masks are blacked out in the saved copies only (limbtrack/privacy.py).
+        self.full_size = (int(frame_size[0]), int(frame_size[1]))
+        self.crop = tuple(crop) if crop else None
+        self.masks = [tuple(m) for m in masks]
+        if self.crop:
+            frame_size = (self.crop[2], self.crop[3])
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.started_at = datetime.now().isoformat(timespec="milliseconds")
         folder = Path(root) / _safe(participant)
@@ -123,8 +131,8 @@ class TrialRecorder:
         self._write_meta(data)
 
     def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None):
-        if (frame.shape[1], frame.shape[0]) != tuple(self.frame_size) or overlay.shape[:2] != frame.shape[:2]:
-            raise FrameSizeChanged(f"The picture size changed from {self.frame_size[0]}x{self.frame_size[1]} to "
+        if (frame.shape[1], frame.shape[0]) != self.full_size or overlay.shape[:2] != frame.shape[:2]:
+            raise FrameSizeChanged(f"The picture size changed from {self.full_size[0]}x{self.full_size[1]} to "
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
         if self._t0 is None:
             self._t0 = t
@@ -138,7 +146,8 @@ class TrialRecorder:
         if self._video.error is not None:
             raise RuntimeError(f"Saving the video failed: {self._video.error}")
         try:
-            self._video.put(frame, overlay)
+            self._video.put(privacy.apply(frame, self.crop, self.masks),
+                            privacy.apply(overlay, self.crop, self.masks) if self._ovl is not None else overlay)
         except queue.Full:
             raise RuntimeError("Saving the video is not keeping up (the disk may be full or very slow).") from None
         row = [frame_index, round(t - self._t0, 5), round(t, 5), int(locked)]

@@ -13,7 +13,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import overlay
+from . import overlay, privacy
 from .displacement import window_displacements
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
@@ -88,12 +88,17 @@ class Trial:
         # PARKED-GHOST: self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
         self._pos = -2
+        pv = self.meta.get("privacy") or {}        # a cropped video is put back at its place on a black full-size picture
+        self.crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
+        self.full_size = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
 
     def frame(self, i):
         if i != self._pos + 1:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ok, img = self.cap.read()
         self._pos = i if ok else -2
+        if ok and self.crop and self.full_size:
+            img = privacy.pad_to_full(img, self.crop, self.full_size)
         return img if ok else None
 
     def trails_upto(self, i):
