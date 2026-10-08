@@ -33,4 +33,5 @@ class FrameResult:
     angles: list = field(default_factory=list)
     dots: dict = field(default_factory=dict)   # name -> DotState
     header: list = field(default_factory=list)  # text lines drawn at the top of the picture
+    pull: dict = None                          # angle of pull / moment arm this frame (strap and anchor dots), see pull.py
     # PARKED-GHOST: ghost: dict = None                         # locked pose (name -> (x, y)) if one is being shown

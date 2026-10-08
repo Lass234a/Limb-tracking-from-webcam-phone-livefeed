@@ -24,6 +24,7 @@ from .angles import measure, segment_pairs
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import TrialRecorder
+from .pull import compute_pull, describe as describe_pull
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
@@ -247,6 +248,31 @@ class Engine:
             ok, self.mark_problem = self.scale.mark(index, self._last_gray, x, y)
             return ok
 
+    # ------------------------------------------------------------ angle of pull
+    @property
+    def pull_active(self):
+        return "strap" in self.active_dots and "anchor" in self.active_dots
+
+    def pull_segment(self):
+        """(proximal dot, distal dot, fulcrum dot) the pull is measured against: the second arm of the test's main joint."""
+        p = self.test.primary
+        arm = p.vectors[1] if len(p.vectors) == 2 else None
+        if isinstance(arm, (list, tuple)) and len(arm) == 2 and all(isinstance(d, str) for d in arm) and p.fulcrum:
+            return arm[0], arm[1], p.fulcrum
+        return None
+
+    def _compute_pull(self, states):
+        if not self.pull_active:
+            return None
+        spec = self.pull_segment()
+        if spec is None:
+            return None
+        names = ("strap", "anchor") + tuple(spec)
+        if any(n not in states or states[n].lost for n in names):
+            return None
+        xy = lambda n: (states[n].x, states[n].y)                       # noqa: E731
+        return compute_pull(xy("strap"), xy("anchor"), xy(spec[0]), xy(spec[1]), xy(spec[2]), self.scale.px_per_cm)
+
     def dot_sizes_cm(self):
         """Approximate width in cm of each marked dot (from its size when marked and the ruler scale); {} without a scale."""
         with self.lock:
@@ -459,6 +485,9 @@ class Engine:
             head = [first, "POSITION LOCKED" if self.locked else "position not locked"]
             if main is None:
                 head.append(f"main joint ({self.test.primary.title}) not available with the chosen landmarks")
+            pull = self._compute_pull(states)
+            if self.pull_active:
+                head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
             for problem in self.scale.problems():
                 head.append("SCALE: " + problem)
             lost = [n for n, st in states.items() if st.lost]
@@ -489,8 +518,8 @@ class Engine:
             if self.rec is not None:
                 live_scale = self.scale.live_px_per_cm()
                 self._scale_values.append(live_scale)
-                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "", live_scale)
-            res = FrameResult(self.frame_index, t, img, angles, states, head)
+                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "", live_scale, pull)
+            res = FrameResult(self.frame_index, t, img, angles, states, head, pull)
             # PARKED-GHOST: # with the ghost: FrameResult(self.frame_index, t, img, angles, states, head, ghost)
             self.frame_index += 1
             return res
@@ -510,7 +539,7 @@ class Engine:
             self.rec = TrialRecorder(
                 self.recordings_dir, participant or "unnamed", self.test.key,
                 self.target if self.primary_angle else None,
-                self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size)
+                self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active)
             self._marker_n = 0
             self._pending_event = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
@@ -519,6 +548,17 @@ class Engine:
             # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
+
+    def _pull_meta(self):
+        if not self.pull_active:
+            return None
+        spec = self.pull_segment()
+        return {"direction": "from the strap marker towards the anchor marker",
+                "segment_from_to": list(spec[:2]) if spec else None, "moment_arm_from_joint_dot": spec[2] if spec else None,
+                "pull_angle": "angle between the pull direction and the segment (proximal to distal dot); 90 = square to the segment",
+                "moment_arm": "shortest distance from the joint dot to the line of pull",
+                "cm_use_ruler_scale": self.scale.px_per_cm is not None,
+                "valid_for": "the 2D picture only; cm only at the ruler's distance from the camera"}
 
     def _dot_size_check(self):
         sizes = self.dot_sizes_cm()
@@ -567,6 +607,7 @@ class Engine:
                 # PARKED-GHOST: "ghost_anchor": self._ghost_anchor(),
                 "scale": self.scale.meta(self._scale_values),
                 "dot_size_check": self._dot_size_check(),
+                "pull": self._pull_meta(),
                 "three_point": list(self.three_point) if self.three_point else None,
                 "angles": [asdict(a) for a in self.active_angles],
             }

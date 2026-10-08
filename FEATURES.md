@@ -145,6 +145,19 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
 - **Need:** Helpful (mirrored webcam images).
 - **Code:** `gui.py` `VideoWorker._show`, `on_mirror_toggled`; `engine.py` `mirror`.
 
+### A15. Angle of pull and moment arm (strap and anchor dots)
+- **What:** when both the strap marker and the anchor marker are switched on, the app shows and records, every frame:
+  - **pull angle** (`pull_angle_deg`): the angle between the direction of pull (from the strap marker towards the anchor marker) and the segment the strap acts on, measured along the segment from its proximal to its distal dot. 90 deg = square to the segment; below 90 the pull has a component towards the feet, above 90 towards the body. `pull_off90_deg` is the same minus 90.
+  - **moment arm** (`moment_arm_px`, `moment_arm_cm`): shortest distance from the joint dot to the line of pull.
+  - **strap-joint distance** (`strap_joint_px`, `strap_joint_cm`): straight distance from the joint dot to the strap marker.
+- **Which segment and joint:** the second arm and the fulcrum of the test's main joint: knee tests use the shank (fibular head to malleolus) and the epicondyle, hip tests the thigh (trochanter to epicondyle) and the trochanter, ankle tests the foot (5th metatarsal base to head) and the malleolus.
+- **Alters numbers:** it adds columns only; no angle or dot position changes (checked by a test). Nothing is judged and nothing blocks Lock or Record. The pull is shown as a line in the picture header ("PULL 111.8 deg to the segment (+21.8 from perpendicular); moment arm 10.2 cm") and in the saved overlay video. Values are unsmoothed.
+- **Blank, not guessed,** whenever the strap, anchor or a needed segment dot is lost or switched off.
+- **cm values** need the ruler scale and use the scale as marked; they are only right at the ruler's distance from the camera. Without a scale the header shows pixels ("no scale").
+- **Limit:** this is the 2D picture. A pull toward or away from the camera, or a rope that is not in the leg's plane, is invisible, and the real pull angle then differs.
+- **Saved:** the six CSV columns (only when both dots are used) and `meta.json` `pull` (segment, joint dot, definitions; null otherwise).
+- **Code:** `limbtrack/pull.py` `compute_pull`; `engine.py` `_compute_pull`, `pull_segment`.
+
 ---
 
 ## B. Detection
@@ -175,7 +188,6 @@ The method is in A7 to A10. Other items:
 | Feature | Who | Alters numbers? | Need | Code |
 |---|---|---|---|---|
 | 7 tests with main joint and suggested target angles (from your `plot_proposal.m`): knee extension/flexion, hip extension/flexion, ankle plantar/dorsiflexion, belt squat | You | No | Essential | `protocol.json`; `protocol.py` `load_protocol` |
-| Pull angle and moment arm from the strap and anchor dots: not built yet (next step) |  |  |  |  |
 | Pelvic tilt tracked as a neighbour in every test (ASIS-PSIS vs horizontal; parked, left as built) | Added | Assumes a level camera | Helpful | `protocol.json` |
 | Angles drop out automatically when a needed landmark is switched off | You | No | Helpful | `engine.py` `active_angles` |
 | Editable `protocol.json` (dots, arms, signs, offsets, targets, tolerances) | Added | Defines the angles | Essential | `protocol.py` |
@@ -222,10 +234,10 @@ Things that look like calibration but are not: the dot size and contrast learned
 | `Start.bat`, README, `PARKED.md`, 126 automatic tests (one skipped), git history | Added | Extra | project root; `tests/` |
 
 ### CSV columns
-`frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event, scale_px_per_cm` (the live ruler scale; blank when no ruler is marked or a ruler dot is lost). Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
+`frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event, scale_px_per_cm` (the live ruler scale; blank when no ruler is marked or a ruler dot is lost), and, only when the strap and anchor dots are both used, `pull_angle_deg, pull_off90_deg, moment_arm_px, moment_arm_cm, strap_joint_px, strap_joint_cm` (blank while a needed dot is lost). Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
 
 ### `meta.json` contents
-`software_version`, participant, notes, test, target and tolerances (main and neighbour), `dots_used`, `dots_disabled`, `locked_references_deg`, `dot_kind`, `camera` and `camera_settings` (requested, driver-reported, exposure/white-balance lock result), `mirrored_image`, `scale` (ruler length, pixels per cm, null if no ruler), `dot_size_check`, `facing`, `smoothing`, `trails`, `reference_basis`, `three_point`, `tracker_settings` (every number in A1 to A6), `angles` (full definitions), the events list, frame count, written and measured frame rate. The locked dot positions that the ghost pose used are no longer saved.
+`software_version`, participant, notes, test, target and tolerances (main and neighbour), `dots_used`, `dots_disabled`, `locked_references_deg`, `dot_kind`, `camera` and `camera_settings` (requested, driver-reported, exposure/white-balance lock result), `mirrored_image`, `scale` (ruler length, pixels per cm, null if no ruler), `dot_size_check`, `pull` (definitions, null if the strap and anchor dots were not used), `facing`, `smoothing`, `trails`, `reference_basis`, `three_point`, `tracker_settings` (every number in A1 to A6), `angles` (full definitions), the events list, frame count, written and measured frame rate. The locked dot positions that the ghost pose used are no longer saved.
 
 ---
 
@@ -257,7 +269,7 @@ Closed since the first inventory: silent video-thread errors, unverified camera 
 ### Asked for, waiting for a go-ahead
 | Feature | Note |
 |---|---|
-| Strap and anchor dots, pull angle and moment arm, displacement output (agreed order, 2026-10-07): optional dots on the strap where it meets the person and at the fixed anchor (tracked, not judged, not blocking Lock); the angle between the line of pull and the shank, and the perpendicular distance from the joint to the line of pull (in cm with the scale); per-dot displacement in pixels and cm in the CSV and Review | Ruler scale is done (section F). A pull toward or away from the camera is invisible in a 2D picture |
+| Displacement output (agreed order, 2026-10-07): per-dot displacement in pixels and cm (from the start of the hold and relative to a stable reference such as the anchor) in the CSV and the Review summary | Ruler scale, strap/anchor dots and pull angle are done (A15, F, B) |
 | Test of white and black dots in the same video | Synthetic test first; a per-dot colour override only if Auto fails |
 
 ### Parked (see `PARKED.md`)

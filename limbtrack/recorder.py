@@ -8,6 +8,7 @@ from pathlib import Path
 
 import cv2
 
+from .pull import COLUMNS as PULL_COLUMNS
 from .results import LOST, OK, OUT
 
 
@@ -20,7 +21,7 @@ def _num(v, nd=3):
 
 
 class TrialRecorder:
-    def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size):
+    def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.started_at = datetime.now().isoformat(timespec="milliseconds")
         folder = Path(root) / _safe(participant)
@@ -42,6 +43,9 @@ class TrialRecorder:
         for a in self.angle_names:
             head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head += ["all_ok", "event", "scale_px_per_cm"]
+        self.with_pull = with_pull
+        if with_pull:
+            head += PULL_COLUMNS
         self._csv.writerow(head)
         self.frames = 0
         self.events = []          # {frame, t_s, label} markers added during the trial
@@ -50,7 +54,7 @@ class TrialRecorder:
         self.fps = fps
         self.frame_size = frame_size
 
-    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None):
+    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None):
         if self._t0 is None:
             self._t0 = t
         self._raw.write(frame)
@@ -75,6 +79,8 @@ class TrialRecorder:
         row.append(0 if oks else 1)
         row.append(event or "")
         row.append(_num(scale_px_per_cm, 4))        # live ruler scale this frame (blank: no ruler marked, or a ruler dot lost)
+        if self.with_pull:                          # angle of pull / moment arm; blank when the strap, anchor or segment dots are lost
+            row += [_num((pull or {}).get(c), 2) for c in PULL_COLUMNS]
         if event:
             self.events.append({"frame": self.frames, "t_s": round(t - self._t0, 4), "label": event})
         self._csv.writerow(row)
