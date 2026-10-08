@@ -43,7 +43,7 @@ def test_the_engine_receives_the_flipped_picture_only_when_mirror_is_on(tmp_path
     win, video = make_window(tmp_path)
     seen = []
     original = win.engine.process
-    win.engine.process = lambda frame, t: (seen.append(frame.copy()), original(frame, t))[1]
+    win.engine.process = lambda frame, t, source_frame=None: (seen.append(frame.copy()), original(frame, t, source_frame))[1]
     live = win.live
     live.start_source(str(video))
     assert pump(app, lambda: len(seen) > 3)

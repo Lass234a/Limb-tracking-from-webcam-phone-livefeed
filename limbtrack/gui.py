@@ -166,7 +166,7 @@ class VideoWorker(QThread):
     def _show(self, frame, t, cam):
         if self.engine.mirror:
             frame = cv2.flip(frame, 1)          # before tracking, recording and drawing: everything sees the flipped picture
-        res = self.engine.process(frame, t)
+        res = self.engine.process(frame, t, cam.position)
         self.at_end = False
         self.frame_ready.emit(bgr_to_qimage(res.overlay))
         if cam.is_file:
@@ -179,8 +179,8 @@ class VideoWorker(QThread):
             self.ended.emit(str(e))
             return
         self.is_file = cam.is_file
-        self.engine.camera_desc = cam.description
-        self.engine.camera_info = cam.info()
+        self.engine.set_source(cam.description, cam.info(),
+                               (lambda: cam.file_fps) if cam.is_file else (lambda: cam.measured_fps() or (cam.requested or {}).get("fps")))
         self.camera = cam        # read-only use from the window: settings and measured frame rate
         t_start = None           # wall-clock origin for real-time playback of a file
         last = (None, None)      # last frame shown (for redraws while paused)

@@ -55,11 +55,11 @@ def test_an_error_in_the_video_thread_is_shown_logged_and_the_recording_is_kept(
     original = win.engine.process
     calls = {"n": 0}
 
-    def failing(frame, t):
+    def failing(frame, t, source_frame=None):
         calls["n"] += 1
         if calls["n"] > 8:
             raise RuntimeError("simulated tracking failure")
-        return original(frame, t)
+        return original(frame, t, source_frame)
 
     win.engine.process = failing
     assert pump(app, lambda: live.worker is None, timeout=15)          # the thread ended instead of dying silently

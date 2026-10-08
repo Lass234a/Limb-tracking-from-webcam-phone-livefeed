@@ -51,6 +51,7 @@ class TrialRecorder:
         self.with_pull = with_pull
         if with_pull:
             head += PULL_COLUMNS
+        head.append("source_frame")        # last column: frame number in the source (file frame, or camera read count)
         self._csv.writerow(head)
         self.frames = 0
         self.events = []          # {frame, t_s, label} markers added during the trial
@@ -73,7 +74,7 @@ class TrialRecorder:
                      "files": {k: p.name for k, p in self.paths.items()}})
         self._write_meta(data)
 
-    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None):
+    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None):
         if (frame.shape[1], frame.shape[0]) != tuple(self.frame_size) or overlay.shape[:2] != frame.shape[:2]:
             raise FrameSizeChanged(f"The picture size changed from {self.frame_size[0]}x{self.frame_size[1]} to "
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
@@ -103,6 +104,7 @@ class TrialRecorder:
         row.append(_num(scale_px_per_cm, 4))        # live ruler scale this frame (blank: no ruler marked, or a ruler dot lost)
         if self.with_pull:                          # angle of pull / moment arm; blank when the strap, anchor or segment dots are lost
             row += [_num((pull or {}).get(c), 2) for c in PULL_COLUMNS]
+        row.append("" if source_frame is None else int(source_frame))
         if event:
             self.events.append({"frame": self.frames, "t_s": round(t - self._t0, 4), "label": event})
         self._csv.writerow(row)

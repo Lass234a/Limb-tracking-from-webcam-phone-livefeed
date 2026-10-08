@@ -78,6 +78,7 @@ class Engine:
         self._frame_stamp = None
         self.scale = ScaleReference(self.kind)   # pixel-to-cm scale from a ruler with a dot at each end (limbtrack/scale.py)
         self._scale_values = []                  # live scale per recorded frame
+        self.fps_source = None                   # callable giving the video source's frame rate (set by set_source)
         self.last_stop_reason = None             # why the engine itself ended the last recording (picture size changed), if it did
         self._notice = None                      # (text, time) shown in the header for a few seconds
         self._ref_avg, self._ref_last = {}, {}      # unsmoothed 0.2 s average per angle, used as the neighbour reference at Lock
@@ -535,19 +536,40 @@ class Engine:
         """Wall-clock seconds since process() last ran (infinity before the first frame). For operator warnings only."""
         return time.perf_counter() - self._frame_stamp if self._frame_stamp is not None else float("inf")
 
+    def set_source(self, camera_desc, camera_info, fps_provider=None):
+        """A new video source has started: forget the old timing. `fps_provider()` gives the source's frame rate
+        (a file's own rate, or a camera's measured rate) or None."""
+        with self.lock:
+            self.camera_desc, self.camera_info = camera_desc, camera_info
+            self.fps_source = fps_provider
+            self._times.clear()
+
     def _fps(self):
+        """Frame rate the videos of a recording are tagged with: the source's own rate when it is known (a file's rate;
+        a camera's measured rate), otherwise estimated from the last frame times. Always between 1 and 240."""
+        if self.fps_source is not None:
+            try:
+                v = self.fps_source()
+            except Exception:  # noqa: BLE001 - never let a timing query stop the recording
+                v = None
+            if v and 1.0 <= float(v) <= 240.0:
+                return float(v)
         if len(self._times) < 5:
             return 30.0
         span = self._times[-1] - self._times[0]
-        return (len(self._times) - 1) / span if span > 0 else 30.0
+        est = (len(self._times) - 1) / span if span > 0 else 30.0
+        return min(max(est, 1.0), 240.0)
 
-    def process(self, frame, t):
+    def process(self, frame, t, source_frame=None):
         with self.lock:
             gray = to_gray(frame)
             if self._last_gray is not None and gray.shape != self._last_gray.shape:
                 self._picture_size_changed(self._last_gray.shape, gray.shape, t)
             self._last_gray = gray
-            self._times.append(t)
+            if self._times and t < self._times[-1]:         # the video stepped back: start the timing afresh
+                self._times.clear()
+            if not self._times or t > self._times[-1]:      # (an equal time is the same frame redrawn: not a new frame)
+                self._times.append(t)
             self._frame_stamp = time.perf_counter()
             states = self.trackers.update(gray)
             self._last_states = states
@@ -598,7 +620,8 @@ class Engine:
                 live_scale = self.scale.live_px_per_cm()
                 self._scale_values.append(live_scale)
                 try:
-                    self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "", live_scale, pull)
+                    self.rec.write(frame, img, self.rec.frames, t, self.locked, states, angles, event or "", live_scale, pull,
+                                   source_frame)
                 except FrameSizeChanged as e:           # (normally caught earlier; kept as a safety net)
                     self.last_stop_reason = f"{e} The recording was stopped and saved up to this point."
                     self.stop_trial(self.last_stop_reason)
