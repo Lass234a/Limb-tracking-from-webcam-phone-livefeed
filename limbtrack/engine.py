@@ -133,9 +133,11 @@ class Engine:
     def set_test(self, key):
         with self.lock:
             self._forbid_while_recording("the test")
+            old = self.test
             self.test = self.tests[key]
-            self.tolerance = self.test.tolerance_deg
-            self.neighbour_tolerance = self.test.neighbour_tolerance_deg
+            if old is None or (old.tolerance_deg, old.neighbour_tolerance_deg) != (self.test.tolerance_deg, self.test.neighbour_tolerance_deg):
+                self.tolerance = self.test.tolerance_deg            # (an operator's own tolerance is kept when the protocol's did not change)
+                self.neighbour_tolerance = self.test.neighbour_tolerance_deg
             self.target = self.test.targets[0] if self.test.targets else None
             if self.three_point and self.three_point_main and not self.three_point_flexion:
                 self.target = None            # the test's flexion positions do not apply to an interior angle
@@ -146,7 +148,15 @@ class Engine:
                     self.disabled_dots.add(n)
             if self.three_point and not set(self.three_point) <= set(self.test.dots):
                 self.three_point = None
-            self.reset_dots()
+            if old is not None and list(old.all_dots) == list(self.test.all_dots):
+                # Same landmarks: the marked dots stay (the 120 s changeover is not spent re-clicking them); the position is
+                # unlocked because the neighbour angles and their required values belong to the test (audit GUI-06).
+                self._last_angles = []
+                self._filters, self._ref_avg = {}, {}
+                self._hist.clear()
+                self.unlock_position()
+            else:
+                self._reset_dots_core()
 
     def _forbid_while_recording(self, what):
         if self.rec is not None:

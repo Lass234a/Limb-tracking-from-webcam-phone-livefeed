@@ -119,3 +119,41 @@ def test_a_test_without_positions_has_no_target_and_is_not_judged():
         live.test_combo.setCurrentIndex(0)
         assert win.engine.target == 20.0                     # a test with positions starts on its first one
         win.close()
+
+
+# ---- GUI-06: changing the test keeps the marked dots when the landmarks are the same
+def test_switching_to_a_test_with_the_same_landmarks_keeps_the_marked_dots_and_the_operators_tolerances(tmp_path):
+    eng, p = make(tmp_path, "knee_extension", hip_flex=90, knee_flex=70, ankle_df=5)
+    for i in range(5):
+        eng.process(render(p, seed=i), 0.1 + i / 30)
+    eng.tolerance, eng.neighbour_tolerance = 2.0, 4.0                       # the operator's own values
+    assert eng.lock_position()
+    eng.set_test("knee_flexion")
+    assert eng.next_dot_to_mark() is None and eng.trackers.is_ready()        # nothing to re-click
+    assert not eng.locked and eng._refs == {}                                # but the lock belongs to the old test
+    assert (eng.tolerance, eng.neighbour_tolerance) == (2.0, 4.0)
+    assert eng.target == 20.0                                                # the new test's first position
+    res = eng.process(render(p, seed=9), 1.0)
+    assert not any(st.lost for st in res.dots.values())
+    hip = next(a for a in res.angles if a.name == "hip")
+    assert hip.reference == 90.0                                              # the new test's required neighbour angle applies at once
+
+
+def test_a_test_with_other_landmarks_still_starts_afresh(tmp_path):
+    import copy
+    import json
+    d = json.loads((ROOT / "protocol.json").read_text(encoding="utf-8"))
+    d["tests"]["knee_only"] = copy.deepcopy(d["tests"]["knee_extension"])
+    d["tests"]["knee_only"].update(label="Knee only", angles=["knee"], neighbour_targets={})
+    path = tmp_path / "p.json"
+    path.write_text(json.dumps(d), encoding="utf-8")
+    tests = load_protocol(path)
+    assert tests["knee_only"].dots != tests["knee_extension"].dots
+    eng = Engine(tests, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    p = leg_points(hip_flex=90, knee_flex=70, ankle_df=5)
+    eng.process(render(p, seed=0), 0.0)
+    for n in eng.active_dots:
+        assert eng.mark_dot(n, *(p[n] + 2))
+    eng.set_test("knee_only")
+    assert eng.next_dot_to_mark() is not None
