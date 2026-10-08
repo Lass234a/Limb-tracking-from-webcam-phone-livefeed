@@ -1013,7 +1013,17 @@ class LiveTab(QWidget):
             self.btn_rec.setChecked(False)
             n = self.engine.rec.frames if self.engine.rec is not None else None
             duration = time.perf_counter() - self._rec_started if self._rec_started is not None else 0.0
-            paths = self.engine.stop_trial()
+            try:
+                paths = self.engine.stop_trial()
+            except Exception as e:  # noqa: BLE001 - disk full, file open elsewhere...
+                paths = None
+                self.btn_rec.setText("Start recording  (R)")
+                self._rec_started = None
+                self.rec_label.setText("NOT SAVED PROPERLY: " + str(e))
+                self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
+                QMessageBox.critical(self, "Saving failed", f"The recording could not be saved completely:\n{e}\n\n"
+                                     "The CSV written so far is in the recordings folder.")
+                return
             self.btn_rec.setText("Start recording  (R)")
             self._rec_started = None
             if not paths:
@@ -1063,6 +1073,13 @@ class LiveTab(QWidget):
         self.suggest.setEnabled(not recording and not main_three_point)
         for w in (self.chk_tp, self.chk_tp_main, *self.tp_combos):
             w.setEnabled(not recording)
+        if self._rec_started is not None and self.engine.rec is None:       # the engine ended the recording itself
+            reason = self.engine.last_stop_reason
+            self.toggle_record(force_stop=True)
+            if reason:
+                self.rec_label.setText("RECORDING STOPPED: " + reason)
+                self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
+                self.say(reason, 15.0)
         if self._rec_started is not None:
             stalled = (self.engine.seconds_since_last_frame() > 0.5 and not (self.worker is not None and self.worker.paused))
             if stalled:

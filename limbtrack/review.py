@@ -47,6 +47,9 @@ class Trial:
         if not self.rows:
             raise ValueError("This trial contains no frames (nothing was recorded).")
         self.t = np.array([_f(r["t_s"]) for r in self.rows])
+        self.unfinished = self.meta.get("status") == "recording"     # the program stopped before it could write the final file
+        if self.unfinished:
+            self.meta["frames"], self.meta["duration_s"] = len(self.rows), round(float(self.t[-1]), 3)
         self.angle_defs = [AngleDef(**a) for a in self.meta["angles"]]
         self.facing_right = self.meta.get("facing", "right") == "right"
         self.dot_names = [k[:-5] for k in self.rows[0] if k.endswith("_lost")]
@@ -273,7 +276,9 @@ class ReviewTab(QWidget):
         self.trial = tr
         m = tr.meta
         self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  target {m['target_deg']} deg  |  "
-                           f"{m['frames']} frames, {m['duration_s']} s")
+                           f"{m['frames']} frames, {m['duration_s']} s"
+                           + ("  |  UNFINISHED: the program stopped before saving; the video may not open" if tr.unfinished else "")
+                           + (f"  |  STOPPED: {m['stopped_because']}" if m.get("stopped_because") else ""))
         self.plot.clear()
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)

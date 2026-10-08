@@ -31,6 +31,7 @@ Double-click **Start.bat**. (First try it without a camera: Live tab -> *Open vi
    - `..._raw.mp4` - untouched video (opens in Kinovea)
    - `..._overlay.mp4` - video with the angles, trails and marker banners drawn on
    - `..._data.csv` - one row per frame (columns below)
+   - (every CSV row is saved as it is recorded and `..._meta.json` exists from the first frame, so a crash still leaves a reviewable trial; if the camera changes picture size the recording stops and is saved up to there)
    - `..._meta.json` - participant, test, target, tolerances, facing, mirror, smoothing, camera and its settings, every tracker number (`tracker_settings`), notes, markers
 
 While the video runs, the **live trace** under it shows the last 15 s: the main angle with its tolerance band, or (switch at the top) the drift of all joints from their set position, which is the best view for spotting slow creep.

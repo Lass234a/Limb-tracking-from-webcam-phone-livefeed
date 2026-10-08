@@ -2,6 +2,7 @@
 import csv
 import json
 import math
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,10 @@ def _safe(s):
 
 def _num(v, nd=3):
     return "" if v is None or (isinstance(v, float) and math.isnan(v)) else round(float(v), nd)
+
+
+class FrameSizeChanged(RuntimeError):
+    """A frame arrived with another size than the videos were opened for (phone rotated, camera changed resolution)."""
 
 
 class TrialRecorder:
@@ -54,7 +59,24 @@ class TrialRecorder:
         self.fps = fps
         self.frame_size = frame_size
 
+    def _write_meta(self, data):
+        """Write meta.json in one piece: a crash cannot leave half a file."""
+        tmp = self.paths["meta.json"].with_name(self.paths["meta.json"].name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, self.paths["meta.json"])
+
+    def write_start_meta(self, meta):
+        """A complete meta.json at the start (status 'recording'), so a trial that is cut short can still be reviewed."""
+        data = dict(meta)
+        data.update({"status": "recording", "started_at": self.started_at, "frames": None, "duration_s": None,
+                     "video_fps_written": round(self.fps, 3), "frame_size": list(self.frame_size),
+                     "files": {k: p.name for k, p in self.paths.items()}})
+        self._write_meta(data)
+
     def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None):
+        if (frame.shape[1], frame.shape[0]) != tuple(self.frame_size) or overlay.shape[:2] != frame.shape[:2]:
+            raise FrameSizeChanged(f"The picture size changed from {self.frame_size[0]}x{self.frame_size[1]} to "
+                                   f"{frame.shape[1]}x{frame.shape[0]}.")
         if self._t0 is None:
             self._t0 = t
         self._raw.write(frame)
@@ -86,15 +108,18 @@ class TrialRecorder:
         self._csv.writerow(row)
         self.frames += 1
         self.last_t = t - self._t0
-        if self.frames % 30 == 0:
-            self._fh.flush()
+        self._fh.flush()        # every row: a crash loses at most the frame being written
 
     def close(self, meta):
-        self._raw.release()
-        self._ovl.release()
-        self._fh.close()
+        errors = []
+        for what, fn in (("raw video", self._raw.release), ("overlay video", self._ovl.release), ("csv", self._fh.close)):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001 - keep closing the rest, and still write meta.json
+                errors.append(f"{what}: {e}")
         meta = dict(meta)
         meta.update({
+            "status": "complete",
             "started_at": self.started_at,
             "events": self.events,
             "frames": self.frames,
@@ -104,5 +129,7 @@ class TrialRecorder:
             "frame_size": list(self.frame_size),
             "files": {k: p.name for k, p in self.paths.items()},
         })
-        self.paths["meta.json"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        if errors:
+            meta["close_errors"] = errors
+        self._write_meta(meta)
         return self.paths

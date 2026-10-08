@@ -23,7 +23,7 @@ from .angles import measure, segment_pairs
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
-from .recorder import TrialRecorder
+from .recorder import FrameSizeChanged, TrialRecorder
 from .pull import compute_pull, describe as describe_pull
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
@@ -78,6 +78,8 @@ class Engine:
         self._frame_stamp = None
         self.scale = ScaleReference(self.kind)   # pixel-to-cm scale from a ruler with a dot at each end (limbtrack/scale.py)
         self._scale_values = []                  # live scale per recorded frame
+        self.last_stop_reason = None             # why the engine itself ended the last recording (picture size changed), if it did
+        self._notice = None                      # (text, time) shown in the header for a few seconds
         self._ref_avg, self._ref_last = {}, {}      # unsmoothed 0.2 s average per angle, used as the neighbour reference at Lock
         self._meta_start = {}                    # settings at the start of the current recording
         self.mark_problem = None     # why the last mark_dot failed, when it is not simply 'no dot there'
@@ -138,6 +140,10 @@ class Engine:
     def reset_dots(self):
         with self.lock:
             self._forbid_while_recording("the marked dots")
+            self._reset_dots_core()
+
+    def _reset_dots_core(self):
+        with self.lock:
             self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
@@ -514,6 +520,17 @@ class Engine:
                 # PARKED-GHOST: return a.fulcrum
         # PARKED-GHOST: return None
 
+    def _picture_size_changed(self, old_shape, new_shape, t):
+        """The camera now delivers another picture size (a phone rotated, a virtual camera changed resolution): positions
+        and videos in the old size no longer fit. End any recording (saved up to here) and ask for the dots again."""
+        text = f"The picture size changed from {old_shape[1]}x{old_shape[0]} to {new_shape[1]}x{new_shape[0]}"
+        if self.rec is not None:
+            self.last_stop_reason = text + ". The recording was stopped and saved up to this point."
+            self.stop_trial(self.last_stop_reason)
+        self._reset_dots_core()
+        self.scale.reset()
+        self._notice = (text + ": mark the dots (and the ruler) again.", t)
+
     def seconds_since_last_frame(self):
         """Wall-clock seconds since process() last ran (infinity before the first frame). For operator warnings only."""
         return time.perf_counter() - self._frame_stamp if self._frame_stamp is not None else float("inf")
@@ -527,6 +544,8 @@ class Engine:
     def process(self, frame, t):
         with self.lock:
             gray = to_gray(frame)
+            if self._last_gray is not None and gray.shape != self._last_gray.shape:
+                self._picture_size_changed(self._last_gray.shape, gray.shape, t)
             self._last_gray = gray
             self._times.append(t)
             self._frame_stamp = time.perf_counter()
@@ -562,6 +581,8 @@ class Engine:
             nxt = self.next_dot_to_mark()
             if nxt:
                 head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
+            if self._notice and 0 <= t - self._notice[1] < 10.0:
+                head.append(self._notice[0])
             # PARKED-GHOST: ghost = None
             # PARKED-GHOST: if self.locked and self.ghost_enabled and self._ghost:
                 # PARKED-GHOST: live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
@@ -576,7 +597,11 @@ class Engine:
             if self.rec is not None:
                 live_scale = self.scale.live_px_per_cm()
                 self._scale_values.append(live_scale)
-                self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "", live_scale, pull)
+                try:
+                    self.rec.write(frame, img, self.frame_index, t, self.locked, states, angles, event or "", live_scale, pull)
+                except FrameSizeChanged as e:           # (normally caught earlier; kept as a safety net)
+                    self.last_stop_reason = f"{e} The recording was stopped and saved up to this point."
+                    self.stop_trial(self.last_stop_reason)
             res = FrameResult(self.frame_index, t, img, angles, states, head, pull)
             # PARKED-GHOST: # with the ghost: FrameResult(self.frame_index, t, img, angles, states, head, ghost)
             self.frame_index += 1
@@ -604,6 +629,8 @@ class Engine:
             self._scale_values = []
             self.rec_info = {"participant": participant, "notes": notes}
             self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
+            self.last_stop_reason = None
+            self.rec.write_start_meta(self._meta_start)               # a complete meta.json right away (status 'recording')
             # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
@@ -670,7 +697,7 @@ class Engine:
         }
         return meta
 
-    def stop_trial(self):
+    def stop_trial(self, reason=None):
         with self.lock:
             if self.rec is None:
                 return None
@@ -683,6 +710,7 @@ class Engine:
                 meta[k] = self._meta_start.get(k)
             if changed:
                 meta["changed_during_recording"] = changed      # should never happen: the settings are frozen while recording
-            paths = self.rec.close(meta)
-            self.rec = None
-            return paths
+            if reason:
+                meta["stopped_because"] = reason
+            rec, self.rec = self.rec, None                      # cleared first: a failure while saving must not leave 'recording' on
+            return rec.close(meta)
