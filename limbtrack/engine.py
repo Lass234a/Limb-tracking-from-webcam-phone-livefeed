@@ -60,7 +60,7 @@ class _FrozenWhileRecording:
 # Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
-                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved"]
+                 "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist"]
 
 
 class Engine:
@@ -70,6 +70,7 @@ class Engine:
     facing_right = _FrozenWhileRecording("which way the participant faces")
     mirror = _FrozenWhileRecording("the mirror setting")
     save_overlay = _FrozenWhileRecording("whether the overlay video is saved")
+    camera_setup = _FrozenWhileRecording("the camera set-up checklist")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -110,6 +111,8 @@ class Engine:
         self._marker_n = 0
         self.smoothing = True        # moving average over 0.2 s for what is SHOWN (never for the CSV)
         self._filters, self._ref_avg = {}, {}
+        self.camera_setup = {}        # the operator's camera checklist (stabilisation off, zoom 1x, ...), saved with each trial
+        self.camera_check = None     # result of the last 'Check the camera' (frame rate, longest wait)
         self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
@@ -762,6 +765,8 @@ class Engine:
             "lens_calibration": None,
             "facing": "right" if self.facing_right else "left",
             "overlay_video_saved": self.save_overlay,
+            "camera_setup_checklist": dict(self.camera_setup),
+            "camera_check": self.camera_check,
             "facing_detected": {1: "right", -1: "left"}.get(self.facing_detected),   # what the marked dots show; should equal facing
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
                                QVBoxLayout, QWidget)
 
-from .camera import CameraSource, list_cameras
+from .camera import CameraSource, camera_names, list_cameras
 from .engine import Engine
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
@@ -298,6 +298,7 @@ class LiveTab(QWidget):
         # --- source
         self.cam_combo = NoWheelComboBox()
         self.cam_combo.addItem("Camera 0", 0)
+        self.cam_combo.setToolTip("A phone used as a webcam (Iriun, DroidCam, Camo...) appears here by name once its app is running on the phone and the PC. Press Scan cameras after starting it.")
         self.btn_scan = QPushButton("Scan cameras")
         self.btn_scan.setToolTip("Only available while no camera or video is running: scanning would switch off a running webcam.")
         self.btn_scan.clicked.connect(self.scan_cameras)
@@ -489,6 +490,30 @@ class LiveTab(QWidget):
         self.ruler_len.setValue(self.engine.scale.length_cm)
         self.ruler_len.setToolTip("Length between the two dot centres on the ruler (the 0 mark to the far mark).")
         self.ruler_len.valueChanged.connect(lambda v: setattr(self.engine.scale, "length_cm", float(v)))
+        # --- camera set-up checklist and camera check (saved with each trial)
+        self.camera_checks = {}
+        cs = QGroupBox("Camera set-up (saved with each trial)")
+        csl = QVBoxLayout(cs)
+        for key, text in (("stabilisation_off", "Image stabilisation off"), ("zoom_1x", "Zoom 1x (no digital zoom)"),
+                          ("focus_locked", "Focus locked"), ("exposure_wb_locked", "Exposure and white balance locked in the camera app"),
+                          ("orientation_locked", "Orientation locked"), ("usb_connected", "Connected by USB (not Wi-Fi)")):
+            cb = QCheckBox(text)
+            cb.toggled.connect(self._camera_checklist_changed)
+            csl.addWidget(cb)
+            self.camera_checks[key] = cb
+        self.camera_model = TextField()
+        self.camera_model.setPlaceholderText("camera / phone model and app, e.g. Galaxy S25, Iriun")
+        self.camera_model.editingFinished.connect(self._camera_checklist_changed)
+        csl.addWidget(self.camera_model)
+        self.btn_check_cam = QPushButton("Check the camera (5 s)")
+        self.btn_check_cam.setToolTip("Tells you whether the live feed is fast and steady enough: frame rate, longest wait for a frame, format. "
+                                      "Run it with the camera started, and again after changing anything.")
+        self.btn_check_cam.clicked.connect(self.check_camera)
+        csl.addWidget(self.btn_check_cam)
+        self.camera_check_label = QLabel("")
+        self.camera_check_label.setWordWrap(True)
+        csl.addWidget(self.camera_check_label)
+
         self.btn_ruler = QPushButton("Mark the two ruler dots")
         self.btn_ruler.setToolTip("Put the ruler at the same distance from the camera as the joint, square to the camera, with a dot "
                                   "sticker centred on each end mark. Then click the two dots.")
@@ -525,7 +550,7 @@ class LiveTab(QWidget):
         self.trace_timer.start(100)
 
         side = QVBoxLayout()
-        for g in (src, tg, lm, tpbox, sc, mk, rc):
+        for g in (src, cs, tg, lm, tpbox, sc, mk, rc):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -567,6 +592,9 @@ class LiveTab(QWidget):
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(200)
         self.on_test_changed()
+        names = camera_names()                      # names only; no camera is opened
+        if names:
+            self.fill_cameras(list(enumerate(names)))
 
     @staticmethod
     def _spin(lo, hi, step, suffix):
@@ -769,6 +797,34 @@ class LiveTab(QWidget):
         self.btn_lock.setChecked(False)
 
     # ------------------------------------------------------------ source
+    def _camera_checklist_changed(self, *_):
+        try:
+            self.engine.camera_setup = {**{k: cb.isChecked() for k, cb in self.camera_checks.items()},
+                                        "model_and_app": self.camera_model.text().strip()}
+        except RuntimeError as e:
+            self.say(str(e))
+
+    def check_camera(self):
+        cam = self.worker.camera if self.worker is not None else None
+        if cam is None or cam.is_file:
+            self.say("Start a camera first (a video file has no live feed to check).")
+            return
+        result = cam.health()
+        if result.get("ok") is not None:
+            result["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.engine.camera_check = result
+        self.camera_check_label.setText(result["verdict"])
+        self.camera_check_label.setStyleSheet("" if result["ok"] else "color: #d97706; font-weight: bold;")
+
+    def fill_cameras(self, found):
+        """Put (index, name) pairs in the camera box, keeping the same camera selected if it is still there."""
+        keep = self.cam_combo.currentData()
+        self.cam_combo.clear()
+        for i, name in found:
+            self.cam_combo.addItem(f"{i}: {name}", i)
+        if keep is not None and self.cam_combo.findData(keep) >= 0:
+            self.cam_combo.setCurrentIndex(self.cam_combo.findData(keep))
+
     def scan_cameras(self):
         if self.worker is not None:        # opening and releasing a camera that is streaming kills the stream (audit CAM-06)
             return
@@ -777,9 +833,7 @@ class LiveTab(QWidget):
             found = list_cameras()
         finally:
             QApplication.restoreOverrideCursor()
-        self.cam_combo.clear()
-        for i in found:
-            self.cam_combo.addItem(f"Camera {i}", i)
+        self.fill_cameras(found)
         if not found:
             QMessageBox.information(self, "Cameras", "No cameras found. Check the cable/app and that no other program uses it.")
 
@@ -1123,6 +1177,8 @@ class LiveTab(QWidget):
         self.facing_combo.setStyleSheet("background-color: #fcd34d;" if self.engine.facing_mismatch else "")
         self.facing_combo.setToolTip(self.engine.facing_message() if self.engine.facing_mismatch else "")
         self.chk_overlay.setEnabled(not recording)
+        for w in (*self.camera_checks.values(), self.camera_model):
+            w.setEnabled(not recording)
         for w in (self.test_combo, self.kind_combo, self.facing_combo, self.target_spin, self.tol_spin, self.ntol_spin,
                   self.btn_remark, self.btn_lock):
             w.setEnabled(not recording)           # nothing that changes the measurement may change during a recording

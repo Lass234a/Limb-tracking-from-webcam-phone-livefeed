@@ -265,3 +265,46 @@ def test_a_webcam_is_opened_on_automatic_exposure_and_white_balance(monkeypatch)
     monkeypatch.setattr(camera.cv2, "VideoCapture", RecordingCap)
     camera.CameraSource(0)
     assert (cv2.CAP_PROP_AUTO_EXPOSURE, 0.75) in calls and (cv2.CAP_PROP_AUTO_WB, 1) in calls
+
+
+# ---- cameras are listed by name (a phone used as a webcam shows up as "Iriun Webcam", "DroidCam", ...)
+def test_cameras_are_listed_by_name_without_opening_any(monkeypatch):
+    import limbtrack.camera as camera
+
+    opened = []
+    monkeypatch.setattr(camera, "camera_names", lambda: ["Integrated Camera", "Iriun Webcam"])
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a, **k: opened.append(a) or (_ for _ in ()).throw(AssertionError("opened")))
+    assert camera.list_cameras() == [(0, "Integrated Camera"), (1, "Iriun Webcam")]
+    assert opened == []
+
+
+def test_without_a_name_list_the_indexes_are_probed_and_called_camera_n(monkeypatch):
+    import limbtrack.camera as camera
+
+    class Probe:
+        def __init__(self, index, api=None):
+            self.index = index
+
+        def isOpened(self):
+            return self.index in (0, 2)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(camera, "camera_names", lambda: None)
+    monkeypatch.setattr(camera.cv2, "VideoCapture", Probe)
+    assert camera.list_cameras() == [(0, "Camera 0"), (2, "Camera 2")]
+
+
+def test_the_camera_box_shows_names_and_keeps_the_choice(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
+    live = win.live
+    live.fill_cameras([(0, "Integrated Camera"), (1, "Iriun Webcam"), (2, "DroidCam Source 3")])
+    live.cam_combo.setCurrentIndex(1)
+    assert live.cam_combo.itemText(1) == "1: Iriun Webcam" and live.cam_combo.currentData() == 1
+    live.fill_cameras([(0, "Integrated Camera"), (1, "Iriun Webcam")])          # scanned again: still on the phone
+    assert live.cam_combo.currentData() == 1
+    live.fill_cameras([(0, "Integrated Camera")])                               # the phone is gone
+    assert live.cam_combo.count() == 1 and live.cam_combo.currentData() == 0
+    win.close()

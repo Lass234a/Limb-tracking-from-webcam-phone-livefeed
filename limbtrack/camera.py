@@ -87,10 +87,36 @@ class CameraSource:
 
     def measured_fps(self):
         """Frames per second actually arriving over the last few seconds (live sources only), or None until known."""
-        stamps = list(self._stamps)
+        stamps = list(self._stamps)[-90:]
         if len(stamps) < 10 or stamps[-1] <= stamps[0]:
             return None
         return (len(stamps) - 1) / (stamps[-1] - stamps[0])
+
+    def health(self, seconds=5.0, min_fps=25.0, max_gap_s=0.15):
+        """How the live feed behaved over the last `seconds`: frame rate, longest wait for a frame and how uneven the
+        spacing was. Returns a dict with a plain-English `verdict` and `ok` (None when there is not enough data yet)."""
+        stamps = [s for s in list(self._stamps) if s >= (self._stamps[-1] - seconds)] if self._stamps else []
+        g = self._granted
+        out = {"seconds": seconds, "width": g["width"], "height": g["height"], "fourcc": g.get("fourcc", ""),
+               "failed_reads": self.failed_reads, "reconnects": self.reconnects}
+        if len(stamps) < 10 or stamps[-1] - stamps[0] < 0.8 * seconds:
+            out.update(ok=None, verdict=f"Not enough frames yet: let the camera run for {seconds:g} s and check again.")
+            return out
+        dts = [b - a for a, b in zip(stamps, stamps[1:])]
+        mean = sum(dts) / len(dts)
+        out.update(frames=len(stamps), fps=round(1.0 / mean, 2), max_gap_s=round(max(dts), 3),
+                   jitter_ms=round(1000.0 * (sum((d - mean) ** 2 for d in dts) / len(dts)) ** 0.5, 1))
+        problems = []
+        if out["fps"] < min_fps:
+            problems.append(f"only {out['fps']:.1f} fps (at least {min_fps:g} wanted)")
+        if out["max_gap_s"] > max_gap_s:
+            problems.append(f"a wait of {out['max_gap_s']:.2f} s for one frame")
+        if out["fourcc"] and out["fourcc"] != "MJPG" and not self.is_file and out["width"] * out["height"] > 640 * 480:
+            problems.append(f"the camera sends {out['fourcc']} (uncompressed), which is slow at this size")
+        out["ok"] = not problems
+        out["verdict"] = (f"Camera OK: {out['width']}x{out['height']}, {out['fps']:.1f} fps, longest wait {out['max_gap_s']:.2f} s."
+                          if not problems else "Camera NOT good enough: " + "; ".join(problems) + ".")
+        return out
 
     def settings_problems(self):
         """Plain-English warnings when the camera is not delivering what was asked for (live cameras only)."""
@@ -166,7 +192,7 @@ class CameraSource:
         t = time.perf_counter() if self.is_live else (self._n - 1) / self.file_fps
         if self.is_live:
             self._stamps.append(t)
-            if len(self._stamps) > 90:
+            if len(self._stamps) > 400:
                 del self._stamps[0]
         return frame, t
 
@@ -188,12 +214,26 @@ class CameraSource:
         self.cap.release()
 
 
+def camera_names():
+    """Names of the video devices Windows knows (webcams, and phone apps such as Iriun, DroidCam or Camo that appear as
+    webcams), in the order OpenCV's DirectShow indexes use. Opens no camera. None if they cannot be listed."""
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+        return [str(n) for n in FilterGraph().get_input_devices()]
+    except Exception:  # noqa: BLE001 - pygrabber missing or COM not available
+        return None
+
+
 def list_cameras(max_index=6):
-    """Indexes of webcams that open. Slow (about a second per camera), so call it on demand."""
+    """[(index, name)] of the cameras. By name where Windows can list them (fast, opens nothing); otherwise each index is
+    tried (slow, about a second per camera) and named 'Camera N'. Never call this while a camera is streaming."""
+    names = camera_names()
+    if names is not None:
+        return list(enumerate(names))
     found = []
     for i in range(max_index):
         cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
         if cap.isOpened():
-            found.append(i)
+            found.append((i, f"Camera {i}"))
         cap.release()
     return found

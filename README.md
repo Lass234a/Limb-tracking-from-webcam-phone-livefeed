@@ -5,7 +5,7 @@ Tracks white or black dots on a live camera feed, shows the joint angles on scre
 **Status: version 0.2 (webcam / video file, sagittal view).** It passes its automatic tests on synthetic video. It has **not yet been validated on real footage or against a goniometer** - do that before collecting real data (see "Validation" below).
 
 ## Setup (once, on a new computer)
-Needs Windows and Python 3.12. In this folder:
+Needs Windows and Python 3.12 (`requirements.txt` includes `pygrabber`, which lists the cameras by name). In this folder:
 ```
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -15,7 +15,7 @@ py -3.12 -m venv .venv
 Double-click **Start.bat**. (First try it without a camera: Live tab -> *Open video file (practice)* -> `demo/demo_leg_white_dots.mp4`.)
 
 ## Using it (Live tab)
-1. **Video source**: pick the camera and press *Start camera*. If it isn't listed, press *Scan cameras* (only possible while no camera or video is running, because scanning would switch off a running webcam).
+1. **Video source**: pick the camera by name and press *Start camera*. A phone can be used as a camera through a phone-as-webcam app (for example Iriun, DroidCam or Camo, which exist for Android and iPhone): start the app on the phone and on the PC (USB is steadier than Wi-Fi), then press *Scan cameras*; the phone appears in the list like a webcam. Tick the *Camera set-up* list (stabilisation off, zoom 1x, focus/exposure/white balance locked in the phone's app, orientation locked) and press *Check the camera (5 s)* for a plain verdict on frame rate and steadiness; both are saved with each trial. If the camera isn't listed, press *Scan cameras* (only possible while no camera or video is running, because scanning would switch off a running webcam).
    A line under the buttons shows what the camera really delivers (resolution and measured frame rate) and turns orange with a warning if that differs from the 1280x720, 30 fps the app asks for. The **Lock exposure and white balance** button is switched off (on some webcams it blacks out the picture): use steady lighting, or lock exposure and white balance in the phone or camera app. Webcams are opened on automatic exposure and white balance. **Mirror the image** flips the picture left-right before tracking and recording (saved video and pixel positions are flipped too, `mirrored_image` in `meta.json`); it clears the marked dots, cannot be changed while recording, and after switching it check *Participant faces* against what you now see.
    If something goes wrong in the video thread, the video stops with a message in the instruction line, any recording is saved up to that point, and the details go to `recordings/last_error.log`.
    For video files only: **Pause / Play** (**P**) and single-frame steps back and forward (**Left** / **Right** arrows). You can mark dots, lock, and change targets while paused and the picture updates. At the end of a file it waits on the last frame so you can step back. Stepping is switched off while recording.
