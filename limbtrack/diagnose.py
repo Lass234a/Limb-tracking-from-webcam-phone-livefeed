@@ -5,6 +5,7 @@ and (if you type the phone's address) whether the phone can be reached over Wi-F
 program can read that stream. It only reads: it changes no settings and sends nothing except one request to the address you type.
 The result is printed and saved to phone_camera_check.txt in the project folder.
 """
+import os
 import socket
 import subprocess
 import sys
@@ -12,6 +13,8 @@ import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")          # before OpenCV is loaded: no driver chatter in the report
 
 STREAM_PATHS = ("/video", "/mjpegfeed?1280x720", "/mjpegfeed")       # DroidCam (new, old) and IP Webcam use these
 PHONE_CAMERA_WORDS = ("droidcam", "iriun", "camo", "epoccam", "ip webcam")
@@ -55,9 +58,11 @@ def http_probe(url, timeout=5.0):
 
 def read_frames(source, seconds=3.0):
     """Open a camera index or stream address with the program's own camera class and count pictures."""
-    from .camera import CameraSource
+    from .camera import CameraOpenTimeout, CameraSource, call_with_timeout
     try:
-        cam = CameraSource(source)
+        cam = call_with_timeout(lambda: CameraSource(source), 45.0, "The camera")      # (the camera class has its own, shorter, wait)
+    except CameraOpenTimeout as e:
+        return {"frames": 0, "fps": 0.0, "size": None, "backend": None, "error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"frames": 0, "fps": 0.0, "size": None, "backend": None, "error": str(e)}
     n, t0, size = 0, time.perf_counter(), None
@@ -138,7 +143,7 @@ def main(argv=None):
     findings["phone_cameras"] = []
     for i, n in enumerate(names):
         if any(w in n.lower() for w in PHONE_CAMERA_WORDS):
-            say(f"Trying camera {i} '{n}' for 3 seconds ...")
+            say(f"Trying camera {i} '{n}' (waits up to 20 s if the phone is not connected) ...")
             r = read_frames(i, 3.0)
             say(f"  pictures: {r['frames']}" + (f", {r['size'][0]}x{r['size'][1]}, {r['fps']:.1f} fps" if r["frames"] else f"  ({r['error'] or 'none'})"))
             findings["phone_cameras"].append((i, n, r))
@@ -180,4 +185,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    code = main(sys.argv[1:])
+    sys.stdout.flush()
+    os._exit(code)                      # a driver call that never returned must not keep the window open

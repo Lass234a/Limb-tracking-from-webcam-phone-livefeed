@@ -142,3 +142,28 @@ def test_a_camera_directshow_cannot_open_is_opened_through_media_foundation(monk
     monkeypatch.setattr(Cap, "isOpened", lambda self: False)            # neither backend opens it: the old error message
     with pytest.raises(RuntimeError, match="Could not open video source"):
         cam_mod.CameraSource(2)
+
+
+def test_a_camera_that_never_answers_gives_a_plain_message_and_is_released_when_it_finally_opens(monkeypatch):
+    """DroidCam Client open but not connected to the phone: the Media Foundation open can hang (seen 2026-10-09)."""
+    import time
+    from limbtrack import camera as cam_mod
+
+    released = []
+
+    class Hangs:
+        def __init__(self, *a, **k):
+            time.sleep(0.6)                                   # longer than the (shortened) timeout
+        def isOpened(self): return True
+        def set(self, *a): return True
+        def get(self, *a): return 0.0
+        def release(self): released.append(1)
+
+    monkeypatch.setattr(cam_mod.cv2, "VideoCapture", Hangs)
+    monkeypatch.setattr(cam_mod, "OPEN_TIMEOUT_S", 0.2)
+    t0 = time.perf_counter()
+    with pytest.raises(RuntimeError, match="did not answer within 0.2 s.*not connected to the phone"):
+        cam_mod.CameraSource(0)
+    assert time.perf_counter() - t0 < 0.5                     # it gave up at the timeout, not when the driver call returned
+    time.sleep(0.8)
+    assert released                                           # the late open did not keep the camera occupied

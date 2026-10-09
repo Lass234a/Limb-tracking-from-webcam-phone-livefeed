@@ -27,6 +27,42 @@ def normalise_stream_address(address):
     return a
 
 
+OPEN_TIMEOUT_S = 20.0       # a camera that has not opened by then is reported instead of waiting for ever
+
+
+class CameraOpenTimeout(RuntimeError):
+    """The camera did not open in time."""
+
+
+def call_with_timeout(fn, seconds, what="The camera"):
+    """Run fn() on a helper thread and give up after `seconds` (a driver call that never returns cannot be interrupted, so the
+    thread is left behind; if it finishes later, whatever it opened is released). Raises CameraOpenTimeout."""
+    box = {"abandoned": False}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # noqa: BLE001 - handed to the caller
+            box["error"] = e
+        if box["abandoned"] and "value" in box:
+            try:
+                box["value"].release()
+            except Exception:  # noqa: BLE001
+                pass
+
+    t = threading.Thread(target=run, daemon=True, name="camera-open")
+    t.start()
+    t.join(seconds)
+    if t.is_alive():
+        box["abandoned"] = True
+        raise CameraOpenTimeout(f"{what} did not answer within {seconds:g} s. For a phone camera the usual cause is that the phone's PC "
+                                "program (for example DroidCam Client) is not connected to the phone: connect it there first and wait "
+                                "until its preview moves. Also close other programs that may be using the camera (browser, Teams, OBS).")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def classify_source(source):
     """'webcam' (an integer index), 'stream' (a network address such as http://... or rtsp://...) or 'file'."""
     if isinstance(source, int):
@@ -98,35 +134,42 @@ class CameraSource:
         self._stamps = []          # recent frame arrival times (live sources): the real frame rate
 
     def _open_capture(self):
+        if isinstance(self.source, int):
+            return call_with_timeout(self._open_webcam, OPEN_TIMEOUT_S, "Opening the camera")
+        return self._open_other()
+
+    def _open_webcam(self):
         source, (width, height, fps) = self.source, self._size_fps
-        if isinstance(source, int):
-            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-            # Order matters on DirectShow: asking for compressed MJPG *before* the size makes some webcams fall back
-            # to uncompressed YUY2 when the size is set, which runs at only ~10 fps at 1280x720 (audit CAM-04).
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            cap.set(cv2.CAP_PROP_FPS, fps)
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            # Start from automatic exposure and white balance: a webcam keeps manual settings from an earlier session, and a
-            # manual exposure can leave the picture black (audit CAM-05).
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)      # DirectShow: 0.75 = automatic
-            cap.set(cv2.CAP_PROP_AUTO_WB, 1)
-            if not cap.isOpened():
-                # Some virtual cameras (DroidCam's "DroidCam Video") cannot be opened through DirectShow by index but work through
-                # Windows Media Foundation. Only the size and rate are requested there; the format is not under our control.
-                cap.release()
-                alt = cv2.VideoCapture(source, cv2.CAP_MSMF)
-                if alt.isOpened():
-                    alt.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                    alt.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                    alt.set(cv2.CAP_PROP_FPS, fps)
-                    self.backend = "MSMF"
-                    return alt
-                alt.release()
-                return cv2.VideoCapture(source, cv2.CAP_DSHOW)       # (not opened: the caller reports it)
-            self.backend = "DSHOW"
-            return cap
+        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        # Order matters on DirectShow: asking for compressed MJPG *before* the size makes some webcams fall back
+        # to uncompressed YUY2 when the size is set, which runs at only ~10 fps at 1280x720 (audit CAM-04).
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Start from automatic exposure and white balance: a webcam keeps manual settings from an earlier session, and a
+        # manual exposure can leave the picture black (audit CAM-05).
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)      # DirectShow: 0.75 = automatic
+        cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+        if not cap.isOpened():
+            # Some virtual cameras (DroidCam's "DroidCam Video") cannot be opened through DirectShow by index but work through
+            # Windows Media Foundation. Only the size and rate are requested there; the format is not under our control.
+            cap.release()
+            alt = cv2.VideoCapture(source, cv2.CAP_MSMF)
+            if alt.isOpened():
+                alt.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                alt.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                alt.set(cv2.CAP_PROP_FPS, fps)
+                self.backend = "MSMF"
+                return alt
+            alt.release()
+            return cv2.VideoCapture(source, cv2.CAP_DSHOW)       # (not opened: the caller reports it)
+        self.backend = "DSHOW"
+        return cap
+
+    def _open_other(self):
+        source = self.source
         if self.kind == "stream":   # network stream: do not wait half a minute on a stalled connection
             return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000])
         return cv2.VideoCapture(source)
@@ -161,7 +204,10 @@ class CameraSource:
         except Exception:  # noqa: BLE001
             pass
         self.reconnects += 1
-        self.cap = self._open_capture()
+        try:
+            self.cap = self._open_capture()
+        except CameraOpenTimeout:
+            return False
         ok = self.cap.isOpened()
         if ok:
             self._grabber = self._start_grabber()

@@ -3,6 +3,10 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.5.3 - 2026-10-09
+- A camera that does not open within 20 s is now reported with a plain message instead of leaving the program waiting silently. Found with a DroidCam Client that was running but not connected to the phone: the camera was listed, DirectShow could not open it, and the Media Foundation open then hung. The message says the usual cause (the phone's PC program is not connected to the phone; its own preview must be moving) and a camera that finally opens late is released. `Check_phone_camera.bat` uses the same wait and no longer hangs; it hides the driver's warning lines.
+- 'The camera stopped delivering frames' now adds the same advice for phone cameras.
+
 ## 0.5.2 - 2026-10-09
 - `Check_phone_camera.bat` (`limbtrack/diagnose.py`): a step-by-step check of a phone camera (DroidCam, Iriun, Camo, IP Webcam): is the PC program running, do pictures arrive from the camera list, can the phone be reached over Wi-Fi, which stream address (/video or /mjpegfeed) works and can the program read it. It reads only, prints a plain-English verdict and saves it. The connection-failed message points to it.
 

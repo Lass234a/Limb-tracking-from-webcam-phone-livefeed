@@ -224,7 +224,8 @@ def test_review_reports_the_peak_force_and_the_angle_at_the_peak(tmp_path):
     assert 0 < fs["t_peak_s"] < float(tr.t[-1]) + 0.5
     assert fs["main_angle_at_peak_deg"] == pytest.approx(70.0, abs=2.0)             # the leg stayed at 70 deg
     high = tr.force_t[tr.force_n > 350.0]                                             # the hold: where the force is near its top
-    hold = tr.force_summary(float(high.min()), float(high.max()))
+    first = high[: int(np.argmax(np.diff(high) > 0.5)) + 1] if np.any(np.diff(high) > 0.5) else high    # the first hold only (a slow run holds twice)
+    hold = tr.force_summary(float(first.min()), float(first.max()))
     assert hold["plateau_mean"] == pytest.approx(400.0, rel=0.03) and hold["rest_mean"] < 300.0
     assert tr.force_summary(100.0, 101.0) is None                                    # a window with no samples
 
