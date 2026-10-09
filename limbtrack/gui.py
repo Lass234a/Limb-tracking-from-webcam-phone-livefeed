@@ -1105,7 +1105,8 @@ class LiveTab(QWidget):
                 if stream:
                     self._source_note += ("\nCheck that the phone app is running, that the phone and this PC are on the same Wi-Fi "
                                           "(or use USB), and that the address is right (DroidCam: http://PHONE-IP:4747/video). "
-                                          "Easier: install the DroidCam Client on the PC and choose 'DroidCam Video' in the camera list.")
+                                          "Easier: install the DroidCam Client on the PC and choose 'DroidCam Video' in the camera list. "
+                                          "For a step-by-step check, double-click Check_phone_camera.bat in the project folder.")
                 self.update_camera_info()
 
     # ------------------------------------------------------- live trace

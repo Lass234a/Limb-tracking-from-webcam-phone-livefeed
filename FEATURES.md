@@ -1,6 +1,6 @@
 # Feature inventory
 
-Version 0.5.1 (`meta.json` now stores the version, a `meta_schema`, and a `provenance` block: code hash, git commit, library versions, computer, protocol-file hash). First written 2026-10-02 at commit `77c4d7d`; many sections updated since, see CHANGELOG.md. Function names are given instead of line numbers because lines move.
+Version 0.5.2 (`meta.json` now stores the version, a `meta_schema`, and a `provenance` block: code hash, git commit, library versions, computer, protocol-file hash). First written 2026-10-02 at commit `77c4d7d`; many sections updated since, see CHANGELOG.md. Function names are given instead of line numbers because lines move.
 
 **Purpose of the app:** show a live view of joint positions and angles from marker dots on bone landmarks, so each participant (maximal isometric contractions, strapped into a harness with an S-type load cell) can be placed in the correct position quickly. A webcam is the current proof of concept; two cameras (frontal and sagittal) are planned and parked.
 
