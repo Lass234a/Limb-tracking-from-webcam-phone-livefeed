@@ -241,3 +241,120 @@ def test_review_without_force_has_no_force_numbers(tmp_path):
     eng.stop_trial()
     tr = Trial(paths["meta.json"])
     assert not tr.has_force() and tr.force_summary(0, 1) is None
+
+
+# ------------------------------------------------------------------------------------------ voltage channel, range limit, later calibration
+def uncalibrated_recording(tmp_path):
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    eng.target = 70.0
+    eng.process(render(PTS, seed=0), time.perf_counter())
+    for n in eng.active_dots:
+        assert eng.mark_dot(n, *(PTS[n] + 2))
+    force = SimulatedForce(rest_s=0.3, ramp_s=0.6, hold_s=1.2)
+    force.calibration = ForceCalibration()                              # nothing calibrated yet: only volts can be known
+    force.start()
+    eng.force = force
+    time.sleep(0.3)
+    paths = eng.start_trial("P01")
+    for i in range(60):
+        eng.process(render(PTS, seed=i % 5), time.perf_counter())
+        time.sleep(1 / 30)
+    eng.stop_trial()
+    force.stop()
+    return eng, paths
+
+
+def test_the_voltage_is_always_logged_and_newtons_stay_blank_until_a_calibration_exists(tmp_path):
+    eng, paths = uncalibrated_recording(tmp_path)
+    meta = json.loads(paths["meta.json"].read_text())
+    assert meta["force"]["calibrated"] is False and meta["force"]["peak_n"] is None
+    frows = list(csv.DictReader(open(paths["force.csv"], newline="")))
+    assert all(r["newtons"] == "" for r in frows) and all(r["volts"] != "" for r in frows)
+    volts = np.array([float(r["volts"]) for r in frows])
+    assert volts.max() > 3.5 and abs(np.percentile(volts, 2) - 0.0123) < 0.02     # the made-up contraction reaches ~4 V; at rest it reads its offset
+    rows = list(csv.DictReader(open(paths["data.csv"], newline="")))
+    assert "force_v" in rows[0] and "force_n" in rows[0]
+    assert all(r["force_n"] == "" for r in rows) and sum(r["force_v"] != "" for r in rows) > 0.8 * len(rows)
+    assert max(float(r["force_v"]) for r in rows if r["force_v"]) == pytest.approx(volts.max(), rel=0.2)
+
+
+def test_a_signal_at_the_edge_of_the_input_range_is_flagged(tmp_path):
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    eng.process(render(PTS, seed=0), time.perf_counter())
+    for n in eng.active_dots:
+        assert eng.mark_dot(n, *(PTS[n] + 2))
+    force = SimulatedForce(rest_s=0.2, ramp_s=0.3, hold_s=1.5, peak_n=1500.0)       # 15 V: beyond the +-10 V input
+    force.start()
+    eng.force = force
+    time.sleep(0.3)
+    paths = eng.start_trial("P01")
+    warned = False
+    for i in range(45):
+        res = eng.process(render(PTS, seed=i % 5), time.perf_counter())
+        warned = warned or any("LIMIT" in h for h in res.header)
+        time.sleep(1 / 30)
+    eng.stop_trial()
+    force.stop()
+    meta = json.loads(paths["meta.json"].read_text())["force"]
+    assert warned and meta["samples_at_range_limit"] > 100 and meta["range_v"] == 10.0
+    assert force.clipped_total >= meta["samples_at_range_limit"]
+
+
+def test_a_calibration_made_later_turns_the_saved_volts_into_newtons(tmp_path):
+    eng, paths = uncalibrated_recording(tmp_path)
+    tr = Trial(paths["meta.json"])
+    assert tr.force_cal_note == "no calibration yet: volts only"
+    before = tr.force_summary(-1.0, float(tr.t[-1]))
+    assert before["unit"] == "V" and before["peak"] > 3.5
+    volts_before = tr.force_v.copy()
+    cal = ForceCalibration()
+    cal.set_zero(0.0123)
+    cal.n_per_v = 100.0
+    cal.method = "zero and 5 kg"
+    tr.apply_calibration(cal, "applied later from force_calibration.json (test)")
+    after = tr.force_summary(-1.0, float(tr.t[-1]))
+    assert after["unit"] == "N" and after["peak"] == pytest.approx(400.0, rel=0.05)
+    assert np.array_equal(tr.force_v, volts_before)                                  # the recorded volts are untouched
+    assert "applied later" in tr.force_cal_note
+
+
+def test_the_picture_delay_moves_where_the_angle_at_the_peak_is_read(tmp_path):
+    eng, paths = recording(tmp_path)
+    tr = Trial(paths["meta.json"])
+    main = next(a for a in tr.angle_defs if a.primary)
+    tr.deg[main.name] = np.linspace(0.0, 100.0, len(tr.t))                           # an angle that changes steadily with time
+    at0 = tr.force_summary(-1.0, float(tr.t[-1]), 0.0)
+    at_delay = tr.force_summary(-1.0, float(tr.t[-1]), 0.5)
+    slope = 100.0 / float(tr.t[-1] - tr.t[0])
+    assert at_delay["main_angle_at_peak_deg"] - at0["main_angle_at_peak_deg"] == pytest.approx(0.5 * slope, rel=0.2)
+    assert at_delay["picture_delay_s"] == 0.5
+
+
+def test_review_applies_the_saved_calibration_on_request_and_exports_what_was_used(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from limbtrack.review import ReviewTab
+    app = QApplication.instance() or QApplication([])
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: infos.append(a[2]))
+    eng, paths = uncalibrated_recording(tmp_path)
+    tab = ReviewTab(tmp_path)
+    tab.force_cal_path = tmp_path / CALIBRATION_FILE
+    tab.load(str(paths["meta.json"]))
+    assert "volts only" in tab.stats.text() and "not calibrated" in tab.stats.text()
+    tab.apply_force_calibration()                                              # no calibration file yet: explained, nothing changes
+    assert infos and "no calibration" in infos[-1].lower() or "There is no calibration" in infos[-1]
+    cal = ForceCalibration()
+    cal.set_zero(0.0123)
+    cal.n_per_v = 100.0
+    cal.method = "zero and 5 kg"
+    cal.save(tab.force_cal_path)
+    tab.apply_force_calibration()
+    assert "applied later" in tab.stats.text() and " N)" in tab.stats.text() or "Force in the window (N" in tab.stats.text()
+    tab.export()
+    summary = list(csv.DictReader(open(next(tmp_path.rglob("*_summary.csv")), newline="")))
+    assert summary[0]["force_unit"] == "N" and float(summary[0]["force_n_per_v"]) == 100.0
+    assert "applied later" in summary[0]["force_calibration_note"] and summary[0]["picture_delay_s"] == "0.0"
+    saved_volts = [float(r["volts"]) for r in csv.DictReader(open(paths["force.csv"], newline=""))]
+    assert max(saved_volts) > 3.5                                              # the file on disk still holds the volts, unchanged

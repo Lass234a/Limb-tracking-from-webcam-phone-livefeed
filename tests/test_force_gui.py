@@ -149,3 +149,13 @@ def test_closing_the_window_releases_the_daq(tmp_path):
     assert src.running
     win.close()
     assert not src.running and win.live.force_source is None
+
+
+def test_the_read_out_shows_newtons_and_volts_together(setup):
+    app, win, live, warnings, pump, tmp = setup
+    connect_simulated(live)
+    assert pump(lambda: " N " in live.force_label.text() and " V)" in live.force_label.text(), timeout=10)
+    live.trace_mode.setCurrentIndex(live.trace_mode.findData("force_v"))
+    assert pump(lambda: live.force_source.average_volts(1.0)[1] >= 500, timeout=10)
+    live.update_trace()
+    assert live._trace_items

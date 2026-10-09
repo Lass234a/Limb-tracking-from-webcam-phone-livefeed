@@ -131,7 +131,7 @@ class TrialRecorder:
             head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head += ["all_ok", "event", "scale_px_per_cm"]
         if self.with_force:
-            head.append("force_n")                   # mean force (newtons) of the samples since the previous picture; blank if uncalibrated
+            head += ["force_v", "force_n"]           # mean of the samples since the previous picture: volts (always) and newtons (blank until calibrated)
         self.with_pull = with_pull
         if with_pull:
             head += PULL_COLUMNS
@@ -184,7 +184,7 @@ class TrialRecorder:
         self._ffh.flush()
 
     def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None,
-              force_n=None):
+              force_n=None, force_v=None):
         if (frame.shape[1], frame.shape[0]) != self.full_size or overlay.shape[:2] != frame.shape[:2]:
             raise FrameSizeChanged(f"The picture size changed from {self.full_size[0]}x{self.full_size[1]} to "
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
@@ -228,6 +228,7 @@ class TrialRecorder:
         row.append(event or "")
         row.append(_num(scale_px_per_cm, 4))        # ruler scale (fixed; blank: no ruler marked)
         if self.with_force:
+            row.append(_num(force_v, 5))
             row.append(_num(force_n, 3))
         if self.with_pull:                          # angle of pull / moment arm; blank when the strap, anchor or segment dots are lost
             row += [_num((pull or {}).get(c), 2) for c in PULL_COLUMNS]

@@ -646,6 +646,7 @@ class LiveTab(QWidget):
         self.trace_mode.addItem("Main angle, last 15 s", "main")
         self.trace_mode.addItem("Drift from set position, all joints", "drift")
         self.trace_mode.addItem("Force, last 15 s (when connected)", "force")
+        self.trace_mode.addItem("Force voltage (V), last 15 s", "force_v")
         self.trace = pg.PlotWidget()
         self.trace.setMinimumHeight(170)
         self.trace.setMaximumHeight(230)
@@ -1108,12 +1109,12 @@ class LiveTab(QWidget):
                 self.update_camera_info()
 
     # ------------------------------------------------------- live trace
-    def _draw_force_trace(self):
+    def _draw_force_trace(self, volts_only=False):
         src = self.force_source
         if src is None:
             return
         t, v = src.recent(15.0)
-        cal = src.calibration.calibrated
+        cal = src.calibration.calibrated and not volts_only
         y = src.calibration.to_newton(v) if cal else v
         self._trace_items.append(self.trace.plot(t, y, pen=pg.mkPen((220, 60, 60), width=2), name="Force (N)" if cal else "Force (V)"))
         self.trace.setLabel("left", "N" if cal else "V")
@@ -1127,8 +1128,8 @@ class LiveTab(QWidget):
         for it in self._trace_items:
             self.trace.removeItem(it)
         self._trace_items = []
-        if self.trace_mode.currentData() == "force":
-            self._draw_force_trace()
+        if self.trace_mode.currentData() in ("force", "force_v"):
+            self._draw_force_trace(volts_only=self.trace_mode.currentData() == "force_v")
             return
         self.trace.setLabel("left", "deg")
         h = self.engine.history(15.0)
@@ -1379,7 +1380,8 @@ class LiveTab(QWidget):
                 info, warn = src.error, True
             else:
                 v, n = src.latest_volts(), src.latest_newtons()
-                self.force_label.setText("Force: waiting..." if v is None else f"Force {n:.1f} N" if n is not None else f"Force {v:+.4f} V")
+                self.force_label.setText("Force: waiting..." if v is None else f"Force {n:.1f} N   ({v:+.3f} V)" if n is not None
+                                         else f"Force {v:+.4f} V")
                 cal = src.calibration
                 info = (f"Calibrated: {cal.n_per_v:.2f} N per volt, zero {cal.offset_v:+.4f} V ({cal.method})." if cal.calibrated else
                         "Not calibrated: values are volts. Zero with nothing on the sensor, then calibrate with a known weight.")

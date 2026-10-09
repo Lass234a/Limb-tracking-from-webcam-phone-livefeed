@@ -10,11 +10,12 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
                                QWidget)
 
 from . import overlay, privacy
 from .displacement import window_displacements
+from .force import ForceCalibration
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
 # PARKED-GHOST: from .geometry import anchored_ghost
@@ -92,6 +93,10 @@ class Trial:
         self._pos = -2
         # force (load cell through the DAQ): every sample, on the same time axis as the video (seconds after the first picture)
         self.force_t = self.force_v = self.force_n = None
+        fmeta = self.meta.get("force") or {}
+        self.force_cal = fmeta.get("calibration")
+        self.force_cal_note = ("calibration recorded with the trial" if (self.force_cal or {}).get("n_per_v") else
+                               "no calibration yet: volts only")
         fname = (self.meta.get("files") or {}).get("force.csv")
         if fname and (folder / fname).exists():
             frows = list(csv.DictReader(open(folder / fname, newline="", encoding="utf-8")))
@@ -158,10 +163,15 @@ class Trial:
         return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None, scale=self.scale_overlay())
         # PARKED-GHOST: # with the ghost: overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs), trails=...)
 
+    def apply_calibration(self, cal, note):
+        """Newtons from the saved volts with a calibration made AFTER the recording (the volts in the files are never changed)."""
+        self.force_n = cal.to_newton(self.force_v)
+        self.force_cal, self.force_cal_note = cal.to_dict(), note
+
     def has_force(self):
         return self.force_t is not None and len(self.force_t) > 0
 
-    def force_summary(self, t0, t1):
+    def force_summary(self, t0, t1, picture_delay=0.0):
         """The force in the window: peak and when, the plateau mean, the rest level before, and the main joint angle at the peak
         (the two candidate numbers for a model input: angle at peak force, and plateau mean angle). None without force."""
         if not self.has_force():
@@ -180,16 +190,16 @@ class Trial:
         main = next((a for a in self.angle_defs if a.primary), self.angle_defs[0] if self.angle_defs else None)
         angle = math.nan
         if main is not None:
-            near = np.abs(self.t - tw[k]) <= 0.1
+            near = np.abs(self.t - (tw[k] + picture_delay)) <= 0.1             # a picture is stamped picture_delay after it was taken
             vals = self.deg[main.name][near]
             vals = vals[~np.isnan(vals)]
             if vals.size == 0:
-                i = int(np.argmin(np.abs(self.t - tw[k])))
+                i = int(np.argmin(np.abs(self.t - (tw[k] + picture_delay))))
                 vals = self.deg[main.name][i:i + 1]
             angle = float(np.nanmean(vals)) if vals.size and not np.all(np.isnan(vals)) else math.nan
         return {"unit": unit, "peak": float(yw[k]), "t_peak_s": float(tw[k]), "plateau_mean": plateau, "rest_mean": rest,
                 "peak_minus_rest": float(yw[k]) - rest if not math.isnan(rest) else math.nan,
-                "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle,
+                "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle, "picture_delay_s": picture_delay,
                 "samples_in_window": int(m.sum())}
 
     def hold_window(self):
@@ -270,6 +280,13 @@ class Trial:
         return out
 
 
+class _NoWheelSpin(QDoubleSpinBox):
+    """A spin box that ignores the mouse wheel (scrolling past it must not change the number)."""
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
 class ReviewTab(QWidget):
     def __init__(self, recordings_dir):
         super().__init__()
@@ -345,6 +362,24 @@ class ReviewTab(QWidget):
         lay.addLayout(body, 1)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance)
+        # force: calibration made later, and the delay between a picture's time stamp and the moment it shows
+        self.force_cal_path = None
+        self.picture_delay = _NoWheelSpin()
+        self.picture_delay.setRange(-1.0, 2.0)
+        self.picture_delay.setSingleStep(0.01)
+        self.picture_delay.setDecimals(3)
+        self.picture_delay.setSuffix(" s")
+        self.picture_delay.setToolTip("How long after the movement a picture is time-stamped (camera, phone and USB delay). The joint angle at the "
+                                      "peak force is read from the pictures stamped this long after the force peak. Measure it with a tap on the "
+                                      "sensor that shows in the video; 0 = the time stamps are taken as they are.")
+        self.picture_delay.valueChanged.connect(lambda _: self.update_summary())
+        self.btn_apply_cal = QPushButton("Apply the saved force calibration")
+        self.btn_apply_cal.setToolTip("Computes newtons from the recorded volts with the calibration in force_calibration.json (made after the "
+                                      "recording). The volts in the files are never changed.")
+        self.btn_apply_cal.clicked.connect(self.apply_force_calibration)
+        erow.addWidget(QLabel("Picture delay:"))
+        erow.addWidget(self.picture_delay)
+        erow.addWidget(self.btn_apply_cal)
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -411,8 +446,8 @@ class ReviewTab(QWidget):
             self.plot.hideAxis("right")
             return
         unit, y = ("N", tr.force_n) if not np.all(np.isnan(tr.force_n)) else ("V", tr.force_v)
-        curve = pg.PlotCurveItem(tr.force_t, y, pen=pg.mkPen((220, 60, 60), width=1.5))
-        curve.setDownsampling(auto=True, method="peak")
+        curve = pg.PlotDataItem(tr.force_t, y, pen=pg.mkPen((220, 60, 60), width=1.5))
+        curve.setDownsampling(auto=True, method="peak")          # thins what is drawn but keeps the peaks
         self.force_view.addItem(curve)
         lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
         pad = 0.05 * max(hi - lo, 1e-9)
@@ -420,6 +455,19 @@ class ReviewTab(QWidget):
         self.plot.getAxis("right").setLabel(f"Force ({unit})", color=(220, 60, 60))
         self.plot.showAxis("right")
         self._sync_force_view()
+
+    def apply_force_calibration(self):
+        tr = self.trial
+        if tr is None or not tr.has_force():
+            return
+        cal = ForceCalibration.load(self.force_cal_path) if self.force_cal_path is not None else ForceCalibration()
+        if not cal.calibrated:
+            QMessageBox.information(self, "No calibration", "There is no calibration yet (force_calibration.json). In the Live tab press Zero "
+                                    "and Calibrate with a known weight first; the recordings can be converted afterwards.")
+            return
+        tr.apply_calibration(cal, f"applied later from force_calibration.json ({cal.when or 'undated'}; {cal.method})")
+        self._show_force_curve(tr)
+        self.update_summary()
 
     def _sync_force_view(self):
         if hasattr(self, "force_view"):
@@ -486,14 +534,16 @@ class ReviewTab(QWidget):
             pt = r["plateau_mean_deg"] - r["target_deg"] if not (math.isnan(r["plateau_mean_deg"]) or math.isnan(r["target_deg"])) else math.nan
             lines.append(f"{r['angle'][:21]:22s}{f(r['plateau_mean_deg'], 9)}{f(r['median_deg'], 8)}{f(r['target_deg'], 8)}{f(pt, 9, True)}"
                          f"{f(r['rest_mean_deg'], 8)}{f(r['rest_to_hold_shift_deg'], 10, True)}")
-        fs = self.trial.force_summary(t0, t1)
+        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
         if fs is not None:
             u = fs["unit"]
             fmt = lambda v: "-" if math.isnan(v) else f"{v:.1f}"                                  # noqa: E731
             lines += ["", f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}):",
                       f"  peak {fmt(fs['peak'])} at {fs['t_peak_s']:.2f} s   |   plateau mean {fmt(fs['plateau_mean'])}   |   "
                       f"rest before {fmt(fs['rest_mean'])}   |   peak above rest {fmt(fs['peak_minus_rest'])}",
-                      f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg   (plateau mean angle is in the table above)"]
+                      f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg   (plateau mean angle is in the table above"
+                      + (f"; pictures read {fs['picture_delay_s']:+.3f} s after the peak" if fs["picture_delay_s"] else "") + ")",
+                      f"  Force calibration: {self.trial.force_cal_note}"]
         elif self.trial.has_force():
             lines.append("(force was recorded but there are no samples in this window)")
         if not self.trial.hold_window():
@@ -572,9 +622,12 @@ class ReviewTab(QWidget):
                      "software_version": self.trial.meta.get("software_version"),
                      "window_source": "MVIC markers" if self.trial.hold_window() and tuple(map(float, (t0, t1))) == tuple(self.trial.hold_window())
                      else "window as set (not the MVIC markers)"}
-            fs = self.trial.force_summary(t0, t1)
-            fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg"]
-            fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"]]
+            fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
+            fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg",
+                      "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note"]
+            cal = self.trial.force_cal or {}
+            fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"],
+                      fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))

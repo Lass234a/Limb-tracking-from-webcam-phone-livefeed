@@ -30,7 +30,7 @@ def test_the_meta_file_carries_the_provenance(tmp_path):
     eng.process(render(p, seed=1), 0.1)
     eng.stop_trial()
     meta = json.loads(paths["meta.json"].read_text())
-    assert meta["software_version"] == SOFTWARE_VERSION == "0.5.0" and meta["meta_schema"] == META_SCHEMA
+    assert meta["software_version"] == SOFTWARE_VERSION == "0.5.1" and meta["meta_schema"] == META_SCHEMA
     prov = meta["provenance"]
     assert len(prov["code_sha256"]) == 64 and len(prov["protocol_sha256_canonical"]) == 64
     assert prov["opencv"] and prov["numpy"] and prov["pyside6"] and prov["python"].startswith("3.")

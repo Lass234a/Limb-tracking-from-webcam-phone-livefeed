@@ -33,6 +33,7 @@ STANDARD_GRAVITY = 9.80665        # m/s^2: a mass of 1 kg weighs 9.80665 N
 MIN_CAL_SPAN_V = 0.005            # a known load must move the signal by at least this much for a two-point calibration
 CALIBRATION_FILE = "force_calibration.json"
 ALIGN_WINDOW_S = 20.0
+CLIP_FRACTION = 0.99                # a sample this close to +-range is 'at the limit'
 MAX_STEADY_SD_V = 0.02            # zero and calibration readings must be this steady (standard deviation)
 
 
@@ -142,6 +143,9 @@ class ForceSource:
         self._stop = threading.Event()
         self._last_arrival = None
         self.frozen = False                       # set while a trial is recorded: zero and calibration cannot change then
+        self.range_v = 10.0                       # the input range is +-range_v volts
+        self.clipped_total = 0                    # samples at the very edge of the range (the signal may be cut off there)
+        self._last_clip = None
 
     # --- life cycle
     def start(self):
@@ -201,12 +205,20 @@ class ForceSource:
             self._chunks.append((t, chunk))
             self._kept += chunk.size
             self._last_arrival = arrival
+            clipped = int(np.count_nonzero(np.abs(chunk) >= CLIP_FRACTION * self.range_v))
+            if clipped:
+                self.clipped_total += clipped
+                self._last_clip = arrival
             while self._kept - self._chunks[0][1].size > KEEP_SECONDS * self.rate:
                 self._kept -= self._chunks.popleft()[1].size
 
     # --- reading what has come in
     def seconds_since_last_sample(self):
         return float("inf") if self._last_arrival is None else time.perf_counter() - self._last_arrival
+
+    def clipping_now(self):
+        """True if the signal touched the edge of the input range within the last second."""
+        return self._last_clip is not None and time.perf_counter() - self._last_clip < 1.0
 
     def latest_volts(self):
         with self._lock:
@@ -395,7 +407,8 @@ class SimulatedForce(ForceSource):
         idx = np.arange(self._next, self._next + n)
         self._next += n
         n_true = self.newtons_at(idx / self.rate)
-        return n_true / self._true_n_per_v + self._true_offset + self._rng.normal(0.0, self.noise_v, n)
+        volts = n_true / self._true_n_per_v + self._true_offset + self._rng.normal(0.0, self.noise_v, n)
+        return np.clip(volts, -self.range_v, self.range_v)          # like the real input: it cannot read beyond its range
 
 
 def make_source(kind, **kw):

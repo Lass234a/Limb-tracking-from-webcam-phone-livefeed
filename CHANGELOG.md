@@ -3,6 +3,15 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.5.1 - 2026-10-09
+
+### Force: voltage as the permanent record
+- The amplifier gives -10 to +10 V, which the DAQ reads directly. The **voltage** is logged as is (`volts` in `force.csv`, new `force_v` column per picture in `data.csv`); **newtons** are a second channel that stays blank until a calibration exists.
+- A calibration made later can be applied to older recordings in Review (*Apply the saved force calibration*); the saved volts are never changed and the export lists the calibration used.
+- A signal at the edge of the +-10 V range is flagged in the picture and counted in `meta.json` (`samples_at_range_limit`).
+- Review: *Picture delay* box (how late pictures are time-stamped; default 0) shifts where the angle at peak force is read; saved in the export. The live read-out shows newtons and volts together, and the trace menu has a voltage view.
+- Fixed before release: opening a trial with force in Review would have crashed (a plot item without the thinning method).
+
 ## 0.5.0 - 2026-10-09
 
 ### Force (load cell through an NI DAQ, new)

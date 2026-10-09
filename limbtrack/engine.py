@@ -32,7 +32,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.5.0"
+SOFTWARE_VERSION = "0.5.1"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -139,6 +139,7 @@ class Engine:
         self._force_cursor = 0.0     # force samples up to this time have been handed to the recording
         self._force_stats = None
         self._force_gap_frames = 0
+        self._force_clip0 = 0
         self.camera_desc = ""
         self.camera_info = None      # requested / granted camera settings, set by the video thread
         self.set_test(next(iter(tests)))
@@ -651,24 +652,26 @@ class Engine:
             return ["FORCE: " + f.error]
         if self.rec is not None and f.seconds_since_last_sample() > 0.5:
             return ["FORCE: no data from the DAQ"]
+        if f.clipping_now():
+            return [f"FORCE SIGNAL AT THE +-{f.range_v:g} V LIMIT: the peak may be cut off (lower the amplifier gain)"]
         n, v = f.latest_newtons(), f.latest_volts()
         if v is None:
             return ["Force: waiting for samples"]
         if n is None:
             return [f"Force {v:+.3f} V (not calibrated)"]
         peak = self._force_stats["peak"] if self._force_active and self._force_stats and not math.isnan(self._force_stats["peak"]) else None
-        return [f"Force {n:.0f} N" + (f"   peak {peak:.0f} N" if peak is not None else "")]
+        return [f"Force {n:.0f} N ({v:+.3f} V)" + (f"   peak {peak:.0f} N" if peak is not None else "")]
 
     def _take_force(self, t):
         """Hand the force samples that came in since the last picture to the recording (all remaining ones when t is None).
-        Returns the mean force in newtons for the CSV row, or None."""
+        Returns (mean volts, mean newtons) for the CSV row; either is None when not available (newtons: no calibration)."""
         if not self._force_active or self.rec is None:
-            return None
+            return None, None
         ts, vs = self.force.samples_between(self._force_cursor, float("inf") if t is None else t)
         if ts.size == 0:
             if t is not None and self.force.seconds_since_last_sample() > 0.5:
                 self._force_gap_frames += 1
-            return None
+            return None, None
         self._force_cursor = float(ts[-1]) + 1e-9
         ns = self.force.calibration.to_newton(vs)
         self.rec.write_force(ts, vs, ns)
@@ -676,13 +679,14 @@ class Engine:
         st["n"] += int(ts.size)
         st["first"] = float(ts[0]) if st["first"] is None else st["first"]
         st["last"] = float(ts[-1])
+        mean_v = float(np.mean(vs))
         if np.all(np.isnan(ns)):
-            return None
+            return mean_v, None
         st["sum"] += float(np.nansum(ns))
         k = int(np.nanargmax(ns))
         if math.isnan(st["peak"]) or ns[k] > st["peak"]:
             st["peak"], st["peak_clock"] = float(ns[k]), float(ts[k])
-        return float(np.nanmean(ns))
+        return mean_v, float(np.nanmean(ns))
 
     def _force_meta(self):
         """What the force recording contained, for meta.json."""
@@ -698,6 +702,8 @@ class Engine:
             "peak_t_s": round(st["peak_clock"] - t0, 4) if st["peak_clock"] is not None and t0 is not None else None,
             "mean_n": round(st["sum"] / st["n"], 3) if src.calibration.calibrated and st["n"] else None,
             "frames_without_samples_over_0_5s": self._force_gap_frames,
+            "samples_at_range_limit": src.clipped_total - self._force_clip0,
+            "range_v": src.range_v,
             "read_error": src.error,
             "files": "force.csv has every sample: t_s (seconds after the first picture, like data.csv), clock_s, volts, newtons",
             "clock": "pictures and force samples both use time.perf_counter(). The DAQ's sample 0 is placed from the earliest chunk arrival "
@@ -910,8 +916,9 @@ class Engine:
                 live_scale = self.scale.live_px_per_cm()
                 self._scale_values.append(live_scale)
                 try:
+                    force_v, force_n = self._take_force(t)
                     self.rec.write(frame, img, self.rec.frames, t, self.locked, states, angles, event or "", live_scale, pull,
-                                   source_frame, force_n=self._take_force(t))
+                                   source_frame, force_n=force_n, force_v=force_v)
                 except FrameSizeChanged as e:           # (normally caught earlier; kept as a safety net)
                     self.last_stop_reason = f"{e} The recording was stopped and saved up to this point."
                     self.stop_trial(self.last_stop_reason)
@@ -958,6 +965,7 @@ class Engine:
                 self._force_cursor = time.perf_counter()
                 self._force_stats = {"n": 0, "sum": 0.0, "peak": math.nan, "peak_clock": None, "first": None, "last": None}
                 self._force_gap_frames = 0
+                self._force_clip0 = self.force.clipped_total
             self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
             self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
