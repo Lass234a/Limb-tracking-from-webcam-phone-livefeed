@@ -32,7 +32,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.4.1"
+SOFTWARE_VERSION = "0.5.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -61,7 +61,7 @@ class _FrozenWhileRecording:
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
-                 "privacy"]
+                 "privacy", "force_setup"]
 
 
 class Engine:
@@ -74,6 +74,7 @@ class Engine:
     camera_setup = _FrozenWhileRecording("the camera set-up checklist")
     privacy_crop = _FrozenWhileRecording("the privacy crop")
     privacy_masks = _FrozenWhileRecording("the privacy masks")
+    force = _FrozenWhileRecording("the force source")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -132,6 +133,12 @@ class Engine:
         self.frame_index = 0
         self.rec = None
         self.rec_info = {}
+        self._timing = {"process": [], "arrival": []}       # per recorded frame: work time, arrival time
+        self.force = None            # a limbtrack.force.ForceSource (load cell through a DAQ), or None
+        self._force_active = False   # this recording has force
+        self._force_cursor = 0.0     # force samples up to this time have been handed to the recording
+        self._force_stats = None
+        self._force_gap_frames = 0
         self.camera_desc = ""
         self.camera_info = None      # requested / granted camera settings, set by the video thread
         self.set_test(next(iter(tests)))
@@ -634,6 +641,72 @@ class Engine:
         return (f"CHECK 'Participant faces': the dots look like a {shown}-facing view of the picture, but {chosen} is selected. "
                 "The hip and pelvic-tilt signs would be wrong.")
 
+    # ------------------------------------------------------------------- force
+    def _force_header(self):
+        """The force read-out for the picture (and the saved overlay video), or a warning when the DAQ is not delivering."""
+        f = self.force
+        if f is None:
+            return []
+        if f.error:
+            return ["FORCE: " + f.error]
+        if self.rec is not None and f.seconds_since_last_sample() > 0.5:
+            return ["FORCE: no data from the DAQ"]
+        n, v = f.latest_newtons(), f.latest_volts()
+        if v is None:
+            return ["Force: waiting for samples"]
+        if n is None:
+            return [f"Force {v:+.3f} V (not calibrated)"]
+        peak = self._force_stats["peak"] if self._force_active and self._force_stats and not math.isnan(self._force_stats["peak"]) else None
+        return [f"Force {n:.0f} N" + (f"   peak {peak:.0f} N" if peak is not None else "")]
+
+    def _take_force(self, t):
+        """Hand the force samples that came in since the last picture to the recording (all remaining ones when t is None).
+        Returns the mean force in newtons for the CSV row, or None."""
+        if not self._force_active or self.rec is None:
+            return None
+        ts, vs = self.force.samples_between(self._force_cursor, float("inf") if t is None else t)
+        if ts.size == 0:
+            if t is not None and self.force.seconds_since_last_sample() > 0.5:
+                self._force_gap_frames += 1
+            return None
+        self._force_cursor = float(ts[-1]) + 1e-9
+        ns = self.force.calibration.to_newton(vs)
+        self.rec.write_force(ts, vs, ns)
+        st = self._force_stats
+        st["n"] += int(ts.size)
+        st["first"] = float(ts[0]) if st["first"] is None else st["first"]
+        st["last"] = float(ts[-1])
+        if np.all(np.isnan(ns)):
+            return None
+        st["sum"] += float(np.nansum(ns))
+        k = int(np.nanargmax(ns))
+        if math.isnan(st["peak"]) or ns[k] > st["peak"]:
+            st["peak"], st["peak_clock"] = float(ns[k]), float(ts[k])
+        return float(np.nanmean(ns))
+
+    def _force_meta(self):
+        """What the force recording contained, for meta.json."""
+        st, src = self._force_stats, self.force
+        dur = (st["last"] - st["first"]) if st["first"] is not None and st["n"] > 1 else None
+        t0 = self.rec._t0 if self.rec is not None else None
+        out = dict(src.info())
+        out.update({
+            "samples": st["n"],
+            "duration_s": round(dur, 4) if dur else None,
+            "measured_rate_hz": round((st["n"] - 1) / dur, 2) if dur else None,
+            "peak_n": None if math.isnan(st["peak"]) else round(st["peak"], 3),
+            "peak_t_s": round(st["peak_clock"] - t0, 4) if st["peak_clock"] is not None and t0 is not None else None,
+            "mean_n": round(st["sum"] / st["n"], 3) if src.calibration.calibrated and st["n"] else None,
+            "frames_without_samples_over_0_5s": self._force_gap_frames,
+            "read_error": src.error,
+            "files": "force.csv has every sample: t_s (seconds after the first picture, like data.csv), clock_s, volts, newtons",
+            "clock": "pictures and force samples both use time.perf_counter(). The DAQ's sample 0 is placed from the earliest chunk arrival "
+                     "over the last 20 s, so the alignment is good to a few milliseconds (the smallest USB and driver delay). The MVIC "
+                     "start marker is an independent check.",
+            "units": "volts are always saved; newtons need a calibration (zero and a known load), otherwise they are blank",
+        })
+        return out
+
     # ----------------------------------------------------------------- privacy
     MAX_MASKS = 3
 
@@ -741,6 +814,32 @@ class Engine:
         return min(max(est, 1.0), 240.0)
 
     def process(self, frame, t, source_frame=None):
+        """One frame in, everything out. While recording, how long each frame took and when it arrived is kept for meta.json."""
+        t_in = time.perf_counter()
+        res = self._process(frame, t, source_frame)
+        if self.rec is not None:
+            self._timing["process"].append(time.perf_counter() - t_in)
+            self._timing["arrival"].append(t_in)
+        return res
+
+    def _timing_meta(self):
+        """Where the time went during the recording: the computer's work per frame against the time between frames."""
+        proc = np.array(self._timing["process"]) * 1000.0
+        gaps = np.diff(np.array(self._timing["arrival"])) * 1000.0
+        if len(proc) < 3 or len(gaps) < 2:
+            return None
+        return {
+            "frames": int(len(proc)),
+            "process_ms": {"mean": round(float(proc.mean()), 2), "p95": round(float(np.percentile(proc, 95)), 2), "max": round(float(proc.max()), 1)},
+            "frame_interval_ms": {"median": round(float(np.median(gaps)), 2), "p95": round(float(np.percentile(gaps, 95)), 2),
+                                  "max": round(float(gaps.max()), 1)},
+            "loop_fps": round(1000.0 / float(gaps.mean()), 2),
+            "process_share_of_interval": round(float(proc.mean() / gaps.mean()), 3),
+            "meaning": "process_ms = this program's work per frame (tracking, drawing, saving). If it is much smaller than the frame "
+                       "interval, the computer kept up and the camera or phone delivered fewer frames than asked for.",
+        }
+
+    def _process(self, frame, t, source_frame=None):
         with self.lock:
             gray = to_gray(frame)
             if self._last_gray is not None and gray.shape != self._last_gray.shape:
@@ -795,6 +894,7 @@ class Engine:
                 head.append(self._notice[0])
             if self.rec is not None:
                 head.extend(self._privacy_check(states))
+            head.extend(self._force_header())
             # PARKED-GHOST: ghost = None
             # PARKED-GHOST: if self.locked and self.ghost_enabled and self._ghost:
                 # PARKED-GHOST: live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
@@ -811,7 +911,7 @@ class Engine:
                 self._scale_values.append(live_scale)
                 try:
                     self.rec.write(frame, img, self.rec.frames, t, self.locked, states, angles, event or "", live_scale, pull,
-                                   source_frame)
+                                   source_frame, force_n=self._take_force(t))
                 except FrameSizeChanged as e:           # (normally caught earlier; kept as a safety net)
                     self.last_stop_reason = f"{e} The recording was stopped and saved up to this point."
                     self.stop_trial(self.last_stop_reason)
@@ -832,6 +932,13 @@ class Engine:
             problem = self.privacy_problem()
             if problem:
                 raise RuntimeError(problem)
+            if self.force is not None:
+                if (self.camera_info or {}).get("is_file"):
+                    raise RuntimeError("Force is recorded only with a live camera: a video file is not in step with the DAQ clock. "
+                                       "Disconnect the force first to record from a file.")
+                if not self.force.running or self.force.error:
+                    raise RuntimeError("The force reading is not running" + (f": {self.force.error}" if self.force.error else ".")
+                                       + " Connect it again, or disconnect it, before recording.")
             if frame_size is None:
                 h, w = self._last_gray.shape[:2]
                 frame_size = (w, h)
@@ -840,11 +947,18 @@ class Engine:
                 self.recordings_dir, participant or "unnamed", self.test.key,
                 self.target if self.primary_angle else None,
                 self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active,
-                save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks)
+                save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks, with_force=self.force is not None)
             self._marker_n = 0
             self._pending_event = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
             self._scale_values = []
+            self._force_active = self.force is not None
+            if self._force_active:
+                self.force.frozen = True                  # the zero and the calibration cannot change during the recording
+                self._force_cursor = time.perf_counter()
+                self._force_stats = {"n": 0, "sum": 0.0, "peak": math.nan, "peak_clock": None, "first": None, "last": None}
+                self._force_gap_frames = 0
+            self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
             self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
             self.last_stop_reason = None
@@ -900,6 +1014,7 @@ class Engine:
             "facing": "right" if self.facing_right else "left",
             "overlay_video_saved": self.save_overlay,
             "privacy": self._privacy_meta(),
+            "force_setup": self.force.info() if self.force is not None else None,
             "privacy_dot_warnings": {"frames_near_crop_edge_or_in_mask": dict(self._privacy_hits)},
             "camera_setup_checklist": dict(self.camera_setup),
             "camera_check": self.camera_check,
@@ -941,5 +1056,12 @@ class Engine:
                 meta["changed_during_recording"] = changed      # should never happen: the settings are frozen while recording
             if reason:
                 meta["stopped_because"] = reason
+            meta["pipeline_timing"] = self._timing_meta()
+            if self._force_active:
+                self._take_force(None)                    # the last samples
+                meta["force"] = self._force_meta()
             rec, self.rec = self.rec, None                      # cleared first: a failure while saving must not leave 'recording' on
+            if self.force is not None:
+                self.force.frozen = False
+            self._force_active = False
             return rec.close(meta)

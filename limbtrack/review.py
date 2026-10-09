@@ -67,6 +67,8 @@ class Trial:
         self.tracks = {n: (np.array([_f(r[f"{n}_x"]) for r in self.rows]), np.array([_f(r[f"{n}_y"]) for r in self.rows]))
                        for n in self.dot_names}
         self.px_per_cm = (self.meta.get("scale") or {}).get("px_per_cm_at_marking")
+        self.ruler_dots = (self.meta.get("scale") or {}).get("ruler_dots_px_at_marking")      # two fixed points, full-picture pixels
+        self.ruler_cm = (self.meta.get("scale") or {}).get("ruler_length_cm")
         self.pull = ({c: np.array([_f(r[c]) for r in self.rows]) for c in PULL_COLUMNS} if PULL_COLUMNS[0] in self.rows[0] else None)
         # trails: per dot, segments of (frame index array, xy array); a lost dot ends a segment (as when recording)
         self.trail_segments = {}
@@ -88,6 +90,15 @@ class Trial:
         # PARKED-GHOST: self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
         self._pos = -2
+        # force (load cell through the DAQ): every sample, on the same time axis as the video (seconds after the first picture)
+        self.force_t = self.force_v = self.force_n = None
+        fname = (self.meta.get("files") or {}).get("force.csv")
+        if fname and (folder / fname).exists():
+            frows = list(csv.DictReader(open(folder / fname, newline="", encoding="utf-8")))
+            if frows:
+                self.force_t = np.array([_f(r["t_s"]) for r in frows])
+                self.force_v = np.array([_f(r["volts"]) for r in frows])
+                self.force_n = np.array([_f(r["newtons"]) for r in frows])      # NaN where there was no calibration
         pv = self.meta.get("privacy") or {}        # a cropped video is put back at its place on a black full-size picture
         self.crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
         self.full_size = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
@@ -113,6 +124,14 @@ class Trial:
             out[n] = part
         return out
 
+    def scale_overlay(self):
+        """What overlay.draw needs to show the ruler that was marked for this trial, or None when there was none."""
+        if not (self.ruler_dots and self.px_per_cm):
+            return None
+        px = math.hypot(self.ruler_dots[0][0] - self.ruler_dots[1][0], self.ruler_dots[0][1] - self.ruler_dots[1][1])
+        return {"points": [(p[0], p[1], False) for p in self.ruler_dots],
+                "text": f"ruler {self.ruler_cm:g} cm = {px:.0f} px  ({self.px_per_cm:.2f} px/cm)", "warn": False}
+
     def drawn(self, i, trails=True):
         img = self.frame(i)
         if img is None:
@@ -136,8 +155,42 @@ class Trial:
         # PARKED-GHOST: if self.ghost and r["locked"] == "1":
             # PARKED-GHOST: live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
             # PARKED-GHOST: ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
-        return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None)
+        return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None, scale=self.scale_overlay())
         # PARKED-GHOST: # with the ghost: overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs), trails=...)
+
+    def has_force(self):
+        return self.force_t is not None and len(self.force_t) > 0
+
+    def force_summary(self, t0, t1):
+        """The force in the window: peak and when, the plateau mean, the rest level before, and the main joint angle at the peak
+        (the two candidate numbers for a model input: angle at peak force, and plateau mean angle). None without force."""
+        if not self.has_force():
+            return None
+        unit, y = ("N", self.force_n) if not np.all(np.isnan(self.force_n)) else ("V", self.force_v)
+        m = (self.force_t >= t0) & (self.force_t <= t1)
+        if not m.any() or np.all(np.isnan(y[m])):
+            return None
+        yw, tw = y[m], self.force_t[m]
+        k = int(np.nanargmax(yw))
+        span = t1 - t0
+        pm = (self.force_t >= t0 + PLATEAU_TRIM * span) & (self.force_t <= t1 - PLATEAU_TRIM * span)
+        rm = (self.force_t >= t0 - REST_SECONDS) & (self.force_t < t0)
+        plateau = float(np.nanmean(y[pm])) if pm.any() else math.nan
+        rest = float(np.nanmean(y[rm])) if rm.any() else math.nan
+        main = next((a for a in self.angle_defs if a.primary), self.angle_defs[0] if self.angle_defs else None)
+        angle = math.nan
+        if main is not None:
+            near = np.abs(self.t - tw[k]) <= 0.1
+            vals = self.deg[main.name][near]
+            vals = vals[~np.isnan(vals)]
+            if vals.size == 0:
+                i = int(np.argmin(np.abs(self.t - tw[k])))
+                vals = self.deg[main.name][i:i + 1]
+            angle = float(np.nanmean(vals)) if vals.size and not np.all(np.isnan(vals)) else math.nan
+        return {"unit": unit, "peak": float(yw[k]), "t_peak_s": float(tw[k]), "plateau_mean": plateau, "rest_mean": rest,
+                "peak_minus_rest": float(yw[k]) - rest if not math.isnan(rest) else math.nan,
+                "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle,
+                "samples_in_window": int(m.sum())}
 
     def hold_window(self):
         """(start, end) seconds from the first 'MVIC start' and the next 'MVIC end' marker, or None."""
@@ -310,12 +363,14 @@ class ReviewTab(QWidget):
         m = tr.meta
         self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  target {m['target_deg']} deg  |  "
                            f"{m['frames']} frames, {m['duration_s']} s"
+                           + (f"  |  ruler {tr.ruler_cm:g} cm = {tr.px_per_cm:.2f} px/cm" if tr.px_per_cm and tr.ruler_cm else "  |  no ruler scale")
                            + ("  |  UNFINISHED: the program stopped before saving; the video may not open" if tr.unfinished else "")
                            + (f"  |  STOPPED: {m['stopped_because']}" if m.get("stopped_because") else "")
                            + (f"  |  GAPS: {m['gaps']['count']} (longest {m['gaps']['max_s']:.2f} s, no frames)" if (m.get('gaps') or {}).get('count') else ""))
         self.plot.clear()
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)
+        self._show_force_curve(tr)
         for k, a in enumerate(tr.angle_defs):
             self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
                            name=a.title)
@@ -342,6 +397,35 @@ class ReviewTab(QWidget):
         self.update_summary()
 
     # ------------------------------------------------------------ playback
+    def _show_force_curve(self, tr):
+        """The force on its own (right-hand) axis, drawn with every sample (thinned only for display, keeping the peaks)."""
+        if not hasattr(self, "force_view"):
+            self.force_view = pg.ViewBox()
+            self.plot.showAxis("right")
+            self.plot.scene().addItem(self.force_view)
+            self.plot.getAxis("right").linkToView(self.force_view)
+            self.force_view.setXLink(self.plot)
+            self.plot.getViewBox().sigResized.connect(self._sync_force_view)
+        self.force_view.clear()
+        if not tr.has_force():
+            self.plot.hideAxis("right")
+            return
+        unit, y = ("N", tr.force_n) if not np.all(np.isnan(tr.force_n)) else ("V", tr.force_v)
+        curve = pg.PlotCurveItem(tr.force_t, y, pen=pg.mkPen((220, 60, 60), width=1.5))
+        curve.setDownsampling(auto=True, method="peak")
+        self.force_view.addItem(curve)
+        lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+        pad = 0.05 * max(hi - lo, 1e-9)
+        self.force_view.setYRange(lo - pad, hi + pad, padding=0)
+        self.plot.getAxis("right").setLabel(f"Force ({unit})", color=(220, 60, 60))
+        self.plot.showAxis("right")
+        self._sync_force_view()
+
+    def _sync_force_view(self):
+        if hasattr(self, "force_view"):
+            self.force_view.setGeometry(self.plot.getViewBox().sceneBoundingRect())
+            self.force_view.linkedViewChanged(self.plot.getViewBox(), self.force_view.XAxis)
+
     def show_frame(self, i):
         if self.trial is None:
             return
@@ -402,6 +486,16 @@ class ReviewTab(QWidget):
             pt = r["plateau_mean_deg"] - r["target_deg"] if not (math.isnan(r["plateau_mean_deg"]) or math.isnan(r["target_deg"])) else math.nan
             lines.append(f"{r['angle'][:21]:22s}{f(r['plateau_mean_deg'], 9)}{f(r['median_deg'], 8)}{f(r['target_deg'], 8)}{f(pt, 9, True)}"
                          f"{f(r['rest_mean_deg'], 8)}{f(r['rest_to_hold_shift_deg'], 10, True)}")
+        fs = self.trial.force_summary(t0, t1)
+        if fs is not None:
+            u = fs["unit"]
+            fmt = lambda v: "-" if math.isnan(v) else f"{v:.1f}"                                  # noqa: E731
+            lines += ["", f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}):",
+                      f"  peak {fmt(fs['peak'])} at {fs['t_peak_s']:.2f} s   |   plateau mean {fmt(fs['plateau_mean'])}   |   "
+                      f"rest before {fmt(fs['rest_mean'])}   |   peak above rest {fmt(fs['peak_minus_rest'])}",
+                      f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg   (plateau mean angle is in the table above)"]
+        elif self.trial.has_force():
+            lines.append("(force was recorded but there are no samples in this window)")
         if not self.trial.hold_window():
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
@@ -478,9 +572,14 @@ class ReviewTab(QWidget):
                      "software_version": self.trial.meta.get("software_version"),
                      "window_source": "MVIC markers" if self.trial.hold_window() and tuple(map(float, (t0, t1))) == tuple(self.trial.hold_window())
                      else "window as set (not the MVIC markers)"}
-            w.writerow(list(ident) + ["window_start_s", "window_end_s"] + list(rows[0]))
+            fs = self.trial.force_summary(t0, t1)
+            fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg"]
+            fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"]]
+                     if fs is not None else [""] * len(fnames))
+            fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
+            w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))
             for r in rows:
-                w.writerow(list(ident.values()) + [round(t0, 3), round(t1, 3)]
+                w.writerow(list(ident.values()) + [round(t0, 3), round(t1, 3)] + fvals
                            + [round(v, 3) if isinstance(v, float) else v for v in r.values()])
         extra = self.trial.folder / f"{self.trial.base}_displacement.csv"
         drows = self.trial.displacement(t0, t1)

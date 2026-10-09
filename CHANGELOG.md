@@ -3,6 +3,36 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.5.0 - 2026-10-09
+
+### Force (load cell through an NI DAQ, new)
+- New **Force** box in the Live tab: source (NI DAQ, or a simulated contraction to try the program), device, input, wiring (differential or single-ended), *Connect*, a live read-out in N (or V until calibrated), *Zero* and *Calibrate with a known weight*. The calibration is kept in `force_calibration.json` (not in the repository) and copied into every trial.
+- The DAQ is sampled on its own thread at 1000 samples per second; every sample gets a time on the same clock as the video frames, so a force sample can be matched to the joint angle at that moment. The time alignment is good to a few milliseconds (see FEATURES.md); the MVIC start marker is an independent check.
+- Recording saves `<trial>_force.csv` (every sample: `t_s`, `clock_s`, `volts`, `newtons`), a `force_n` column in `data.csv` (mean force since the previous picture), and `force` / `force_setup` blocks in `meta.json` (device, rate, calibration, peak and when, measured rate, gaps, read errors). The force and its peak are drawn in the picture header and the saved overlay video.
+- Safe handling: the zero and the calibration cannot change during a recording; a recording is refused if the DAQ is not delivering (with the reason) or with a video file (its clock does not match the DAQ); a DAQ that stops during a recording is flagged in the picture and in `meta.json`; a DAQ held by another program (MATLAB, NI MAX) gives a plain message.
+- Review draws the force on a right-hand axis and reports, for the window: peak force and when, plateau mean, the rest level before, and the **main joint angle at the peak force** (the second candidate number for a model input, next to the plateau mean angle). These are also in the exported `_summary.csv`.
+- New dependency `nidaqmx` (and the NI-DAQmx driver, already installed on this computer).
+
+From the first tests with a board and black markers (recordings of 2026-10-09).
+
+### Tracking (tracking numbers can differ slightly: at most 0.27 px on the Bundepus reference video)
+- A dot that touches a shadow, a finger or a strap is no longer dragged toward it: when no blob fits or the blob is too big or too long, the search is repeated at higher contrast thresholds, which cut the attachment away. This also finds a lost dot again while a finger still touches it.
+- The learned dot size no longer follows a merged blob (it had grown to twice the dot size).
+- Small fragments of a dot hidden by a hand are no longer accepted as the dot (lower area limit 0.3 to 0.40 x the dot area; a half-covered dot, about 0.5, is still tracked and flagged).
+- On the board recordings the dots stay on the dots through finger contact (checked on pictures); the tracked dot of the first trials is no longer lost for 131 and 44 frames when replayed.
+
+### Ruler
+- The two ruler dots are fixed points, not tracked (nothing can lose them). The scale is constant; a camera or ruler moved after marking is not noticed, so mark it again.
+- Review draws the ruler of the trial and shows `ruler N cm = X px/cm` (or `no ruler scale`) in the title line.
+
+### Speed
+- Measured on this computer (real window, real camera, recording with overlay): 30 fps live and 29.6 fps while recording, so the computer is not what limited the first board recordings (17-26 fps); the camera or phone delivering fewer frames (dim light) fits the frame spacing better.
+- Blobs are measured all at once instead of one by one (same numbers to 1e-13 px; about 2.7 x less time per dot in a cluttered scene), and the extra high-threshold search for a dot merged with a shadow is skipped when nothing could be that bright or dark. Worst case (8 dots all lost in a busy picture): 27 ms per frame.
+- Every recording's `meta.json` has `pipeline_timing`: the program's work per frame (mean, 95th percentile, max), the time between frames (median, 95th percentile, max), the loop frame rate and the share of the interval spent working. If work is much smaller than the interval, the camera or phone is the limit.
+
+### Recording
+- The raw and the overlay video are encoded by two threads in parallel (insurance for slower computers; on the development computer encoding was not the cause of the 17-26 fps seen in the board recordings: the writer queue never held more than 2 frames).
+
 ## 0.4.1 - 2026-10-08
 
 ### Cameras

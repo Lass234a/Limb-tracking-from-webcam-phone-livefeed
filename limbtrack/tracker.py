@@ -10,7 +10,12 @@ If nothing suitable is found the dot is flagged as LOST. It then freezes at its 
 good position (no velocity prediction) and only a small FIXED circle around that
 position is searched. Tracking resumes only when a blob inside the circle is also
 bright enough (see RESUME_MIN_QUALITY), so a shadow or a different object cannot be
-taken for the dot. A dot that moved further than the circle while hidden stays lost
+taken for the dot.
+
+A dot that touches a shadow, a finger or a strap merges with it into one big or elongated blob. When no blob fits, or the
+best one is too big or too long (MERGED_*), the search is repeated at higher fractions of the dot's contrast, which cut a
+fainter shadow or finger away from the dark (or bright) dot. The size the tracker learns for the dot is never taken from such
+a merged blob. A dot that moved further than the circle while hidden stays lost
 until the operator marks it again. The angle is never computed from a lost dot.
 """
 import math
@@ -50,7 +55,8 @@ REACH_DIAM_FACTOR = 3.0          # search reach = this x diameter + REACH_EXTRA_
 REACH_EXTRA_PX = 12.0
 REACH_MAX_PX = 160.0
 VELOCITY_GAIN = 0.5              # predicted velocity = this x the latest step
-AREA_RANGE = (0.3, 3.5)          # accepted blob area, as multiples of the running dot area
+AREA_RANGE = (0.40, 3.5)         # accepted blob area, as multiples of the running dot area (was 0.3 until 2026-10-09: fragments of a
+                                 # dot hidden by a hand were accepted as the dot)
 ASPECT_FACTOR = 2.5              # accepted blob: longer side at most this x the shorter side + ASPECT_EXTRA_PX
 ASPECT_EXTRA_PX = 2
 AREA_KEEP, AREA_NEW = 0.9, 0.1           # running dot area: 0.9 old + 0.1 new
@@ -58,6 +64,12 @@ CONTRAST_KEEP, CONTRAST_NEW = 0.95, 0.05  # running contrast: 0.95 old + 0.05 ne
 MIN_DIAMETER_PX = 4.0
 NEIGHBOUR_EXCLUSION_FACTOR = 0.8  # blobs within this x diameter of another tracked dot are ignored
 DUPLICATE_FACTOR = 0.5            # two dots closer than this x the smaller diameter: the later one is declared lost
+
+# A dot touching a hand, a strap or a shadow merges with it into one big or elongated blob (found on the board recordings 2026-10-09)
+MERGED_AREA_FACTOR = 1.5          # a blob larger than this x the area when marked is probably the dot plus something attached ...
+MERGED_ASPECT = 1.6               # ... and so is one longer than this x its width + 1 pixel
+SEPARATE_FRACTIONS = (0.6, 0.75, 0.9)   # ... then it is searched again at these (higher) fractions of the dot's contrast, which cut
+                                         # a fainter shadow or finger away from the dark dot
 
 
 def settings():
@@ -79,6 +91,7 @@ def settings():
             "duplicate_factor": DUPLICATE_FACTOR, "weak_below_quality": WEAK_BELOW,
             "partial_area_below": PARTIAL_AREA_BELOW, "partial_area_floor": PARTIAL_AREA_FLOOR, "partial_elongation": PARTIAL_ELONGATION,
             "partial_border_factor": PARTIAL_BORDER_FACTOR,
+            "merged_area_factor": MERGED_AREA_FACTOR, "merged_aspect": MERGED_ASPECT, "separate_fractions": list(SEPARATE_FRACTIONS),
             "neighbour_exclusion_centre": "predicted position, widened by the dot's step", "duplicate_resolution": "prediction_residual",
         },
         "lost_dot": {
@@ -143,21 +156,25 @@ class DotTracker:
         return x0, y0, gray[y0:y1, x0:x1]
 
     def _blobs(self, enh, thr):
-        """Connected blobs above thr -> list of (cx, cy, area, w, h) in window coordinates."""
+        """Connected blobs above thr -> list of (cx, cy, area, w, h) in window coordinates (intensity-weighted centres).
+        All blobs are measured at once (the same numbers as measuring them one by one, but fast when a busy scene has many)."""
         _, mask = cv2.threshold(enh, thr, 255, cv2.THRESH_BINARY)
         n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if n <= 1:
+            return []
+        lab = labels.ravel()
+        wts = enh.ravel().astype(np.float64)
+        ys, xs = np.divmod(np.arange(lab.size), labels.shape[1])
+        sw = np.bincount(lab, weights=wts, minlength=n)
+        sx = np.bincount(lab, weights=wts * xs, minlength=n)
+        sy = np.bincount(lab, weights=wts * ys, minlength=n)
         out = []
         for i in range(1, n):
-            x, y, w, h, area = stats[i]
-            if area < MIN_BLOB_PIXELS:
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < MIN_BLOB_PIXELS or sw[i] <= 0:
                 continue
-            ys, xs = np.nonzero(labels[y:y + h, x:x + w] == i)
-            wts = enh[y:y + h, x:x + w][ys, xs].astype(np.float64)
-            if wts.sum() <= 0:
-                continue
-            cx = x + float((xs * wts).sum() / wts.sum())
-            cy = y + float((ys * wts).sum() / wts.sum())
-            out.append((cx, cy, float(area), int(w), int(h)))
+            out.append((float(sx[i] / sw[i]), float(sy[i] / sw[i]), float(area),
+                        int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])))
         return out
 
     # --------------------------------------------------------------------- init
@@ -211,6 +228,11 @@ class DotTracker:
         iy, ix = int(round(cy)), int(round(cx))
         return float(enh[max(iy - 1, 0):iy + 2, max(ix - 1, 0):ix + 2].max()) if enh.size else self.contrast
 
+    def _merged(self, blob):
+        """Is this blob (d, x, y, area, peak, w, h) too big or too elongated to be the dot alone?"""
+        _, _, _, area, _, w, h = blob
+        return (self.marked_area is not None and area > MERGED_AREA_FACTOR * self.marked_area) or max(w, h) > MERGED_ASPECT * min(w, h) + 1
+
     def undo_update(self):
         """Take back the latest update and declare the dot lost at its previous position."""
         if self._before is not None:
@@ -236,9 +258,9 @@ class DotTracker:
             reach = min(REACH_DIAM_FACTOR * self.diam + REACH_EXTRA_PX, REACH_MAX_PX)
         x0, y0, roi = self._window(gray, cx0, cy0, reach + self.diam)
         best = None
-        if roi.size:
-            enh = self._enhance(roi, self.diam)
-            thr = max(THRESHOLD_FRACTION * self.contrast, MIN_CONTRAST)
+
+        def pick(enh, thr):
+            found = None
             for cx, cy, area, w, h in self._blobs(enh, thr):
                 if not (AREA_RANGE[0] * self.area <= area <= AREA_RANGE[1] * self.area):
                     continue
@@ -257,8 +279,27 @@ class DotTracker:
                         continue           # wrong size
                     if max(w, h) > RESUME_MAX_ASPECT * min(w, h) + RESUME_ASPECT_EXTRA_PX:
                         continue           # not round (sliver, edge of an object)
-                if best is None or d < best[0]:
-                    best = (d, x0 + cx, y0 + cy, area, peak, w, h)
+                if found is None or d < found[0]:
+                    found = (d, x0 + cx, y0 + cy, area, peak, w, h)
+            return found
+
+        if roi.size:
+            enh = self._enhance(roi, self.diam)
+            thr = max(THRESHOLD_FRACTION * self.contrast, MIN_CONTRAST)
+            best = pick(enh, thr)
+            if best is None or self._merged(best):
+                # Nothing fitting, or a blob that is too big or too long: the dot may have merged with a shadow, a finger or a
+                # strap.
+                # Search again with the threshold raised: the dot is darker (brighter) than what is attached to it.
+                peak_here = float(enh.max())
+                for frac in SEPARATE_FRACTIONS:
+                    alt_thr = max(frac * self.contrast, thr)
+                    if peak_here <= alt_thr:
+                        break                  # nothing is that bright (or dark) here: a higher threshold cannot find anything
+                    alt = pick(enh, alt_thr)
+                    if alt is not None and not self._merged(alt):
+                        best = alt
+                        break
         if best is None:
             if not was_lost:               # first miss: freeze here and fix the search circle
                 self.lost_radius = LOST_RADIUS_FACTOR * self.diam
@@ -277,7 +318,8 @@ class DotTracker:
             self.vx = VELOCITY_GAIN * (nx - self.x)
             self.vy = VELOCITY_GAIN * (ny - self.y)
         self.x, self.y = nx, ny
-        self.area = AREA_KEEP * self.area + AREA_NEW * area
+        if self.marked_area is None or area <= MERGED_AREA_FACTOR * self.marked_area:      # never learn the size of dot-plus-shadow
+            self.area = AREA_KEEP * self.area + AREA_NEW * area
         self.diam = max(2.0 * (self.area / np.pi) ** 0.5, MIN_DIAMETER_PX)
         if peak >= MIN_CONTRAST:
             self.contrast = CONTRAST_KEEP * self.contrast + CONTRAST_NEW * peak

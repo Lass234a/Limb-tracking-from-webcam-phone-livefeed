@@ -15,6 +15,7 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
   movement plane (a sagittal view for the lower-limb tests). Keep the tested joint in the middle third of the picture.
 - Use 1280x720 or 1920x1080 at 30 fps. Start the camera and read the line under *Video source*: it should show the size you
   expect and at least 25 fps measured, without an orange warning.
+- **Light the scene brightly and evenly** (a strong lamp near the camera, not only from the side or behind). Shadows are the main reason dots are lost: a hand, a strap or the limb itself casts a shadow beside a dot, and a dark dot and a dark shadow merge into one blob. A dim room also makes a phone camera lower its frame rate (the first board recordings ran at 17 to 26 fps although the camera can deliver 30). Matte boards and clothing, no glossy surfaces.
 - Use steady lighting. Do not rely on the camera's automatic exposure changing mid-trial; in a phone app, lock exposure,
   white balance and focus, switch stabilisation off, set zoom to 1x and lock the orientation.
 - USB is steadier than Wi-Fi for a phone. A phone that rotates or changes resolution mid-trial stops the recording (it is
@@ -51,6 +52,14 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
 - Keep video of the validation subset only, if that is what the consent and AAU's GDPR contact allow. The program can be
   changed to save no video at all (numbers only; see `PARKED.md`) if video turns out not to be permitted.
 - This is technical help, not legal advice; the data-handling plan must be confirmed by the GDPR contact.
+
+**Force (load cell and DAQ)**
+- Wire the load cell's amplifier output to the DAQ: differential on `ai0` (+) and `ai4` (-) is best against noise; connect the amplifier's ground to an AI GND pin of the DAQ. The amplifier must give a voltage within +-10 V (a 4-20 mA output needs a shunt resistor). Check the amplifier's output range in its manual (the SIC-A2 datasheet was not found online).
+- Only one program can hold the DAQ at a time: close MATLAB (`clear` or `release` its DAQ object), NI MAX test panels and other recordings before pressing *Connect*.
+- Let the amplifier warm up as its manual says. With nothing loaded press *Zero*, then put a known mass on the sensor and *Calibrate*. Repeat the calibration with a second, different mass as a check (the reading should be within about 1 %), and note the sensor's own accuracy from its data sheet.
+- Calibrate in the same direction the sensor is loaded in the experiment (an S-type cell reads tension and compression with opposite signs; if the reading is negative in your set-up, calibrate with the weight in the direction that gives the positive number, or accept that newtons per volt is negative).
+- The strap pulls at an angle (see the pull angle): the load cell reads the force along its own axis.
+- Check the time alignment once: record a short push, press **S** (MVIC start) as the force begins, and compare the marker time with the force onset in Review (they should agree within about 0.2 s, the reaction time; the program's own alignment is a few milliseconds).
 
 ## 2. During each trial
 1. Click the next position in the session plan (or choose the test and target by hand). The required neighbour joint angle (for example hip 90) is shown green/red from
@@ -97,7 +106,7 @@ only at the ruler's distance; the three-point knee differs a few degrees from th
 epicondyle-malleolus line).
 
 ## 5. Not done / not covered
-- Frontal view (hip abduction/adduction), two cameras, lens calibration, camera tilt aid, force/ADC: see `PARKED.md`.
+- Frontal view (hip abduction/adduction), two cameras, lens calibration, camera tilt aid: see `PARKED.md`. Force is built but not yet tried on the real load cell (`FEATURES.md` H13).
 - Which number goes to AnyBody (plateau mean or the angle at peak force), and the conversion of skin-dot angles to the
   model's joint-angle conventions, are decisions for you and the AnyBody side (the AnyBody ankle sign is opposite to this
   app's convention).

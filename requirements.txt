@@ -3,4 +3,5 @@ numpy>=2.0
 PySide6>=6.6
 pyqtgraph>=0.13
 pytest>=8.0
+nidaqmx>=1.0                              # force from an NI DAQ (also needs the NI-DAQmx driver); optional: the program runs without it
 pygrabber>=0.2; sys_platform == "win32"    # camera names (phone apps such as Iriun / DroidCam / Camo show up as cameras)

@@ -54,7 +54,9 @@ def test_every_tracking_number_is_listed_in_settings():
     s = tracker.settings()
     assert set(s) == {"image_preparation", "tracking", "lost_dot"}
     assert s["tracking"]["min_contrast"] == tracker.MIN_CONTRAST == 8.0
-    assert s["tracking"]["area_range"] == [0.3, 3.5]
+    assert s["tracking"]["area_range"] == [0.4, 3.5]
+    assert s["tracking"]["merged_area_factor"] == 1.5 and s["tracking"]["merged_aspect"] == 1.6
+    assert s["tracking"]["separate_fractions"] == [0.6, 0.75, 0.9]
     assert s["lost_dot"]["search_radius_diam_factor"] == 2.0 and s["lost_dot"]["resume_min_quality"] == 0.6
     assert s["image_preparation"]["kernel_diam_factor"] == 2.5
     json.dumps(s)                                                     # must be writable to meta.json

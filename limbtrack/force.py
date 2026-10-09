@@ -1,0 +1,407 @@
+"""Force from a load cell through a data acquisition (DAQ) device, sampled on its own thread at its own, much higher, rate.
+
+The camera delivers about 30 pictures per second; a maximal contraction is over in a few seconds and its peak is short, so the
+force is NOT sampled once per picture. The DAQ samples at SAMPLE_RATE_HZ (1000 per second) and every sample is saved with a
+time on the same clock as the video frames (time.perf_counter), so a force sample can be matched to the joint angle at that moment.
+
+Pieces
+  * ForceCalibration  : volts -> newtons (zero offset and newtons per volt), saved in force_calibration.json.
+  * ForceSource       : keeps the newest samples (ring buffer) and gives them out by time; the hardware classes only differ in how
+                        they obtain samples.
+  * NiDaqForce        : an NI DAQmx device (written for the USB-6003; any DAQmx device with analog inputs works).
+  * SimulatedForce    : a made-up contraction every few seconds, for testing and for trying the program without hardware.
+
+Timing: a DAQ chunk is handed to the program a little after its last sample was taken (USB and driver delay). The time of sample 0
+is therefore estimated as the smallest 'arrival time minus samples/rate' seen over the last seconds (ClockAligner). The remaining
+uncertainty is the smallest delay, a few milliseconds. Pressing the MVIC start marker gives a second, independent, time stamp.
+"""
+import json
+import math
+import threading
+import time
+from collections import deque
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+
+SAMPLE_RATE_HZ = 1000.0
+CHUNK_S = 0.01                    # the reader asks the device for this much at a time
+KEEP_SECONDS = 600.0              # samples kept in memory (a recording is far shorter)
+STANDARD_GRAVITY = 9.80665        # m/s^2: a mass of 1 kg weighs 9.80665 N
+MIN_CAL_SPAN_V = 0.005            # a known load must move the signal by at least this much for a two-point calibration
+CALIBRATION_FILE = "force_calibration.json"
+ALIGN_WINDOW_S = 20.0
+MAX_STEADY_SD_V = 0.02            # zero and calibration readings must be this steady (standard deviation)
+
+
+class ForceError(RuntimeError):
+    """The force source could not be opened or stopped delivering; the message says what to do."""
+
+
+# ------------------------------------------------------------------------------------------- calibration
+@dataclass
+class ForceCalibration:
+    """newtons = (volts - offset_v) * n_per_v. `n_per_v` is None until a known load has been used."""
+    offset_v: float = 0.0
+    n_per_v: float = None
+    method: str = "none"
+    when: str = ""
+    known_mass_kg: float = None
+    zero_v: float = None
+    load_v: float = None
+    note: str = ""
+
+    @property
+    def calibrated(self):
+        return self.n_per_v is not None and self.n_per_v != 0 and math.isfinite(self.n_per_v)
+
+    def to_newton(self, volts):
+        """Newtons for volts (a number or an array); NaN when not calibrated."""
+        v = np.asarray(volts, dtype=np.float64)
+        return (v - self.offset_v) * self.n_per_v if self.calibrated else np.full(v.shape, np.nan)
+
+    def set_zero(self, volts):
+        """The signal with nothing loaded."""
+        self.offset_v, self.zero_v = float(volts), float(volts)
+        self.when = datetime.now().isoformat(timespec="seconds")
+        self.method = "zero only" if not self.calibrated else self.method
+
+    def calibrate_with_mass(self, load_volts, mass_kg):
+        """Two points: the zero set before (zero_v) and a known mass hanging on, or pushing on, the sensor.
+        Returns None if fine, else a plain-English reason why it was refused (nothing is changed then)."""
+        if mass_kg <= 0:
+            return "The known mass must be above zero."
+        span = float(load_volts) - self.offset_v
+        if abs(span) < MIN_CAL_SPAN_V:
+            return (f"The signal moved only {span * 1000:+.1f} mV from the zero. Check the load is on the sensor and the "
+                    f"amplifier is connected (at least {MIN_CAL_SPAN_V * 1000:.0f} mV are needed).")
+        self.n_per_v = mass_kg * STANDARD_GRAVITY / span
+        self.known_mass_kg, self.load_v = float(mass_kg), float(load_volts)
+        self.method = f"zero and {mass_kg:g} kg"
+        self.when = datetime.now().isoformat(timespec="seconds")
+        return None
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d):
+        known = {k: d[k] for k in cls.__dataclass_fields__ if k in d}
+        return cls(**known)
+
+    def save(self, path):
+        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path):
+        try:
+            return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            return cls()
+
+
+# ------------------------------------------------------------------------------------------- clock
+class ClockAligner:
+    """Estimates when sample 0 was taken, on the perf_counter clock, from when chunks arrived (see the module note)."""
+
+    def __init__(self, rate, window_s=ALIGN_WINDOW_S):
+        self.rate, self.window_s = float(rate), window_s
+        self._recent = deque()          # (arrival, arrival - n_end / rate)
+        self.t0 = None
+
+    def update(self, arrival, n_end):
+        v = arrival - n_end / self.rate
+        self._recent.append((arrival, v))
+        while self._recent and self._recent[0][0] < arrival - self.window_s:
+            self._recent.popleft()
+        self.t0 = min(x[1] for x in self._recent)
+        return self.t0
+
+    def times(self, first_index, count):
+        """Times of samples first_index .. first_index + count - 1 (the last of a chunk is at arrival - latency)."""
+        return self.t0 + (np.arange(first_index + 1, first_index + count + 1) / self.rate)
+
+
+# ------------------------------------------------------------------------------------------- sources
+class ForceSource:
+    kind = "none"
+
+    def __init__(self, rate=SAMPLE_RATE_HZ):
+        self.rate = float(rate)
+        self.calibration = ForceCalibration()
+        self.error = None                         # why the reading stopped, in plain English
+        self.read_errors = 0
+        self._lock = threading.Lock()
+        self._chunks = deque()                    # (times, volts) arrays
+        self._kept = 0
+        self._n_total = 0
+        self._aligner = ClockAligner(self.rate)
+        self._thread = None
+        self._stop = threading.Event()
+        self._last_arrival = None
+        self.frozen = False                       # set while a trial is recorded: zero and calibration cannot change then
+
+    # --- life cycle
+    def start(self):
+        """Open the hardware (errors are raised here, with advice) and start reading."""
+        self._open()
+        self._stop.clear()
+        self.error = None
+        self._thread = threading.Thread(target=self._read_loop, daemon=True, name="force-reader")
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+        self._thread = None
+        try:
+            self._close()
+        except Exception:  # noqa: BLE001 - closing must never raise into the window
+            pass
+
+    @property
+    def running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def _open(self):
+        pass
+
+    def _close(self):
+        pass
+
+    def _read_chunk(self):
+        """Hardware classes: block until the next chunk and return its voltages as a 1-D array."""
+        raise NotImplementedError
+
+    def _read_loop(self):
+        while not self._stop.is_set():
+            try:
+                chunk = np.asarray(self._read_chunk(), dtype=np.float64).ravel()
+            except Exception as e:  # noqa: BLE001 - reported to the operator
+                self.read_errors += 1
+                self.error = self._explain(e)
+                return
+            if chunk.size:
+                self._push(chunk, time.perf_counter())
+
+    def _explain(self, e):
+        return f"The force reading stopped: {e}"
+
+    def _push(self, chunk, arrival):
+        with self._lock:
+            n0 = self._n_total
+            self._n_total += chunk.size
+            self._aligner.update(arrival, self._n_total)
+            t = np.maximum.accumulate(self._aligner.times(n0, chunk.size))
+            if self._chunks and t[0] < self._chunks[-1][0][-1]:         # the clock estimate moved: keep time running forward
+                t = np.maximum(t, self._chunks[-1][0][-1])
+            self._chunks.append((t, chunk))
+            self._kept += chunk.size
+            self._last_arrival = arrival
+            while self._kept - self._chunks[0][1].size > KEEP_SECONDS * self.rate:
+                self._kept -= self._chunks.popleft()[1].size
+
+    # --- reading what has come in
+    def seconds_since_last_sample(self):
+        return float("inf") if self._last_arrival is None else time.perf_counter() - self._last_arrival
+
+    def latest_volts(self):
+        with self._lock:
+            return float(self._chunks[-1][1][-1]) if self._chunks else None
+
+    def latest_newtons(self):
+        v = self.latest_volts()
+        return None if v is None or not self.calibration.calibrated else float(self.calibration.to_newton(v))
+
+    def samples_between(self, t0, t1):
+        """(times, volts) of the samples with t0 <= time < t1."""
+        with self._lock:
+            parts = [c for c in self._chunks if c[0][-1] >= t0 and c[0][0] < t1]
+        if not parts:
+            return np.empty(0), np.empty(0)
+        t = np.concatenate([p[0] for p in parts])
+        v = np.concatenate([p[1] for p in parts])
+        m = (t >= t0) & (t < t1)
+        return t[m], v[m]
+
+    def recent(self, seconds):
+        """(seconds before now - negative, volts) of roughly the last `seconds`, thinned for plotting."""
+        now = time.perf_counter()
+        t, v = self.samples_between(now - seconds, now + 1.0)
+        if t.size > 1500:
+            step = int(math.ceil(t.size / 1500))
+            t, v = t[::step], v[::step]
+        return t - now, v
+
+    def average_volts(self, seconds=2.0):
+        """Mean voltage of the last `seconds` and how many samples that was (for the zero and the known-load readings)."""
+        now = time.perf_counter()
+        t, v = self.samples_between(now - seconds, now + 1.0)
+        return (float(v.mean()), int(v.size)) if v.size else (None, 0)
+
+    def spread_volts(self, seconds=2.0):
+        now = time.perf_counter()
+        _, v = self.samples_between(now - seconds, now + 1.0)
+        return float(v.std()) if v.size > 1 else None
+
+    def _steady_mean(self, seconds):
+        """(mean volts, None) of the last `seconds`, or (None, reason) when there is too little or the signal is not steady."""
+        if self.frozen:
+            return None, "Stop recording first: the zero and the calibration cannot change during a recording."
+        if self.error:
+            return None, self.error
+        v, n = self.average_volts(seconds)
+        if v is None or n < 0.5 * seconds * self.rate:
+            return None, "Not enough force samples yet. Wait a moment and try again."
+        sd = self.spread_volts(seconds)
+        if sd is not None and sd > MAX_STEADY_SD_V:
+            return None, (f"The signal is not steady (spread {sd * 1000:.0f} mV over {seconds:g} s). Keep the sensor still and "
+                          f"the load constant while it measures.")
+        return v, None
+
+    def zero(self, seconds=2.0):
+        """Take the present signal as 'no load'. Returns None if done, else the reason it was not."""
+        v, why = self._steady_mean(seconds)
+        if why:
+            return why
+        self.calibration.set_zero(v)
+        return None
+
+    def calibrate(self, mass_kg, seconds=2.0):
+        """With a known mass on the sensor (after zero): sets newtons per volt. Returns None if done, else the reason."""
+        v, why = self._steady_mean(seconds)
+        if why:
+            return why
+        return self.calibration.calibrate_with_mass(v, mass_kg)
+
+    def info(self):
+        """What to record about the source (meta.json)."""
+        return {"source": self.kind, "sample_rate_hz": self.rate, "calibration": self.calibration.to_dict(),
+                "calibrated": self.calibration.calibrated}
+
+
+class NiDaqForce(ForceSource):
+    """An NI-DAQmx device with the load cell's amplifier on one analog input."""
+    kind = "NI DAQmx"
+    TERMINALS = {"differential": "DIFF", "single-ended": "RSE"}
+
+    def __init__(self, device="Dev1", channel="ai0", terminal="differential", rate=SAMPLE_RATE_HZ, range_v=10.0):
+        super().__init__(rate)
+        self.device, self.channel, self.terminal, self.range_v = device, channel, terminal, float(range_v)
+        self._task = None
+
+    @staticmethod
+    def devices():
+        """[(name, product type, [analog input names])] of the DAQ devices the driver knows; [] without the driver or package."""
+        try:
+            from nidaqmx.system import System
+            return [(d.name, d.product_type, [c.name.split("/")[-1] for c in d.ai_physical_chans]) for d in System.local().devices]
+        except Exception:  # noqa: BLE001 - no package, no driver: nothing to list
+            return []
+
+    def _open(self):
+        try:
+            import nidaqmx
+            from nidaqmx.constants import AcquisitionType, TerminalConfiguration
+        except ImportError as e:
+            raise ForceError("The nidaqmx Python package is not installed (pip install nidaqmx) or the NI-DAQmx driver is missing.") from e
+        cfg = getattr(TerminalConfiguration, self.TERMINALS.get(self.terminal, "DIFF"))
+        task = None
+        try:
+            task = nidaqmx.Task()
+            task.ai_channels.add_ai_voltage_chan(f"{self.device}/{self.channel}", terminal_config=cfg,
+                                                 min_val=-self.range_v, max_val=self.range_v)
+            task.timing.cfg_samp_clk_timing(self.rate, sample_mode=AcquisitionType.CONTINUOUS, samps_per_chan=int(self.rate * 10))
+            task.start()
+        except Exception as e:  # noqa: BLE001 - turned into advice
+            if task is not None:
+                try:
+                    task.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise ForceError(self._explain_open(e)) from e
+        self._task = task
+
+    def _explain_open(self, e):
+        text = str(e)
+        if "reserved" in text.lower() or "-50103" in text:
+            return (f"{self.device} is in use by another program (MATLAB, NI MAX test panel, LabVIEW or another recording). "
+                    f"Close it, or release the device there, then connect again.")
+        if "-200220" in text or "not found" in text.lower() or "device identifier is invalid" in text.lower():
+            return f"No DAQ device called '{self.device}'. Check the name in NI MAX and that the USB cable is connected."
+        return f"Could not open {self.device}/{self.channel}: {text.splitlines()[0] if text else type(e).__name__}"
+
+    def _read_chunk(self):
+        n = max(int(self.rate * CHUNK_S), 1)
+        return self._task.read(number_of_samples_per_channel=n, timeout=2.0)
+
+    def _explain(self, e):
+        text = str(e)
+        if "overflow" in text.lower() or "-200279" in text:
+            return "The program could not keep up with the DAQ and lost samples. Close other heavy programs and try again."
+        if "timed out" in text.lower() or "-200284" in text:
+            return "The DAQ stopped sending samples (cable unplugged or device reset)."
+        return f"The force reading stopped: {text.splitlines()[0] if text else type(e).__name__}"
+
+    def _close(self):
+        task, self._task = self._task, None
+        if task is not None:
+            try:
+                task.stop()
+            finally:
+                task.close()
+
+    def info(self):
+        d = super().info()
+        d.update({"device": self.device, "channel": self.channel, "terminal": self.terminal, "range_v": self.range_v})
+        return d
+
+
+class SimulatedForce(ForceSource):
+    """A made-up maximal contraction every `period_s` seconds (ramp, hold, release) plus noise: for tests and for trying the program."""
+    kind = "simulated"
+
+    def __init__(self, rate=SAMPLE_RATE_HZ, peak_n=400.0, period_s=12.0, rest_s=3.0, hold_s=3.0, ramp_s=1.5, noise_v=0.002, offset_v=0.0123,
+                 n_per_v=100.0, clock=time.perf_counter, seed=0):
+        super().__init__(rate)
+        self.peak_n, self.period_s, self.rest_s, self.hold_s, self.ramp_s = peak_n, period_s, rest_s, hold_s, ramp_s
+        self.noise_v, self._true_offset, self._true_n_per_v = noise_v, offset_v, n_per_v
+        self.calibration = ForceCalibration(offset_v=offset_v, n_per_v=n_per_v, method="simulated", when="")
+        self._clock, self._rng = clock, np.random.RandomState(seed)
+        self._t_start = None
+        self._next = 0
+
+    def newtons_at(self, t):
+        """The made-up true force t seconds after the start (an array or a number): rest, ramp up, hold, release."""
+        t = np.asarray(t, dtype=np.float64) % self.period_s - self.rest_s
+        up = np.clip(t / self.ramp_s, 0, 1)
+        down = np.clip(1.0 - (t - self.ramp_s - self.hold_s) / 1.0, 0, 1)
+        shape = np.where(t < 0, 0.0, np.where(t < self.ramp_s, up, np.where(t < self.ramp_s + self.hold_s, 1.0, down)))
+        return self.peak_n * shape
+
+    def _open(self):
+        self._t_start = self._clock()
+        self._next = 0
+
+    def _read_chunk(self):
+        n = max(int(self.rate * CHUNK_S), 1)
+        due = self._t_start + (self._next + n) / self.rate
+        wait = due - self._clock()
+        if wait > 0:
+            time.sleep(wait)
+        idx = np.arange(self._next, self._next + n)
+        self._next += n
+        n_true = self.newtons_at(idx / self.rate)
+        return n_true / self._true_n_per_v + self._true_offset + self._rng.normal(0.0, self.noise_v, n)
+
+
+def make_source(kind, **kw):
+    """'ni' / 'simulated' -> a source (not started)."""
+    if kind == "ni":
+        return NiDaqForce(**kw)
+    if kind == "simulated":
+        return SimulatedForce(**{k: v for k, v in kw.items() if k in ("rate", "peak_n", "period_s", "rest_s", "ramp_s", "hold_s")})
+    raise ValueError(f"unknown force source: {kind}")

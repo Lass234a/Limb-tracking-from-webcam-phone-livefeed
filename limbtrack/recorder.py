@@ -38,44 +38,62 @@ class FrameSizeChanged(RuntimeError):
     """A frame arrived with another size than the videos were opened for (phone rotated, camera changed resolution)."""
 
 
-class _VideoThread(threading.Thread):
-    """Encodes the frames of one trial off the tracking thread, so tracking and encoding overlap. Frames are never
-    dropped: the queue is bounded, and when it is full the caller waits (a slow disk slows the program down instead of
-    silently desynchronising the video from the CSV)."""
+class _VideoThread:
+    """Encodes the frames of one trial off the tracking thread, so tracking and encoding overlap. The raw and the overlay
+    video each have their own encoder thread, so the two encodings run in parallel (one thread doing both capped
+    recording at about 24 frames per second at 1280x720: measured on 2026-10-09, recordings ran at 17-25 fps although the
+    camera delivered 30). Frames are never dropped: each queue is bounded, and when one is full the caller waits (a slow
+    disk slows the program down instead of silently desynchronising the video from the CSV)."""
 
     QUEUE_FRAMES = 90
 
     def __init__(self, raw, ovl):
-        super().__init__(daemon=True)
-        self.raw, self.ovl = raw, ovl
-        self.q = queue.Queue(maxsize=self.QUEUE_FRAMES)
+        self.raw, self.ovl = raw, ovl            # (the writers are looked up at every write)
+        self._lanes = {"raw": queue.Queue(maxsize=self.QUEUE_FRAMES)}
+        if ovl is not None:
+            self._lanes["ovl"] = queue.Queue(maxsize=self.QUEUE_FRAMES)
+        self._threads = {k: threading.Thread(target=self._run, args=(k,), daemon=True) for k in self._lanes}
         self.error = None
         self.peak = 0
-        self.written = 0
+        self.written = 0                          # frames the raw video has encoded
+
+    def start(self):
+        for t in self._threads.values():
+            t.start()
 
     def put(self, frame, overlay, timeout=10.0):
-        self.q.put((frame, overlay), timeout=timeout)       # raises queue.Full if the writer is stuck for `timeout` seconds
-        self.peak = max(self.peak, self.q.qsize())
+        self._lanes["raw"].put(frame, timeout=timeout)       # raises queue.Full if an encoder is stuck for `timeout` seconds
+        if "ovl" in self._lanes:
+            self._lanes["ovl"].put(overlay, timeout=timeout)
+        self.peak = max(self.peak, *(q.qsize() for q in self._lanes.values()))
 
-    def run(self):
+    def _run(self, lane):
+        q = self._lanes[lane]
         while True:
-            item = self.q.get()
+            item = q.get()
             if item is None:
                 return
             if self.error is not None:
                 continue                                      # keep draining so the producer is never blocked for good
             try:
-                self.raw.write(item[0])
-                if self.ovl is not None:
-                    self.ovl.write(item[1])
-                self.written += 1
+                (self.raw if lane == "raw" else self.ovl).write(item)
+                if lane == "raw":
+                    self.written += 1
             except Exception as e:  # noqa: BLE001 - reported to the recording through write()/close()
                 self.error = e
+
+    def finish(self, timeout=120):
+        """Let every encoder finish what is queued, then stop. Returns True if they all stopped in time."""
+        for q in self._lanes.values():
+            q.put(None)
+        for t in self._threads.values():
+            t.join(timeout=timeout)
+        return not any(t.is_alive() for t in self._threads.values())
 
 
 class TrialRecorder:
     def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False,
-                 save_overlay=True, crop=None, masks=()):
+                 save_overlay=True, crop=None, masks=(), with_force=False):
         # `frame_size` is the size of the picture the program works on. With a privacy crop the saved videos are smaller
         # (crop width x height); masks are blacked out in the saved copies only (limbtrack/privacy.py).
         self.full_size = (int(frame_size[0]), int(frame_size[1]))
@@ -91,6 +109,9 @@ class TrialRecorder:
         self.base = folder / f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}"
         self.save_overlay = bool(save_overlay)
         names = ("raw.mp4", "overlay.mp4", "data.csv", "meta.json") if self.save_overlay else ("raw.mp4", "data.csv", "meta.json")
+        self.with_force = bool(with_force)
+        if self.with_force:
+            names = names + ("force.csv",)           # every force sample (about 1000 per second), not one per picture
         self.paths = {k: Path(f"{self.base}_{k}") for k in names}
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self._raw = cv2.VideoWriter(str(self.paths["raw.mp4"]), fourcc, fps, frame_size)
@@ -109,12 +130,20 @@ class TrialRecorder:
         for a in self.angle_names:
             head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head += ["all_ok", "event", "scale_px_per_cm"]
+        if self.with_force:
+            head.append("force_n")                   # mean force (newtons) of the samples since the previous picture; blank if uncalibrated
         self.with_pull = with_pull
         if with_pull:
             head += PULL_COLUMNS
         head.append("source_frame")        # frame number in the source (file frame, or camera read count)
         head += [f"{d}_partial" for d in self.dot_names]      # 1 = the dot looked partly covered / cut off in this frame
         self._csv.writerow(head)
+        self._ffh = self._fcsv = None
+        self._force_pending = []                    # force samples that arrived before the first picture
+        if self.with_force:
+            self._ffh = open(self.paths["force.csv"], "w", newline="", encoding="utf-8")
+            self._fcsv = csv.writer(self._ffh)
+            self._fcsv.writerow(["t_s", "clock_s", "volts", "newtons"])      # t_s: seconds after the first picture, like data.csv
         self.frames = 0
         self.events = []          # {frame, t_s, label} markers added during the trial
         self.last_t = 0.0
@@ -139,12 +168,31 @@ class TrialRecorder:
                      "files": {k: p.name for k, p in self.paths.items()}})
         self._write_meta(data)
 
-    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None):
+    def write_force(self, clock, volts, newtons):
+        """Append force samples (arrays: time on the video clock, volts, newtons) to force.csv."""
+        if self._fcsv is None:
+            return
+        rows = list(zip(clock.tolist(), volts.tolist(), newtons.tolist()))
+        if self._t0 is None:
+            self._force_pending += rows
+            return
+        self._write_force_rows(rows)
+
+    def _write_force_rows(self, rows):
+        for c, v, n in rows:
+            self._fcsv.writerow([round(c - self._t0, 5), round(c, 5), round(v, 6), "" if n != n else round(n, 3)])
+        self._ffh.flush()
+
+    def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None,
+              force_n=None):
         if (frame.shape[1], frame.shape[0]) != self.full_size or overlay.shape[:2] != frame.shape[:2]:
             raise FrameSizeChanged(f"The picture size changed from {self.full_size[0]}x{self.full_size[1]} to "
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
         if self._t0 is None:
             self._t0 = t
+            if self._force_pending:
+                self._write_force_rows(self._force_pending)
+                self._force_pending = []
         if self._prev_t is not None:
             dt = t - self._prev_t
             if len(self._dts) >= 5 and dt > max(3.0 * statistics.median(self._dts), 0.15):
@@ -178,7 +226,9 @@ class TrialRecorder:
             row += [_num(a.raw_value), _num(a.reference), _num(a.raw_deviation), ok]       # unsmoothed values
         row.append(0 if oks else 1)
         row.append(event or "")
-        row.append(_num(scale_px_per_cm, 4))        # live ruler scale this frame (blank: no ruler marked, or a ruler dot lost)
+        row.append(_num(scale_px_per_cm, 4))        # ruler scale (fixed; blank: no ruler marked)
+        if self.with_force:
+            row.append(_num(force_n, 3))
         if self.with_pull:                          # angle of pull / moment arm; blank when the strap, anchor or segment dots are lost
             row += [_num((pull or {}).get(c), 2) for c in PULL_COLUMNS]
         row.append("" if source_frame is None else int(source_frame))
@@ -198,14 +248,12 @@ class TrialRecorder:
 
     def close(self, meta):
         errors = []
-        self._video.q.put(None)                                # the writer thread finishes everything queued, then stops
-        self._video.join(timeout=120)
-        if self._video.is_alive():
+        if not self._video.finish():                           # the writer threads finish everything queued, then stop
             errors.append("video writer: did not finish within 2 minutes")
         if self._video.error is not None:
             errors.append(f"video writer: {self._video.error}")
         closers = [("raw video", self._raw.release)] + ([("overlay video", self._ovl.release)] if self._ovl is not None else []) \
-            + [("csv", self._fh.close)]
+            + [("csv", self._fh.close)] + ([("force csv", self._ffh.close)] if self._ffh is not None else [])
         for what, fn in closers:
             try:
                 fn()

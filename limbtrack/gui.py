@@ -14,12 +14,13 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
+                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTabWidget,
                                QListWidget, QVBoxLayout, QWidget)
 
 from . import privacy
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
+from .force import CALIBRATION_FILE, ForceCalibration, ForceError, NiDaqForce, SimulatedForce
 from .recorder import count_trials
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
@@ -644,6 +645,7 @@ class LiveTab(QWidget):
         self.trace_mode = NoWheelComboBox()
         self.trace_mode.addItem("Main angle, last 15 s", "main")
         self.trace_mode.addItem("Drift from set position, all joints", "drift")
+        self.trace_mode.addItem("Force, last 15 s (when connected)", "force")
         self.trace = pg.PlotWidget()
         self.trace.setMinimumHeight(170)
         self.trace.setMaximumHeight(230)
@@ -656,6 +658,47 @@ class LiveTab(QWidget):
         self.trace_timer = QTimer(self)
         self.trace_timer.timeout.connect(self.update_trace)
         self.trace_timer.start(100)
+
+        # --- force: a load cell through a DAQ, sampled on its own thread (limbtrack/force.py)
+        self.force_source = None
+        self.force_cal_path = None             # where the calibration is kept (set by the main window)
+        self._force_msg = ""
+        self.force_kind = NoWheelComboBox()
+        for label, k in (("Off", "off"), ("NI DAQ (load cell)", "ni"), ("Simulated (test, no hardware)", "simulated")):
+            self.force_kind.addItem(label, k)
+        self.force_dev = NoWheelComboBox()
+        self.force_dev.setEditable(True)
+        self.force_dev.addItem("Dev1")
+        self.force_chan = NoWheelComboBox()
+        for i in range(8):
+            self.force_chan.addItem(f"ai{i}")
+        self.force_term = NoWheelComboBox()
+        self.force_term.addItem("Differential (ai0 and ai4)", "differential")
+        self.force_term.addItem("Single-ended", "single-ended")
+        self.btn_force_scan = QPushButton("Scan DAQ devices")
+        self.btn_force_scan.clicked.connect(self.scan_force_devices)
+        self.btn_force = QPushButton("Connect")
+        self.btn_force.clicked.connect(self.toggle_force)
+        self.btn_force_zero = QPushButton("Zero (nothing on the sensor)")
+        self.btn_force_zero.clicked.connect(self.zero_force)
+        self.btn_force_cal = QPushButton("Calibrate with a known weight...")
+        self.btn_force_cal.clicked.connect(self.calibrate_force)
+        self.force_label = QLabel("Force: not connected")
+        self.force_label.setStyleSheet(BIG)
+        self.force_info = QLabel("")
+        self.force_info.setWordWrap(True)
+        fc = QGroupBox("Force (load cell through the DAQ)")
+        fcf = QFormLayout(fc)
+        fcf.addRow("Source", self.force_kind)
+        fcf.addRow("Device", self.force_dev)
+        fcf.addRow("Input", self.force_chan)
+        fcf.addRow("Wiring", self.force_term)
+        fcf.addRow(self.btn_force_scan)
+        fcf.addRow(self.btn_force)
+        fcf.addRow(self.force_label)
+        fcf.addRow(self.btn_force_zero)
+        fcf.addRow(self.btn_force_cal)
+        fcf.addRow(self.force_info)
 
         # --- session plan: every position of the protocol with the trials already saved for this participant
         self.plan = QListWidget()
@@ -686,7 +729,7 @@ class LiveTab(QWidget):
             "Hide advanced" if on else "Show advanced: landmarks, three-point angle")))
 
         side = QVBoxLayout()
-        for g in (plan_box, mk, rc, tg, src, cs, sc, pv, self.btn_adv, self.adv_body):
+        for g in (plan_box, mk, rc, tg, src, cs, fc, sc, pv, self.btn_adv, self.adv_body):
             side.addWidget(g)
         side.addStretch(1)
         side_w = QWidget()
@@ -726,6 +769,7 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=self.btn_fwd.click)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
+        self.update_force_box()                  # button states right away, not after the first timer tick
         self.timer.start(200)
         self.on_test_changed()
         names = camera_names()                      # names only; no camera is opened
@@ -1064,11 +1108,30 @@ class LiveTab(QWidget):
                 self.update_camera_info()
 
     # ------------------------------------------------------- live trace
+    def _draw_force_trace(self):
+        src = self.force_source
+        if src is None:
+            return
+        t, v = src.recent(15.0)
+        cal = src.calibration.calibrated
+        y = src.calibration.to_newton(v) if cal else v
+        self._trace_items.append(self.trace.plot(t, y, pen=pg.mkPen((220, 60, 60), width=2), name="Force (N)" if cal else "Force (V)"))
+        self.trace.setLabel("left", "N" if cal else "V")
+        self.trace.setXRange(-15, 0, padding=0)
+        if y.size and np.isfinite(y).any():
+            lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+            pad = 0.1 * max(hi - lo, 1.0 if cal else 0.01)
+            self.trace.setYRange(lo - pad, hi + pad, padding=0)
+
     def update_trace(self):
-        h = self.engine.history(15.0)
         for it in self._trace_items:
             self.trace.removeItem(it)
         self._trace_items = []
+        if self.trace_mode.currentData() == "force":
+            self._draw_force_trace()
+            return
+        self.trace.setLabel("left", "deg")
+        h = self.engine.history(15.0)
         if h is None or self.worker is None:
             return
         tol, ntol, target = h["tolerance"], h["neighbour_tolerance"], h["target"]
@@ -1181,9 +1244,7 @@ class LiveTab(QWidget):
                                      else "No scale set. Lengths in centimetres need a ruler in the picture.")
             self.scale_label.setStyleSheet("")
             return
-        live = sc.live_px_per_cm()
-        text = f"Scale {sc.px_per_cm:.2f} px/cm (ruler {sc.ref_px:.0f} px = {sc.length_cm:g} cm)"
-        text += f"; now {live:.2f} px/cm" if live is not None else "; ruler dot LOST"
+        text = f"Scale {sc.px_per_cm:.2f} px/cm (ruler {sc.ref_px:.0f} px = {sc.length_cm:g} cm). Fixed: mark it again if the camera or ruler moves."
         problems = sc.problems()
         if problems:
             text += "\n" + "\n".join(problems)
@@ -1194,6 +1255,140 @@ class LiveTab(QWidget):
                 text += "\nTOO SMALL: " + ", ".join(f"{self.engine.test.dot_title(n)} {v:.1f} cm" for n, v in small.items())
         self.scale_label.setText(text)
         self.scale_label.setStyleSheet("color: #d97706; font-weight: bold;" if (problems or small) else "")
+
+    # ------------------------------------------------------------ force
+    def scan_force_devices(self):
+        found = NiDaqForce.devices()
+        if not found:
+            self._force_msg = "No DAQ device found (is the USB cable connected and the NI-DAQmx driver installed?)."
+            self.update_force_box()
+            return
+        self.force_dev.clear()
+        for name, product, chans in found:
+            self.force_dev.addItem(name)
+        self._force_msg = "Found: " + ", ".join(f"{n} ({p})" for n, p, _ in found)
+        self.update_force_box()
+
+    def toggle_force(self):
+        if self.force_source is not None:
+            self.disconnect_force()
+        else:
+            self.connect_force()
+
+    def connect_force(self):
+        if self.engine.rec is not None:
+            self.say("Stop recording before connecting the force.")
+            return
+        kind = self.force_kind.currentData()
+        if kind == "off":
+            self._force_msg = "Choose a source first (NI DAQ, or Simulated to try the program without hardware)."
+            self.update_force_box()
+            return
+        if kind == "ni":
+            src = NiDaqForce(device=self.force_dev.currentText().strip(), channel=self.force_chan.currentText(),
+                             terminal=self.force_term.currentData())
+            if self.force_cal_path is not None and Path(self.force_cal_path).exists():
+                src.calibration = ForceCalibration.load(self.force_cal_path)
+        else:
+            src = SimulatedForce()
+        try:
+            src.start()
+        except ForceError as e:
+            self._force_msg = str(e)
+            self.update_force_box()
+            return
+        try:
+            self.engine.force = src
+        except RuntimeError as e:
+            src.stop()
+            self.say(str(e))
+            return
+        self.force_source = src
+        self._force_msg = ""
+        self.update_force_box()
+
+    def disconnect_force(self):
+        if self.engine.rec is not None:
+            self.say("Stop recording before disconnecting the force.")
+            return
+        src, self.force_source = self.force_source, None
+        self.engine.force = None
+        if src is not None:
+            src.stop()
+        self._force_msg = ""
+        self.update_force_box()
+
+    def _save_force_calibration(self):
+        src = self.force_source
+        if src is not None and src.kind != "simulated" and self.force_cal_path is not None:
+            try:
+                src.calibration.save(self.force_cal_path)
+            except OSError as e:
+                self._force_msg = f"The calibration could not be saved: {e}"
+
+    def zero_force(self):
+        src = self.force_source
+        if src is None:
+            return
+        why = src.zero()
+        if why:
+            self._force_msg = why
+        else:
+            self._save_force_calibration()
+            self._force_msg = f"Zero set: {src.calibration.offset_v:+.4f} V is now 0 N."
+        self.update_force_box()
+
+    def calibrate_force(self):
+        src = self.force_source
+        if src is None:
+            return
+        if src.calibration.zero_v is None:
+            self._force_msg = "Press 'Zero' first, with nothing on the sensor."
+            self.update_force_box()
+            return
+        mass, ok = QInputDialog.getDouble(self, "Known weight", "Mass that is on the sensor now (kg).\nKeep it still while it measures:",
+                                          5.0, 0.01, 1000.0, 2)
+        if not ok:
+            return
+        why = src.calibrate(mass)
+        if why:
+            self._force_msg = why
+        else:
+            self._save_force_calibration()
+            self._force_msg = f"Calibrated with {mass:g} kg: {src.calibration.n_per_v:.2f} N per volt."
+        self.update_force_box()
+
+    def update_force_box(self):
+        """Read-out, button states and the calibration line (called often; cheap)."""
+        src, recording = self.force_source, self._rec_started is not None
+        connected = src is not None
+        for w in (self.force_kind, self.force_dev, self.force_chan, self.force_term, self.btn_force_scan):
+            w.setEnabled(not connected and not recording)
+        self.btn_force.setEnabled(not recording)
+        self.btn_force.setText("Disconnect" if connected else "Connect")
+        self.btn_force_zero.setEnabled(connected and not recording)
+        self.btn_force_cal.setEnabled(connected and not recording)
+        warn = False
+        if not connected:
+            self.force_label.setText("Force: not connected")
+            info = self._force_msg
+            warn = bool(info)
+        else:
+            if src.error:
+                self.force_label.setText("FORCE LOST")
+                info, warn = src.error, True
+            else:
+                v, n = src.latest_volts(), src.latest_newtons()
+                self.force_label.setText("Force: waiting..." if v is None else f"Force {n:.1f} N" if n is not None else f"Force {v:+.4f} V")
+                cal = src.calibration
+                info = (f"Calibrated: {cal.n_per_v:.2f} N per volt, zero {cal.offset_v:+.4f} V ({cal.method})." if cal.calibrated else
+                        "Not calibrated: values are volts. Zero with nothing on the sensor, then calibrate with a known weight.")
+                if self._force_msg:
+                    info = self._force_msg + "\n" + info
+                    warn = True
+        if info != self.force_info.text():
+            self.force_info.setText(info)
+        self.force_info.setStyleSheet("color: #d97706; font-weight: bold;" if warn else "")
 
     # ------------------------------------------------------------ session plan
     def _plan_text(self, key, tgt):
@@ -1466,6 +1661,7 @@ class LiveTab(QWidget):
 
     def refresh_status(self):
         recording = self._rec_started is not None
+        self.update_force_box()
         self.plan.setEnabled(not recording)
         for w in (self.btn_crop, self.btn_mask, self.btn_priv_clear, self.btn_folder):
             w.setEnabled(not recording)
@@ -1524,6 +1720,8 @@ class LiveTab(QWidget):
         if self.btn_rec.isChecked():
             self.toggle_record(force_stop=True)
         self.stop_camera()
+        if self.force_source is not None:                # release the DAQ so other programs can use it
+            self.disconnect_force()
 
 
 class MainWindow(QWidget):
@@ -1545,6 +1743,7 @@ class MainWindow(QWidget):
         self.live = LiveTab(self.engine, folder)
         self.review = ReviewTab(folder)
         self.live.folder_changed.connect(self.on_folder_changed)
+        self.live.force_cal_path = Path(root) / CALIBRATION_FILE
         tabs.addTab(self.live, "Live")
         tabs.addTab(self.review, "Review")
         lay = QVBoxLayout(self)
