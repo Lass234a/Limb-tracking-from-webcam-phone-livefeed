@@ -658,7 +658,7 @@ class LiveTab(QWidget):
         self._trace_items = []
         self.trace_timer = QTimer(self)
         self.trace_timer.timeout.connect(self.update_trace)
-        self.trace_timer.start(100)
+        self.trace_timer.start(200)              # 5 redraws a second: each costs the window thread, and with it the picture thread
 
         # --- force: a load cell through a DAQ, sampled on its own thread (limbtrack/force.py)
         self.force_source = None
@@ -676,6 +676,13 @@ class LiveTab(QWidget):
         self.force_term = NoWheelComboBox()
         self.force_term.addItem("Differential (ai0 and ai4)", "differential")
         self.force_term.addItem("Single-ended", "single-ended")
+        self.force_smooth_combo = NoWheelComboBox()
+        for label, sec in (("Raw (no smoothing)", 0.0), ("20 ms", 0.02), ("100 ms", 0.1), ("200 ms", 0.2), ("500 ms", 0.5)):
+            self.force_smooth_combo.addItem(label, sec)
+        self.force_smooth_combo.setCurrentIndex(2)
+        self.force_smooth_combo.setToolTip("What the read-out and the trace show (display only; the files hold every raw sample). A multiple of 20 ms "
+                                           "removes 50 Hz mains hum exactly.")
+        self.force_smooth_combo.currentIndexChanged.connect(self.on_force_smoothing)
         self.btn_force_scan = QPushButton("Scan DAQ devices")
         self.btn_force_scan.clicked.connect(self.scan_force_devices)
         self.btn_force = QPushButton("Connect")
@@ -694,6 +701,7 @@ class LiveTab(QWidget):
         fcf.addRow("Device", self.force_dev)
         fcf.addRow("Input", self.force_chan)
         fcf.addRow("Wiring", self.force_term)
+        fcf.addRow("Display smoothing", self.force_smooth_combo)
         fcf.addRow(self.btn_force_scan)
         fcf.addRow(self.btn_force)
         fcf.addRow(self.force_label)
@@ -1274,6 +1282,10 @@ class LiveTab(QWidget):
         self._force_msg = "Found: " + ", ".join(f"{n} ({p})" for n, p, _ in found)
         self.update_force_box()
 
+    def on_force_smoothing(self, _=None):
+        if self.force_source is not None:
+            self.force_source.smooth_s = float(self.force_smooth_combo.currentData())
+
     def toggle_force(self):
         if self.force_source is not None:
             self.disconnect_force()
@@ -1309,6 +1321,7 @@ class LiveTab(QWidget):
             self.say(str(e))
             return
         self.force_source = src
+        src.smooth_s = float(self.force_smooth_combo.currentData())
         self._force_msg = ""
         self.update_force_box()
 

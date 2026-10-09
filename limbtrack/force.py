@@ -34,11 +34,42 @@ MIN_CAL_SPAN_V = 0.005            # a known load must move the signal by at leas
 CALIBRATION_FILE = "force_calibration.json"
 ALIGN_WINDOW_S = 20.0
 CLIP_FRACTION = 0.99                # a sample this close to +-range is 'at the limit'
+SMOOTH_DEFAULT_S = 0.1              # display and analysis smoothing: a moving average of this length (a multiple of 20 ms removes 50 Hz hum)
+MAINS_HZ = 50.0
 MAX_STEADY_SD_V = 0.02            # zero and calibration readings must be this steady (standard deviation)
 
 
 class ForceError(RuntimeError):
     """The force source could not be opened or stopped delivering; the message says what to do."""
+
+
+# ------------------------------------------------------------------------------------------- smoothing and hum
+def smooth_signal(values, rate, window_s):
+    """Centred moving average of `window_s` seconds (edges: the end values are repeated). 0 or one sample = unchanged.
+    At 1000 samples per second a window that is a multiple of 20 ms (20, 40, 100, 200 ms ...) removes 50 Hz mains hum and its
+    harmonics exactly, because it then covers a whole number of hum cycles. The saved samples are never smoothed."""
+    values = np.asarray(values, dtype=np.float64)
+    n = int(round(window_s * rate))
+    if n <= 1 or values.size == 0:
+        return values.copy()
+    n = min(n, values.size)
+    left = n // 2
+    padded = np.pad(values, (left, n - 1 - left), mode="edge")
+    c = np.cumsum(np.insert(padded, 0, 0.0))
+    return (c[n:] - c[:-n]) / n
+
+
+def mains_amplitude(volts, rate, mains_hz=MAINS_HZ):
+    """Amplitude (volts, peak) of the mains-frequency part of a signal, by a lock-in over a whole number of mains cycles.
+    NaN when the signal is shorter than 5 cycles."""
+    x = np.asarray(volts, dtype=np.float64)
+    cycles = int(x.size * mains_hz / rate)
+    if cycles < 5:
+        return math.nan
+    n = int(round(cycles * rate / mains_hz))
+    seg = x[:n] - x[:n].mean()
+    t = np.arange(n) / rate
+    return float(2.0 * abs(np.mean(seg * np.exp(-2j * np.pi * mains_hz * t))))
 
 
 # ------------------------------------------------------------------------------------------- calibration
@@ -109,15 +140,17 @@ class ClockAligner:
 
     def __init__(self, rate, window_s=ALIGN_WINDOW_S):
         self.rate, self.window_s = float(rate), window_s
-        self._recent = deque()          # (arrival, arrival - n_end / rate)
+        self._mins = deque()            # (arrival, arrival - n_end / rate), increasing in the second number: the sliding-window minimum
         self.t0 = None
 
     def update(self, arrival, n_end):
         v = arrival - n_end / self.rate
-        self._recent.append((arrival, v))
-        while self._recent and self._recent[0][0] < arrival - self.window_s:
-            self._recent.popleft()
-        self.t0 = min(x[1] for x in self._recent)
+        while self._mins and self._mins[-1][1] >= v:
+            self._mins.pop()
+        self._mins.append((arrival, v))
+        while self._mins[0][0] < arrival - self.window_s:
+            self._mins.popleft()
+        self.t0 = self._mins[0][1]
         return self.t0
 
     def times(self, first_index, count):
@@ -144,6 +177,7 @@ class ForceSource:
         self._last_arrival = None
         self.frozen = False                       # set while a trial is recorded: zero and calibration cannot change then
         self.range_v = 10.0                       # the input range is +-range_v volts
+        self.smooth_s = SMOOTH_DEFAULT_S          # what the live read-out and trace show (display only; the files hold every raw sample)
         self.clipped_total = 0                    # samples at the very edge of the range (the signal may be cut off there)
         self._last_clip = None
 
@@ -220,9 +254,21 @@ class ForceSource:
         """True if the signal touched the edge of the input range within the last second."""
         return self._last_clip is not None and time.perf_counter() - self._last_clip < 1.0
 
-    def latest_volts(self):
+    def _tail(self, n):
+        """The last n raw voltages (fewer at the start)."""
         with self._lock:
-            return float(self._chunks[-1][1][-1]) if self._chunks else None
+            parts, have = [], 0
+            for _, v in reversed(self._chunks):
+                parts.append(v)
+                have += v.size
+                if have >= n:
+                    break
+        return np.concatenate(parts[::-1])[-n:] if parts else np.empty(0)
+
+    def latest_volts(self):
+        """The newest voltage, smoothed over smooth_s for the read-out (0 = the raw newest sample)."""
+        v = self._tail(max(1, int(round(self.smooth_s * self.rate))))
+        return float(v.mean()) if v.size else None
 
     def latest_newtons(self):
         v = self.latest_volts()
@@ -243,6 +289,7 @@ class ForceSource:
         """(seconds before now - negative, volts) of roughly the last `seconds`, thinned for plotting."""
         now = time.perf_counter()
         t, v = self.samples_between(now - seconds, now + 1.0)
+        v = smooth_signal(v, self.rate, self.smooth_s)                 # before thinning, so the hum does not alias into the picture
         if t.size > 1500:
             step = int(math.ceil(t.size / 1500))
             t, v = t[::step], v[::step]

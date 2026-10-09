@@ -3,6 +3,18 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.6.0 - 2026-10-09
+
+From the first force and strap tests (P12).
+
+### Force
+- **Smoothing**: a centred moving average (default 100 ms, a multiple of 20 ms so that 50 Hz mains hum is removed exactly) for the live read-out, the live trace, Review's curve and all Review force numbers. The saved files keep every raw sample. The first recordings had about 90 mV of 50 Hz hum on a 1 V signal; the raw single-sample maximum was 8 to 11 % above the smoothed peak.
+- **Review**: smoothing box, the 50 Hz hum measured and warned about, the raw peak listed next to the smoothed one, and a button *Window = force above half of peak* (the MVIC markers were 4 to 5 s early in both trials). The export has the smoothing length, the hum share and the raw peak.
+
+### Speed (live rate with a stream, 7 dots, the strap lost, force and the window on; replayed on this computer)
+- 9 to 12 fps before, 17 fps now (20 fps with the live trace off). The program's own work per picture fell from 49-74 ms to 36 ms.
+- Blob measuring only looks at the pixels that belong to blobs; extra higher-threshold searches are skipped when no blob near the dot is big enough to hold it (exact: a blob at a higher threshold always lies inside a blob at the base threshold); the force clock estimate no longer scans its whole window for every chunk; the live trace redraws 5 times a second instead of 10.
+
 ## 0.5.3 - 2026-10-09
 - A camera that does not open within 20 s is now reported with a plain message instead of leaving the program waiting silently. Found with a DroidCam Client that was running but not connected to the phone: the camera was listed, DirectShow could not open it, and the Media Foundation open then hung. The message says the usual cause (the phone's PC program is not connected to the phone; its own preview must be moving) and a camera that finally opens late is released. `Check_phone_camera.bat` uses the same wait and no longer hangs; it hides the driver's warning lines.
 - 'The camera stopped delivering frames' now adds the same advice for phone cameras.

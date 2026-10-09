@@ -359,3 +359,79 @@ def test_review_applies_the_saved_calibration_on_request_and_exports_what_was_us
     assert "applied later" in summary[0]["force_calibration_note"] and summary[0]["picture_delay_s"] == "0.0"
     saved_volts = [float(r["volts"]) for r in csv.DictReader(open(paths["force.csv"], newline=""))]
     assert max(saved_volts) > 3.5                                              # the file on disk still holds the volts, unchanged
+
+
+# ------------------------------------------------------------------------------------------ smoothing, mains hum, window from the force
+def humming_trial(tmp_path, hum=0.09):
+    """A recording whose force file is replaced by a known signal: rest, a light push, a hold at 1.0 V, release; plus 50 Hz hum and noise."""
+    eng, paths = recording(tmp_path)
+    tr = Trial(paths["meta.json"])
+    t = np.arange(-1.0, 16.0, 0.001)
+    clean = np.interp(t, [-1, 3, 3.05, 8, 8.6, 13, 13.5, 16], [0.1, 0.1, 0.3, 0.3, 1.0, 1.0, 0.1, 0.1])   # rest, a light push, the hold at 1.0 V, release
+    rng = np.random.RandomState(1)
+    v = clean + hum * np.sin(2 * np.pi * 50.0 * t) + rng.normal(0, 0.01, t.size)
+    tr.force_t, tr.force_v, tr.force_n = t, v, np.full(t.size, np.nan)
+    return tr, clean
+
+
+def test_a_moving_average_that_is_a_multiple_of_20_ms_removes_50_hz_hum_exactly():
+    from limbtrack.force import smooth_signal
+    t = np.arange(0, 3, 0.001)
+    x = 1.0 + 0.09 * np.sin(2 * np.pi * 50 * t + 0.7)
+    for ms in (20, 40, 100, 200):
+        y = smooth_signal(x, 1000.0, ms / 1000.0)
+        assert np.abs(y[300:-300] - 1.0).max() < 1e-9, ms
+    assert np.abs(smooth_signal(x, 1000.0, 0.03)[300:-300] - 1.0).max() > 0.01          # 30 ms is not a whole number of hum cycles
+    assert np.array_equal(smooth_signal(x, 1000.0, 0.0), x) and smooth_signal(x, 1000.0, 0.1).shape == x.shape
+    edge = smooth_signal(np.array([5.0, 5.0, 5.0, 5.0, 5.0]), 1000.0, 0.003)
+    assert np.allclose(edge, 5.0)                                                      # the edges do not drift toward zero
+
+
+def test_the_hum_amplitude_is_measured():
+    from limbtrack.force import mains_amplitude
+    t = np.arange(0, 4, 0.001)
+    x = 0.3 + 0.2 * t + 0.09 * np.sin(2 * np.pi * 50 * t + 1.1) + 0.01 * np.random.RandomState(0).randn(t.size)
+    assert mains_amplitude(x, 1000.0) == pytest.approx(0.09, rel=0.08)
+    assert np.isnan(mains_amplitude(x[:50], 1000.0))
+
+
+def test_smoothing_lowers_the_peak_of_a_noisy_signal_and_review_reports_the_hum(tmp_path):
+    tr, clean = humming_trial(tmp_path)
+    tr.force_smooth_s = 0.0
+    raw = tr.force_summary(8.0, 13.0)
+    tr.force_smooth_s = 0.1
+    smooth = tr.force_summary(8.0, 13.0)
+    assert raw["peak"] > smooth["peak"] + 0.05                                          # single noisy samples overstate the peak
+    assert smooth["peak"] == pytest.approx(1.0, abs=0.01) and smooth["raw_peak"] == pytest.approx(raw["peak"])
+    assert smooth["mains_hum_v"] == pytest.approx(0.09, rel=0.08) and 11 < smooth["mains_hum_pct_of_peak"] < 15        # 0.09 V of a 0.7 V rise above the rest before the window
+    assert smooth["smoothing_s"] == 0.1
+
+
+def test_the_window_from_the_force_ignores_a_light_first_push_and_early_markers(tmp_path):
+    tr, clean = humming_trial(tmp_path)
+    w = tr.force_window()
+    assert w is not None and w[0] == pytest.approx(8.3, abs=0.2) and w[1] == pytest.approx(13.2, abs=0.2)     # the hold, not 3-6 s
+    early = tr.force_window(0.10)
+    assert early[0] < 3.5                                                               # a low threshold would include the first push
+    quiet, _ = humming_trial(tmp_path / "q", hum=0.0)
+    quiet.force_v = np.full_like(quiet.force_v, 0.1) + np.random.RandomState(2).normal(0, 0.002, quiet.force_v.size)
+    assert quiet.force_window() is None                                                 # no contraction: no window
+
+
+def test_the_live_read_out_is_smoothed_but_the_samples_stay_raw():
+    from limbtrack.force import ForceSource
+    src = ForceSource()
+    src.calibration = ForceCalibration(offset_v=0.0, n_per_v=10.0)
+    t = np.arange(0, 1.0, 0.001)
+    v = 1.0 + 0.09 * np.sin(2 * np.pi * 50 * t)
+    for k in range(0, 1000, 10):
+        src._push(v[k:k + 10], time.perf_counter())
+    src.smooth_s = 0.0
+    raw_values = [src.latest_volts() for _ in range(1)]
+    src.smooth_s = 0.1
+    assert src.latest_volts() == pytest.approx(1.0, abs=1e-6) and src.latest_newtons() == pytest.approx(10.0, abs=1e-5)
+    _, shown = src.recent(2.0)
+    assert np.abs(shown[100:-100] - 1.0).max() < 1e-6                                   # the trace shows the smoothed signal
+    _, stored = src.samples_between(0, float("inf"))
+    assert stored.size == 1000 and np.abs(stored - v).max() < 1e-12                       # what is saved is the raw signal
+    assert abs(raw_values[0] - 1.0) <= 0.0901

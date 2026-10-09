@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
 
 from . import overlay, privacy
 from .displacement import window_displacements
-from .force import ForceCalibration
+from .force import SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
 # PARKED-GHOST: from .geometry import anchored_ghost
@@ -93,6 +93,7 @@ class Trial:
         self._pos = -2
         # force (load cell through the DAQ): every sample, on the same time axis as the video (seconds after the first picture)
         self.force_t = self.force_v = self.force_n = None
+        self.force_smooth_s = SMOOTH_DEFAULT_S        # moving average for the force curve and numbers (a multiple of 20 ms removes 50 Hz hum)
         fmeta = self.meta.get("force") or {}
         self.force_cal = fmeta.get("calibration")
         self.force_cal_note = ("calibration recorded with the trial" if (self.force_cal or {}).get("n_per_v") else
@@ -171,12 +172,50 @@ class Trial:
     def has_force(self):
         return self.force_t is not None and len(self.force_t) > 0
 
-    def force_summary(self, t0, t1, picture_delay=0.0):
-        """The force in the window: peak and when, the plateau mean, the rest level before, and the main joint angle at the peak
-        (the two candidate numbers for a model input: angle at peak force, and plateau mean angle). None without force."""
+    def force_signal(self):
+        """(unit, smoothed values, smoothed volts): newtons if calibrated (else volts), smoothed with the chosen moving average.
+        The files hold every raw sample; smoothing is applied here, for the plot and the numbers."""
+        rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
+        volts = smooth_signal(self.force_v, rate, self.force_smooth_s)
+        if np.all(np.isnan(self.force_n)):
+            return "V", volts, volts
+        return "N", smooth_signal(self.force_n, rate, self.force_smooth_s), volts
+
+    def force_hum(self):
+        """The 50 Hz mains interference on the raw voltage (volts, peak) or NaN."""
+        rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
+        return mains_amplitude(self.force_v, rate)
+
+    def force_window(self, fraction=0.5):
+        """(start, end) in seconds of the hold found from the force itself: the stretch around the peak where the smoothed
+        force is above rest + fraction x (peak - rest) (default: half way, so a slow build-up or a first light push is left out). The MVIC markers are pressed by hand and can be seconds off; this
+        follows the force. None without force or without a clear contraction."""
         if not self.has_force():
             return None
-        unit, y = ("N", self.force_n) if not np.all(np.isnan(self.force_n)) else ("V", self.force_v)
+        unit, y, _ = self.force_signal()
+        if np.all(np.isnan(y)):
+            return None
+        base = float(np.nanpercentile(y, 10))
+        k = int(np.nanargmax(y))
+        if y[k] - base < (0.01 if unit == "V" else 1.0):             # less than 10 mV (or 1 N) above rest: no contraction
+            return None
+        thr = base + fraction * (y[k] - base)
+        above = y >= thr
+        a = k
+        while a > 0 and above[a - 1]:
+            a -= 1
+        b = k
+        while b < len(y) - 1 and above[b + 1]:
+            b += 1
+        return float(self.force_t[a]), float(self.force_t[b])
+
+    def force_summary(self, t0, t1, picture_delay=0.0):
+        """The force in the window: peak and when, the plateau mean, the rest level before, and the main joint angle at the peak
+        (the two candidate numbers for a model input: angle at peak force, and plateau mean angle). None without force.
+        All force numbers come from the smoothed signal (the raw peak of a noisy signal is too high)."""
+        if not self.has_force():
+            return None
+        unit, y, yv = self.force_signal()
         m = (self.force_t >= t0) & (self.force_t <= t1)
         if not m.any() or np.all(np.isnan(y[m])):
             return None
@@ -187,6 +226,7 @@ class Trial:
         rm = (self.force_t >= t0 - REST_SECONDS) & (self.force_t < t0)
         plateau = float(np.nanmean(y[pm])) if pm.any() else math.nan
         rest = float(np.nanmean(y[rm])) if rm.any() else math.nan
+        raw = self.force_n if unit == "N" else self.force_v
         main = next((a for a in self.angle_defs if a.primary), self.angle_defs[0] if self.angle_defs else None)
         angle = math.nan
         if main is not None:
@@ -197,8 +237,14 @@ class Trial:
                 i = int(np.argmin(np.abs(self.t - (tw[k] + picture_delay))))
                 vals = self.deg[main.name][i:i + 1]
             angle = float(np.nanmean(vals)) if vals.size and not np.all(np.isnan(vals)) else math.nan
+        hum = self.force_hum()
+        vpeak = float(np.nanmax(yv[m]))
+        vrest = float(np.nanmean(yv[rm])) if rm.any() else float(np.nanpercentile(yv, 10))
+        hum_pct = 100.0 * hum / max(abs(vpeak - vrest), 1e-9) if not math.isnan(hum) else math.nan
         return {"unit": unit, "peak": float(yw[k]), "t_peak_s": float(tw[k]), "plateau_mean": plateau, "rest_mean": rest,
                 "peak_minus_rest": float(yw[k]) - rest if not math.isnan(rest) else math.nan,
+                "raw_peak": float(np.nanmax(raw[m])), "smoothing_s": self.force_smooth_s,
+                "mains_hum_v": hum, "mains_hum_pct_of_peak": hum_pct,
                 "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle, "picture_delay_s": picture_delay,
                 "samples_in_window": int(m.sum())}
 
@@ -377,6 +423,21 @@ class ReviewTab(QWidget):
         self.btn_apply_cal.setToolTip("Computes newtons from the recorded volts with the calibration in force_calibration.json (made after the "
                                       "recording). The volts in the files are never changed.")
         self.btn_apply_cal.clicked.connect(self.apply_force_calibration)
+        self.force_smooth = _NoWheelSpin()
+        self.force_smooth.setRange(0, 1000)
+        self.force_smooth.setDecimals(0)
+        self.force_smooth.setSingleStep(20)
+        self.force_smooth.setSuffix(" ms")
+        self.force_smooth.setValue(SMOOTH_DEFAULT_S * 1000)
+        self.force_smooth.setToolTip("Moving average for the force curve and for peak and plateau numbers. Use a multiple of 20 ms: that removes 50 Hz "
+                                     "mains hum exactly. 0 = raw samples. The saved files always hold the raw samples.")
+        self.force_smooth.valueChanged.connect(self.on_force_smoothing)
+        self.btn_force_win = QPushButton("Window = force above half of peak")
+        self.btn_force_win.setToolTip("Set the analysis window from the force itself: the stretch around the peak where the smoothed force is above half of the way from rest to peak (the hold). Use it when the MVIC markers were pressed early or late.")
+        self.btn_force_win.clicked.connect(self.snap_to_force)
+        erow.addWidget(QLabel("Force smoothing:"))
+        erow.addWidget(self.force_smooth)
+        erow.addWidget(self.btn_force_win)
         erow.addWidget(QLabel("Picture delay:"))
         erow.addWidget(self.picture_delay)
         erow.addWidget(self.btn_apply_cal)
@@ -423,6 +484,9 @@ class ReviewTab(QWidget):
                                    label=lab, labelOpts={"position": 0.95, "color": (90, 90, 90), "rotateAxis": (1, 0)})
             self.plot.addItem(line)
         self.btn_hold.setEnabled(tr.hold_window() is not None)
+        self.btn_force_win.setEnabled(tr.has_force())
+        self.force_smooth.setEnabled(tr.has_force())
+        tr.force_smooth_s = float(self.force_smooth.value()) / 1000.0
         self.window.setRegion(tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(tr.rows) - 1)
@@ -445,10 +509,16 @@ class ReviewTab(QWidget):
         if not tr.has_force():
             self.plot.hideAxis("right")
             return
-        unit, y = ("N", tr.force_n) if not np.all(np.isnan(tr.force_n)) else ("V", tr.force_v)
-        curve = pg.PlotDataItem(tr.force_t, y, pen=pg.mkPen((220, 60, 60), width=1.5))
-        curve.setDownsampling(auto=True, method="peak")          # thins what is drawn but keeps the peaks
-        self.force_view.addItem(curve)
+        unit, ys, _ = tr.force_signal()
+        raw = tr.force_n if unit == "N" else tr.force_v
+        faint = pg.PlotDataItem(tr.force_t, raw, pen=pg.mkPen((220, 60, 60, 60), width=1))          # every raw sample, faint
+        faint.setDownsampling(auto=True, method="peak")
+        self.force_view.addItem(faint)
+        if tr.force_smooth_s > 0:
+            curve = pg.PlotDataItem(tr.force_t, ys, pen=pg.mkPen((220, 60, 60), width=2))             # the smoothed curve the numbers come from
+            curve.setDownsampling(auto=True, method="peak")
+            self.force_view.addItem(curve)
+        y = raw
         lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
         pad = 0.05 * max(hi - lo, 1e-9)
         self.force_view.setYRange(lo - pad, hi + pad, padding=0)
@@ -508,6 +578,18 @@ class ReviewTab(QWidget):
         if self.trial is not None and index >= 0:
             self.slider.setValue(int(self.event_combo.itemData(index)))
 
+    def on_force_smoothing(self, ms):
+        if self.trial is None:
+            return
+        self.trial.force_smooth_s = float(ms) / 1000.0
+        self._show_force_curve(self.trial)
+        self.update_summary()
+
+    def snap_to_force(self):
+        w = self.trial.force_window() if self.trial is not None else None
+        if w:
+            self.window.setRegion(w)
+
     def snap_window(self):
         w = self.trial.hold_window() if self.trial is not None else None
         if w:
@@ -538,12 +620,17 @@ class ReviewTab(QWidget):
         if fs is not None:
             u = fs["unit"]
             fmt = lambda v: "-" if math.isnan(v) else f"{v:.1f}"                                  # noqa: E731
-            lines += ["", f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}):",
+            sm = f"{fs['smoothing_s'] * 1000:.0f} ms moving average" if fs["smoothing_s"] > 0 else "raw samples"
+            lines += ["", f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}; {sm}):",
                       f"  peak {fmt(fs['peak'])} at {fs['t_peak_s']:.2f} s   |   plateau mean {fmt(fs['plateau_mean'])}   |   "
-                      f"rest before {fmt(fs['rest_mean'])}   |   peak above rest {fmt(fs['peak_minus_rest'])}",
+                      f"rest before {fmt(fs['rest_mean'])}   |   peak above rest {fmt(fs['peak_minus_rest'])}"
+                      + (f"   |   raw single-sample max {fmt(fs['raw_peak'])}" if fs["smoothing_s"] > 0 else ""),
                       f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg   (plateau mean angle is in the table above"
                       + (f"; pictures read {fs['picture_delay_s']:+.3f} s after the peak" if fs["picture_delay_s"] else "") + ")",
                       f"  Force calibration: {self.trial.force_cal_note}"]
+            if not math.isnan(fs["mains_hum_pct_of_peak"]) and fs["mains_hum_pct_of_peak"] > 3.0:
+                lines.append(f"  50 Hz mains interference: {fs['mains_hum_v'] * 1000:.0f} mV = {fs['mains_hum_pct_of_peak']:.0f} % of the peak above rest "
+                             "(check shielding and grounding; a smoothing window that is a multiple of 20 ms removes it)")
         elif self.trial.has_force():
             lines.append("(force was recorded but there are no samples in this window)")
         if not self.trial.hold_window():
@@ -624,10 +711,12 @@ class ReviewTab(QWidget):
                      else "window as set (not the MVIC markers)"}
             fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
             fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg",
-                      "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note"]
+                      "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note", "force_smoothing_ms", "force_mains_hum_pct_of_peak",
+                      "force_raw_peak"]
             cal = self.trial.force_cal or {}
             fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"],
-                      fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note]
+                      fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note,
+                      fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"]]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))

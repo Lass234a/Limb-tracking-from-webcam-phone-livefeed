@@ -162,20 +162,17 @@ class DotTracker:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         if n <= 1:
             return []
-        lab = labels.ravel()
-        wts = enh.ravel().astype(np.float64)
-        ys, xs = np.divmod(np.arange(lab.size), labels.shape[1])
-        sw = np.bincount(lab, weights=wts, minlength=n)
-        sx = np.bincount(lab, weights=wts * xs, minlength=n)
-        sy = np.bincount(lab, weights=wts * ys, minlength=n)
-        out = []
-        for i in range(1, n):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area < MIN_BLOB_PIXELS or sw[i] <= 0:
-                continue
-            out.append((float(sx[i] / sw[i]), float(sy[i] / sw[i]), float(area),
-                        int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])))
-        return out
+        ys, xs = np.nonzero(mask)                   # only the pixels that belong to a blob (most of the picture does not)
+        lab = labels[ys, xs]
+        w = enh[ys, xs].astype(np.float64)
+        sw = np.bincount(lab, weights=w, minlength=n)
+        sx = np.bincount(lab, weights=w * xs, minlength=n)
+        sy = np.bincount(lab, weights=w * ys, minlength=n)
+        area = stats[:, cv2.CC_STAT_AREA]
+        keep = np.nonzero((area >= MIN_BLOB_PIXELS) & (sw > 0))[0]
+        keep = keep[keep > 0]                       # label 0 is the background
+        return list(zip((sx[keep] / sw[keep]).tolist(), (sy[keep] / sw[keep]).tolist(), area[keep].astype(np.float64).tolist(),
+                        stats[keep, cv2.CC_STAT_WIDTH].tolist(), stats[keep, cv2.CC_STAT_HEIGHT].tolist()))
 
     # --------------------------------------------------------------------- init
     def init_at(self, gray, x, y):
@@ -259,9 +256,9 @@ class DotTracker:
         x0, y0, roi = self._window(gray, cx0, cy0, reach + self.diam)
         best = None
 
-        def pick(enh, thr):
+        def pick(enh, blobs):
             found = None
-            for cx, cy, area, w, h in self._blobs(enh, thr):
+            for cx, cy, area, w, h in blobs:
                 if not (AREA_RANGE[0] * self.area <= area <= AREA_RANGE[1] * self.area):
                     continue
                 if max(w, h) > ASPECT_FACTOR * min(w, h) + ASPECT_EXTRA_PX:
@@ -286,17 +283,24 @@ class DotTracker:
         if roi.size:
             enh = self._enhance(roi, self.diam)
             thr = max(THRESHOLD_FRACTION * self.contrast, MIN_CONTRAST)
-            best = pick(enh, thr)
+            base_blobs = self._blobs(enh, thr)
+            best = pick(enh, base_blobs)
             if best is None or self._merged(best):
                 # Nothing fitting, or a blob that is too big or too long: the dot may have merged with a shadow, a finger or a
                 # strap.
                 # Search again with the threshold raised: the dot is darker (brighter) than what is attached to it.
+                # A blob at a higher threshold always lies inside a blob at the base threshold, and has to be big enough to be
+                # the dot: if no base blob near the dot is that big, the extra searches cannot find anything (saves most of
+                # their cost in a busy picture).
+                floor = AREA_RANGE[0] * self.area
+                could_hold = any(a >= floor and (x0 + cx - cx0) ** 2 + (y0 + cy - cy0) ** 2 <= (reach + max(w, h)) ** 2
+                                 for cx, cy, a, w, h in base_blobs)
                 peak_here = float(enh.max())
                 for frac in SEPARATE_FRACTIONS:
                     alt_thr = max(frac * self.contrast, thr)
-                    if peak_here <= alt_thr:
+                    if not could_hold or peak_here <= alt_thr:
                         break                  # nothing is that bright (or dark) here: a higher threshold cannot find anything
-                    alt = pick(enh, alt_thr)
+                    alt = pick(enh, self._blobs(enh, alt_thr))
                     if alt is not None and not self._merged(alt):
                         best = alt
                         break
