@@ -3,6 +3,14 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.7.0 - 2026-10-09
+
+### Review, easier to read and more to read from
+- New layout: the angle plot is full width, the force has its own strip under it on the same time axis (it used to share the plot, with a second axis and a thick raw band that hid the angle curve), and the numbers are split over four tabs: *Check*, *Angles*, *Force*, *Dots and pull*. The force controls are only shown for a trial with force.
+- **Check tab**: a go / no-go list for the trial in plain English (picture rate, whether the computer was the limit, lost dots, strap dot not seen, anchor wander, hold angle against target, joint drift in the hold, hum, range limit, calibration, MVIC marker against the force onset).
+- **Force tab** additions: onset, 10-90 % rise time, steepest rise, how long above 90 % of the peak, steadiness, and **torque (N.m)** from the force and the moment arm when the force is calibrated and a ruler scale and the anchor dot exist (the ankle dot stands in where the strap dot was not seen, and that is reported).
+- **Export all trials of this participant**: one summary CSV row per trial, with the 10 % repeatability check between trials of the same position.
+
 ## 0.6.0 - 2026-10-09
 
 From the first force and strap tests (P12).

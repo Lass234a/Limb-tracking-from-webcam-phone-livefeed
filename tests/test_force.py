@@ -343,7 +343,7 @@ def test_review_applies_the_saved_calibration_on_request_and_exports_what_was_us
     tab = ReviewTab(tmp_path)
     tab.force_cal_path = tmp_path / CALIBRATION_FILE
     tab.load(str(paths["meta.json"]))
-    assert "volts only" in tab.stats.text() and "not calibrated" in tab.stats.text()
+    assert "volts only" in tab.force_text.text() and "not calibrated" in tab.force_text.text()
     tab.apply_force_calibration()                                              # no calibration file yet: explained, nothing changes
     assert infos and "no calibration" in infos[-1].lower() or "There is no calibration" in infos[-1]
     cal = ForceCalibration()
@@ -352,7 +352,7 @@ def test_review_applies_the_saved_calibration_on_request_and_exports_what_was_us
     cal.method = "zero and 5 kg"
     cal.save(tab.force_cal_path)
     tab.apply_force_calibration()
-    assert "applied later" in tab.stats.text() and " N)" in tab.stats.text() or "Force in the window (N" in tab.stats.text()
+    assert "applied later" in tab.force_text.text() and "Force in the window (N" in tab.force_text.text()
     tab.export()
     summary = list(csv.DictReader(open(next(tmp_path.rglob("*_summary.csv")), newline="")))
     assert summary[0]["force_unit"] == "N" and float(summary[0]["force_n_per_v"]) == 100.0

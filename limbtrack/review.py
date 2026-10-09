@@ -10,11 +10,12 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QSplitter, QTabWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
                                QWidget)
 
 from . import overlay, privacy
 from .displacement import window_displacements
+from . import analysis
 from .force import SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
@@ -326,6 +327,22 @@ class Trial:
         return out
 
 
+class _TextPane(QTextEdit):
+    """A read-only text area for a block of numbers (monospace, no wrapping); setText and text work like a label's."""
+
+    def __init__(self, wrap=False):
+        super().__init__()
+        self.setReadOnly(True)
+        self.setLineWrapMode(QTextEdit.WidgetWidth if wrap else QTextEdit.NoWrap)      # tables stay in columns; prose wraps
+        self.setStyleSheet("font-family: Consolas, monospace;")
+
+    def setText(self, s):
+        self.setPlainText(s)
+
+    def text(self):
+        return self.toPlainText()
+
+
 class _NoWheelSpin(QDoubleSpinBox):
     """A spin box that ignores the mouse wheel (scrolling past it must not change the number)."""
 
@@ -341,7 +358,12 @@ class ReviewTab(QWidget):
 
         btn_open = QPushButton("Open trial...")
         btn_open.clicked.connect(self.open_dialog)
+        btn_session = QPushButton("Export all trials of this participant")
+        btn_session.setToolTip("One row per trial (force peak, plateau, the angle at the peak, torque if possible, checks) and whether two trials of the "
+                               "same position differ by more than 10 %. Saved as <participant>_session_summary.csv in the participant's folder.")
+        btn_session.clicked.connect(self.export_session)
         self.title = QLabel("Open a trial (choose a *_meta.json file in the recordings folder).")
+        self.title.setWordWrap(True)
         self.btn_play = QPushButton("Play")
         self.btn_play.setCheckable(True)
         self.btn_play.clicked.connect(self.toggle_play)
@@ -354,17 +376,27 @@ class ReviewTab(QWidget):
         btn_video.clicked.connect(self.export_overlay_video)
 
         self.video = QLabel()
-        self.video.setMinimumSize(560, 315)
+        self.video.setMinimumSize(480, 270)
         self.video.setAlignment(Qt.AlignCenter)
         self.video.setStyleSheet("background: black;")
 
+        # two plots one above the other with the same time axis: the angles on top, the force below
         self.plot = pg.PlotWidget()
-        self.plot.setLabel("bottom", "Time (s)")
         self.plot.setLabel("left", "Angle (deg)")
         self.plot.addLegend()
         self.plot.showGrid(x=True, y=True, alpha=0.25)
+        self.force_plot = pg.PlotWidget()
+        self.force_plot.setLabel("bottom", "Time (s)")
+        self.force_plot.getAxis("left").enableAutoSIPrefix(False)
+        self.force_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.force_plot.setXLink(self.plot)
+        self.force_plot.setVisible(False)
+        self.plot.setLabel("bottom", "Time (s)")
         self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("k", width=2))
+        self.force_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("k", width=2))
         self.window = pg.LinearRegionItem(brush=(30, 120, 220, 40))
+        self.force_window_mirror = pg.LinearRegionItem(brush=(30, 120, 220, 40), movable=False)       # the same window, shown on the force plot
+        self.window.sigRegionChanged.connect(self._mirror_window)
         self.window.sigRegionChanged.connect(self.update_summary)
         self.chk_trails = QCheckBox("Show trails")
         self.chk_trails.setChecked(True)
@@ -373,42 +405,17 @@ class ReviewTab(QWidget):
         self.event_combo.activated.connect(self.jump_to_event)
         self.btn_hold = QPushButton("Window = MVIC start to end")
         self.btn_hold.clicked.connect(self.snap_window)
-        self.stats = QLabel()
-        self.stats.setStyleSheet("font-family: Consolas, monospace;")
-        self.stats.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.disp = QLabel()
-        self.disp.setStyleSheet("font-family: Consolas, monospace;")
-        self.disp.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        top = QHBoxLayout()
-        top.addWidget(btn_open)
-        top.addWidget(self.title, 1)
-        ctrl = QHBoxLayout()
-        ctrl.addWidget(self.btn_play)
-        ctrl.addWidget(self.slider, 1)
-        ctrl.addWidget(self.chk_trails)
-        ctrl.addWidget(btn_export)
-        ctrl.addWidget(btn_video)
-        left = QVBoxLayout()
-        left.addWidget(self.video, 1)
-        left.addLayout(ctrl)
-        erow = QHBoxLayout()
-        erow.addWidget(QLabel("Markers:"))
-        erow.addWidget(self.event_combo, 1)
-        erow.addWidget(self.btn_hold)
-        left.addLayout(erow)
-        left.addWidget(QLabel("Blue band on the plot = analysis window (drag its edges). Statistics below use it."))
-        left.addWidget(self.stats)
-        left.addWidget(self.disp)
-        body = QHBoxLayout()
-        body.addLayout(left, 1)
-        body.addWidget(self.plot, 1)
-        lay = QVBoxLayout(self)
-        lay.addLayout(top)
-        lay.addLayout(body, 1)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.advance)
-        # force: calibration made later, and the delay between a picture's time stamp and the moment it shows
+        # the numbers, one tab each
+        self.check_text, self.stats, self.force_text, self.disp = _TextPane(wrap=True), _TextPane(), _TextPane(wrap=True), _TextPane()
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.check_text, "Check")
+        self.tabs.addTab(self.stats, "Angles")
+        self.tabs.addTab(self.force_text, "Force")
+        self.tabs.addTab(self.disp, "Dots and pull")
+        self.tabs.setMinimumWidth(420)
+
+        # force settings (shown only for a trial with force)
         self.force_cal_path = None
         self.picture_delay = _NoWheelSpin()
         self.picture_delay.setRange(-1.0, 2.0)
@@ -419,7 +426,7 @@ class ReviewTab(QWidget):
                                       "peak force is read from the pictures stamped this long after the force peak. Measure it with a tap on the "
                                       "sensor that shows in the video; 0 = the time stamps are taken as they are.")
         self.picture_delay.valueChanged.connect(lambda _: self.update_summary())
-        self.btn_apply_cal = QPushButton("Apply the saved force calibration")
+        self.btn_apply_cal = QPushButton("Apply saved calibration")
         self.btn_apply_cal.setToolTip("Computes newtons from the recorded volts with the calibration in force_calibration.json (made after the "
                                       "recording). The volts in the files are never changed.")
         self.btn_apply_cal.clicked.connect(self.apply_force_calibration)
@@ -433,14 +440,60 @@ class ReviewTab(QWidget):
                                      "mains hum exactly. 0 = raw samples. The saved files always hold the raw samples.")
         self.force_smooth.valueChanged.connect(self.on_force_smoothing)
         self.btn_force_win = QPushButton("Window = force above half of peak")
-        self.btn_force_win.setToolTip("Set the analysis window from the force itself: the stretch around the peak where the smoothed force is above half of the way from rest to peak (the hold). Use it when the MVIC markers were pressed early or late.")
+        self.btn_force_win.setToolTip("Set the analysis window from the force itself: the stretch around the peak where the smoothed force is above half "
+                                      "of the way from rest to peak (the hold). Use it when the MVIC markers were pressed early or late.")
         self.btn_force_win.clicked.connect(self.snap_to_force)
-        erow.addWidget(QLabel("Force smoothing:"))
-        erow.addWidget(self.force_smooth)
+        self.force_box = QGroupBox("Force")
+        fb = QHBoxLayout(self.force_box)
+        fb.addWidget(QLabel("Smoothing"))
+        fb.addWidget(self.force_smooth)
+        fb.addWidget(QLabel("Picture delay"))
+        fb.addWidget(self.picture_delay)
+        fb.addWidget(self.btn_apply_cal)
+        fb.addStretch(1)
+        self.force_box.setVisible(False)
+
+        top = QHBoxLayout()
+        top.addWidget(btn_open)
+        top.addWidget(self.title, 1)
+        top.addWidget(btn_session)
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(self.btn_play)
+        ctrl.addWidget(self.slider, 1)
+        ctrl.addWidget(self.chk_trails)
+        ctrl.addWidget(btn_export)
+        ctrl.addWidget(btn_video)
+        erow = QHBoxLayout()
+        erow.addWidget(QLabel("Markers:"))
+        erow.addWidget(self.event_combo, 1)
+        erow.addWidget(self.btn_hold)
         erow.addWidget(self.btn_force_win)
-        erow.addWidget(QLabel("Picture delay:"))
-        erow.addWidget(self.picture_delay)
-        erow.addWidget(self.btn_apply_cal)
+        left = QVBoxLayout()
+        left.addWidget(self.video, 1)
+        left.addLayout(ctrl)
+        left.addLayout(erow)
+        left.addWidget(self.force_box)
+        left.addWidget(QLabel("Blue band on the plots = analysis window (drag its edges on the upper plot). The numbers use it."))
+        upper = QWidget()
+        uh = QHBoxLayout(upper)
+        uh.setContentsMargins(0, 0, 0, 0)
+        uh.addLayout(left, 3)
+        uh.addWidget(self.tabs, 2)
+        plots = QWidget()
+        pl = QVBoxLayout(plots)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.addWidget(self.plot, 3)
+        pl.addWidget(self.force_plot, 2)
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(upper)
+        self.splitter.addWidget(plots)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        lay = QVBoxLayout(self)
+        lay.addLayout(top)
+        lay.addWidget(self.splitter, 1)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.advance)
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -467,6 +520,10 @@ class ReviewTab(QWidget):
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)
         self._show_force_curve(tr)
+        has_f = tr.has_force()
+        self.force_plot.setVisible(has_f)
+        self.force_box.setVisible(has_f)
+        self.plot.setLabel("bottom", "" if has_f else "Time (s)")         # the time axis label is under the lower plot when there are two
         for k, a in enumerate(tr.angle_defs):
             self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
                            name=a.title)
@@ -483,6 +540,8 @@ class ReviewTab(QWidget):
             line = pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen((90, 90, 90), style=Qt.DashLine),
                                    label=lab, labelOpts={"position": 0.95, "color": (90, 90, 90), "rotateAxis": (1, 0)})
             self.plot.addItem(line)
+            if tr.has_force():
+                self.force_plot.addItem(pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen((90, 90, 90), style=Qt.DashLine)))
         self.btn_hold.setEnabled(tr.hold_window() is not None)
         self.btn_force_win.setEnabled(tr.has_force())
         self.force_smooth.setEnabled(tr.has_force())
@@ -497,34 +556,31 @@ class ReviewTab(QWidget):
 
     # ------------------------------------------------------------ playback
     def _show_force_curve(self, tr):
-        """The force on its own (right-hand) axis, drawn with every sample (thinned only for display, keeping the peaks)."""
-        if not hasattr(self, "force_view"):
-            self.force_view = pg.ViewBox()
-            self.plot.showAxis("right")
-            self.plot.scene().addItem(self.force_view)
-            self.plot.getAxis("right").linkToView(self.force_view)
-            self.force_view.setXLink(self.plot)
-            self.plot.getViewBox().sigResized.connect(self._sync_force_view)
-        self.force_view.clear()
+        """The force in its own strip under the angle plot: every raw sample faint, the smoothed curve (the one the numbers come from) bold."""
+        fp = self.force_plot
+        fp.clear()
         if not tr.has_force():
-            self.plot.hideAxis("right")
             return
+        fp.addItem(self.force_cursor)
+        fp.addItem(self.force_window_mirror)
         unit, ys, _ = tr.force_signal()
         raw = tr.force_n if unit == "N" else tr.force_v
-        faint = pg.PlotDataItem(tr.force_t, raw, pen=pg.mkPen((220, 60, 60, 60), width=1))          # every raw sample, faint
+        faint = pg.PlotDataItem(tr.force_t, raw, pen=pg.mkPen((220, 60, 60, 45), width=1))
         faint.setDownsampling(auto=True, method="peak")
-        self.force_view.addItem(faint)
+        fp.addItem(faint)
         if tr.force_smooth_s > 0:
-            curve = pg.PlotDataItem(tr.force_t, ys, pen=pg.mkPen((220, 60, 60), width=2))             # the smoothed curve the numbers come from
+            curve = pg.PlotDataItem(tr.force_t, ys, pen=pg.mkPen((235, 70, 70), width=2.5))
             curve.setDownsampling(auto=True, method="peak")
-            self.force_view.addItem(curve)
-        y = raw
-        lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
-        pad = 0.05 * max(hi - lo, 1e-9)
-        self.force_view.setYRange(lo - pad, hi + pad, padding=0)
-        self.plot.getAxis("right").setLabel(f"Force ({unit})", color=(220, 60, 60))
-        self.plot.showAxis("right")
-        self._sync_force_view()
+            fp.addItem(curve)
+        fp.setLabel("left", f"Force ({unit})")
+        y = ys if tr.force_smooth_s > 0 else raw
+        lo, hi = float(np.nanmin(raw)), float(np.nanmax(raw))
+        pad = 0.06 * max(hi - lo, 1e-9)
+        fp.setYRange(lo - pad, hi + pad, padding=0)
+        self._mirror_window()
+
+    def _mirror_window(self, *_):
+        self.force_window_mirror.setRegion(self.window.getRegion())
 
     def apply_force_calibration(self):
         tr = self.trial
@@ -539,16 +595,12 @@ class ReviewTab(QWidget):
         self._show_force_curve(tr)
         self.update_summary()
 
-    def _sync_force_view(self):
-        if hasattr(self, "force_view"):
-            self.force_view.setGeometry(self.plot.getViewBox().sceneBoundingRect())
-            self.force_view.linkedViewChanged(self.plot.getViewBox(), self.force_view.XAxis)
-
     def show_frame(self, i):
         if self.trial is None:
             return
         img = self.trial.drawn(i, trails=self.chk_trails.isChecked())
         self.cursor.setValue(self.trial.t[i])
+        self.force_cursor.setValue(self.trial.t[i])
         if img is None:
             return
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -616,27 +668,65 @@ class ReviewTab(QWidget):
             pt = r["plateau_mean_deg"] - r["target_deg"] if not (math.isnan(r["plateau_mean_deg"]) or math.isnan(r["target_deg"])) else math.nan
             lines.append(f"{r['angle'][:21]:22s}{f(r['plateau_mean_deg'], 9)}{f(r['median_deg'], 8)}{f(r['target_deg'], 8)}{f(pt, 9, True)}"
                          f"{f(r['rest_mean_deg'], 8)}{f(r['rest_to_hold_shift_deg'], 10, True)}")
-        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
-        if fs is not None:
-            u = fs["unit"]
-            fmt = lambda v: "-" if math.isnan(v) else f"{v:.1f}"                                  # noqa: E731
-            sm = f"{fs['smoothing_s'] * 1000:.0f} ms moving average" if fs["smoothing_s"] > 0 else "raw samples"
-            lines += ["", f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}; {sm}):",
-                      f"  peak {fmt(fs['peak'])} at {fs['t_peak_s']:.2f} s   |   plateau mean {fmt(fs['plateau_mean'])}   |   "
-                      f"rest before {fmt(fs['rest_mean'])}   |   peak above rest {fmt(fs['peak_minus_rest'])}"
-                      + (f"   |   raw single-sample max {fmt(fs['raw_peak'])}" if fs["smoothing_s"] > 0 else ""),
-                      f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg   (plateau mean angle is in the table above"
-                      + (f"; pictures read {fs['picture_delay_s']:+.3f} s after the peak" if fs["picture_delay_s"] else "") + ")",
-                      f"  Force calibration: {self.trial.force_cal_note}"]
-            if not math.isnan(fs["mains_hum_pct_of_peak"]) and fs["mains_hum_pct_of_peak"] > 3.0:
-                lines.append(f"  50 Hz mains interference: {fs['mains_hum_v'] * 1000:.0f} mV = {fs['mains_hum_pct_of_peak']:.0f} % of the peak above rest "
-                             "(check shielding and grounding; a smoothing window that is a multiple of 20 ms removes it)")
-        elif self.trial.has_force():
-            lines.append("(force was recorded but there are no samples in this window)")
         if not self.trial.hold_window():
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
+        self.force_text.setText(self._force_text(t0, t1))
         self.disp.setText(self._displacement_text(t0, t1))
+        self.check_text.setHtml(self._check_html(t0, t1))
+
+    def _force_text(self, t0, t1):
+        tr = self.trial
+        if not tr.has_force():
+            return "No force was recorded in this trial."
+        fs = tr.force_summary(t0, t1, self.picture_delay.value())
+        if fs is None:
+            return "Force was recorded but there are no samples in this window."
+        u = fs["unit"]
+        fmt = lambda v, d=1: "-" if v is None or math.isnan(v) else f"{v:.{d}f}"                    # noqa: E731
+        d = 3 if u == "V" else 1
+        sm = f"{fs['smoothing_s'] * 1000:.0f} ms moving average" if fs["smoothing_s"] > 0 else "raw samples"
+        lines = [f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}; {sm})",
+                 f"  peak                {fmt(fs['peak'], d)} at {fs['t_peak_s']:.2f} s",
+                 f"  plateau mean        {fmt(fs['plateau_mean'], d)}   (middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window)",
+                 f"  rest before         {fmt(fs['rest_mean'], d)}      peak above rest {fmt(fs['peak_minus_rest'], d)}"]
+        if fs["smoothing_s"] > 0:
+            lines.append(f"  raw single-sample max {fmt(fs['raw_peak'], d)}   (a noisy single sample overstates the peak)")
+        lines += ["", f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg"
+                  + (f"   (pictures read {fs['picture_delay_s']:+.3f} s after the peak)" if fs["picture_delay_s"] else "")
+                  + "   (the plateau mean angle is on the Angles tab)",
+                  f"  Calibration: {tr.force_cal_note}"]
+        ft = analysis.force_timing(tr, t0, t1)
+        if ft is not None:
+            lines += ["", "Timing and steadiness (smoothed force)",
+                      f"  onset                 {ft['onset_s']:.2f} s   (force last below 10 % of its rise)",
+                      f"  10 % to 90 % of rise  {ft['time_to_90pct_s']:.2f} s",
+                      f"  steepest rise         {fmt(ft['rise_rate_per_s'], d)} {u}/s  (over 100 ms)",
+                      f"  held above 90 % of peak for {ft['hold_above_90pct_s']:.2f} s, steadiness (SD / mean) {fmt(ft['hold_cv_pct'])} %"]
+        tq = analysis.torque_summary(tr, t0, t1, self.picture_delay.value())
+        if tq is not None:
+            lines += ["", "Torque at the joint (force x moment arm)",
+                      f"  peak {tq['peak_nm']:.1f} N.m at {tq['t_peak_s']:.2f} s   |   at the peak force {tq['at_peak_force_nm']:.1f} N.m   |   plateau {fmt(tq['plateau_nm'])} N.m",
+                      f"  moment arm at the peak force {tq['arm_at_peak_force_cm']:.1f} cm (mean {tq['mean_arm_cm']:.1f} cm)"
+                      + (f"; the strap dot was not seen in {tq['pictures_with_stand_in']} of {tq['pictures']} pictures: the ankle dot stood in for it"
+                         if tq["pictures_with_stand_in"] else "")]
+        else:
+            why = ("the force is not calibrated" if u != "N" else "there is no ruler scale" if not tr.px_per_cm
+                   else "the anchor dot was not used" if "anchor" not in tr.tracks else "no moment arm could be measured")
+            lines += ["", f"Torque: not available ({why})."]
+        if not math.isnan(fs["mains_hum_pct_of_peak"]) and fs["mains_hum_pct_of_peak"] > analysis.HUM_WARN_PCT:
+            lines += ["", f"50 Hz mains interference: {fs['mains_hum_v'] * 1000:.0f} mV = {fs['mains_hum_pct_of_peak']:.0f} % of the rise above rest",
+                      "  (check shielding and grounding; a smoothing window that is a multiple of 20 ms removes it)"]
+        return "\n".join(lines)
+
+    def _check_html(self, t0, t1):
+        colours = {"ok": ("#16a34a", "OK    "), "check": ("#dc2626", "CHECK "), "info": ("#6b7280", "info  ")}
+        rows = []
+        for level, text in analysis.trial_checks(self.trial, t0, t1):
+            c, tag = colours[level]
+            esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            rows.append(f"<p style='margin:2px 0'><b style='color:{c}'>{tag.replace(' ', '&nbsp;')}</b> {esc}</p>")
+        return "<div style='font-family: Segoe UI, sans-serif; font-size: 10pt'>" + "".join(rows) + "</div>"
 
     def export_overlay_video(self):
         """Render the overlay picture for every frame from the raw video and the CSV and save it as a video file."""
@@ -696,6 +786,31 @@ class ReviewTab(QWidget):
             for q in pull:
                 lines.append(f"{q['quantity']:22s}{q['mean']:8.1f}{q['min']:8.1f}{q['max']:8.1f}{q['change_start_to_end']:+11.1f}")
         return "\n".join(lines)
+
+    def export_session(self):
+        """One row per trial of the open trial's participant, with the 10 % repeatability check between trials of the same position."""
+        if self.trial is None:
+            return
+        folder = self.trial.folder
+        rows, failed = [], []
+        for mp in sorted(folder.glob("*_meta.json")):
+            try:
+                tr = Trial(mp)
+                try:
+                    tr.force_smooth_s = self.trial.force_smooth_s
+                    rows.append(analysis.session_row(tr))
+                finally:
+                    tr.cap.release()
+            except Exception as e:  # noqa: BLE001 - one unreadable trial must not stop the others
+                failed.append(f"{mp.name}: {e}")
+        if not rows:
+            QMessageBox.warning(self, "Nothing to export", "No readable trials in " + str(folder))
+            return
+        analysis.repeatability(rows)
+        pid = self.trial.meta.get("participant") or "participant"
+        out = folder / f"{pid}_session_summary.csv"
+        analysis.write_session_csv(rows, out)
+        QMessageBox.information(self, "Exported", f"Saved {out.name}: {len(rows)} trials." + (("\nNot readable: " + "; ".join(failed)) if failed else ""))
 
     def export(self):
         if self.trial is None:
