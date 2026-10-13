@@ -5,7 +5,8 @@ force is NOT sampled once per picture. The DAQ samples at SAMPLE_RATE_HZ (1000 p
 time on the same clock as the video frames (time.perf_counter), so a force sample can be matched to the joint angle at that moment.
 
 Pieces
-  * ForceCalibration  : volts -> newtons (zero offset and newtons per volt), saved in force_calibration.json.
+  * ForceCalibration  : volts -> newtons (zero offset and newtons per volt). The slope comes from the load cell's regression
+                        (limbtrack/loadcell.py); the zero is taken by the operator and is NOT kept between sessions.
   * ForceSource       : keeps the newest samples (ring buffer) and gives them out by time; the hardware classes only differ in how
                         they obtain samples.
   * NiDaqForce        : an NI DAQmx device (written for the USB-6003; any DAQmx device with analog inputs works).
@@ -26,17 +27,20 @@ from pathlib import Path
 
 import numpy as np
 
+from .loadcell import GRAVITY, active_regression
+
 SAMPLE_RATE_HZ = 1000.0
 CHUNK_S = 0.01                    # the reader asks the device for this much at a time
 KEEP_SECONDS = 600.0              # samples kept in memory (a recording is far shorter)
-STANDARD_GRAVITY = 9.80665        # m/s^2: a mass of 1 kg weighs 9.80665 N
+STANDARD_GRAVITY = GRAVITY        # m/s^2: a mass of 1 kg weighs 9.80665 N
 MIN_CAL_SPAN_V = 0.005            # a known load must move the signal by at least this much for a two-point calibration
-CALIBRATION_FILE = "force_calibration.json"
 ALIGN_WINDOW_S = 20.0
 CLIP_FRACTION = 0.99                # a sample this close to +-range is 'at the limit'
 SMOOTH_DEFAULT_S = 0.1              # display and analysis smoothing: a moving average of this length (a multiple of 20 ms removes 50 Hz hum)
 MAINS_HZ = 50.0
 MAX_STEADY_SD_V = 0.02            # zero and calibration readings must be this steady (standard deviation)
+ZERO_SECONDS = 1.0                # the zero is the mean of this much signal (a multiple of 20 ms, so the 50 Hz hum averages out exactly)
+
 
 
 class ForceError(RuntimeError):
@@ -75,7 +79,8 @@ def mains_amplitude(volts, rate, mains_hz=MAINS_HZ):
 # ------------------------------------------------------------------------------------------- calibration
 @dataclass
 class ForceCalibration:
-    """newtons = (volts - offset_v) * n_per_v. `n_per_v` is None until a known load has been used."""
+    """newtons = (volts - offset_v) * n_per_v. `n_per_v` is None until the load cell's slope (or a known load) has been used.
+    `zero_set` is False for a slope that has not been zeroed yet: the offset would be a guess, so no newtons are given then."""
     offset_v: float = 0.0
     n_per_v: float = None
     method: str = "none"
@@ -84,10 +89,24 @@ class ForceCalibration:
     zero_v: float = None
     load_v: float = None
     note: str = ""
+    zero_set: bool = True
+    regression_id: str = ""            # which load cell regression the slope came from ("" = a known weight or none)
+
+    @classmethod
+    def load_cell(cls, regression=None):
+        """The load cell's own slope (the active regression unless one is given), waiting for a zero. Without any regression: volts only."""
+        reg = regression or active_regression()
+        if reg is None:
+            return cls()
+        return cls(n_per_v=reg.n_per_v, method=f"load cell regression {reg.id}", regression_id=reg.id, zero_set=False)
+
+    @property
+    def has_slope(self):
+        return self.n_per_v is not None and self.n_per_v != 0 and math.isfinite(self.n_per_v)
 
     @property
     def calibrated(self):
-        return self.n_per_v is not None and self.n_per_v != 0 and math.isfinite(self.n_per_v)
+        return self.has_slope and self.zero_set
 
     def to_newton(self, volts):
         """Newtons for volts (a number or an array); NaN when not calibrated."""
@@ -96,9 +115,9 @@ class ForceCalibration:
 
     def set_zero(self, volts):
         """The signal with nothing loaded."""
-        self.offset_v, self.zero_v = float(volts), float(volts)
+        self.offset_v, self.zero_v, self.zero_set = float(volts), float(volts), True
         self.when = datetime.now().isoformat(timespec="seconds")
-        self.method = "zero only" if not self.calibrated else self.method
+        self.method = "zero only" if not self.has_slope else self.method
 
     def calibrate_with_mass(self, load_volts, mass_kg):
         """Two points: the zero set before (zero_v) and a known mass hanging on, or pushing on, the sensor.
@@ -111,7 +130,7 @@ class ForceCalibration:
                     f"amplifier is connected (at least {MIN_CAL_SPAN_V * 1000:.0f} mV are needed).")
         self.n_per_v = mass_kg * STANDARD_GRAVITY / span
         self.known_mass_kg, self.load_v = float(mass_kg), float(load_volts)
-        self.method = f"zero and {mass_kg:g} kg"
+        self.method, self.regression_id = f"zero and {mass_kg:g} kg", ""
         self.when = datetime.now().isoformat(timespec="seconds")
         return None
 
@@ -321,7 +340,7 @@ class ForceSource:
                           f"the load constant while it measures.")
         return v, None
 
-    def zero(self, seconds=2.0):
+    def zero(self, seconds=ZERO_SECONDS):
         """Take the present signal as 'no load'. Returns None if done, else the reason it was not."""
         v, why = self._steady_mean(seconds)
         if why:

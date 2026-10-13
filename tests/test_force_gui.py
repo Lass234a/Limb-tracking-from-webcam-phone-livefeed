@@ -11,7 +11,7 @@ import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox  # noqa: E402
 
 from limbtrack import gui as gui_mod  # noqa: E402
-from limbtrack.force import CALIBRATION_FILE, ForceError, NiDaqForce  # noqa: E402
+from limbtrack.force import ForceError, NiDaqForce  # noqa: E402
 from limbtrack.gui import MainWindow  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.synthetic import leg_points, render  # noqa: E402
@@ -89,23 +89,35 @@ def test_a_busy_or_missing_device_is_explained_and_nothing_is_connected(setup, m
     assert "Choose a source" in live.force_info.text()
 
 
-def test_the_calibration_file_is_read_when_connecting_and_saved_after_a_zero(setup, monkeypatch):
+def test_connecting_uses_the_regression_slope_and_a_zero_is_not_kept_between_sessions(setup, monkeypatch):
     app, win, live, warnings, pump, tmp = setup
-    assert live.force_cal_path == tmp / CALIBRATION_FILE
     from limbtrack.force import ForceCalibration, SimulatedForce
-    cal = ForceCalibration(offset_v=0.5, n_per_v=40.0, method="zero and 3 kg", when="2026-10-09T10:00:00")
-    cal.save(live.force_cal_path)
+    assert not hasattr(live, "force_cal_path") and not list(tmp.glob("force_calibration*"))
 
     class Fake(SimulatedForce):
-        kind = "NI DAQmx"                                                  # behaves like the real source for the saving rule
-    monkeypatch.setattr(gui_mod, "NiDaqForce", lambda **kw: Fake(rest_s=30.0))
+        kind = "NI DAQmx"
+    monkeypatch.setattr(gui_mod, "NiDaqForce", lambda **kw: Fake(rest_s=30.0, offset_v=0.087))
     live.force_kind.setCurrentIndex(live.force_kind.findData("ni"))
-    live.btn_force.click()
-    assert live.force_source.calibration.to_dict() == cal.to_dict()
-    assert pump(lambda: live.force_source.average_volts(2.0)[1] >= 1100, timeout=10)
-    live.zero_force()
-    saved = ForceCalibration.load(live.force_cal_path)
-    assert saved.offset_v != 0.5 and saved.n_per_v == 40.0                # the new zero was written, the scale kept
+
+    def connect():
+        live.btn_force.click()
+        live.force_source.calibration = ForceCalibration.load_cell()         # what connecting to the NI DAQ gives
+        assert pump(lambda: live.force_source.average_volts(1.0)[1] >= 500, timeout=10)
+        live.update_force_box()
+    connect()
+    src = live.force_source
+    assert "Press Zero" in live.force_info.text() and src.latest_newtons() is None and "V" in live.force_label.text()
+    live.btn_force_zero.click()                                              # the Z shortcut presses this button
+    assert src.calibration.calibrated and abs(src.latest_newtons()) < 1.0
+    assert "Zero set" in live.force_info.text() and "about 95 %" in live.force_info.text() and not live.force_info.styleSheet()
+    live.btn_force_zero.click()                                              # zero again and again is fine, and says how far it moved
+    assert "moved" in live.force_info.text()
+    live.btn_force.click()                                                   # close and open again: the zero is gone, the slope is back
+    assert live.force_source is None
+    connect()
+    assert not live.force_source.calibration.calibrated and live.force_source.calibration.has_slope
+    assert "Press Zero" in live.force_info.text()
+    assert not list(tmp.glob("force_calibration*"))                         # nothing was written to disk
 
 
 def test_the_force_trace_can_be_shown_and_changing_the_mode_never_fails(setup):

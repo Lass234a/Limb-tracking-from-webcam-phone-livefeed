@@ -17,6 +17,7 @@ from . import overlay, privacy
 from .displacement import window_displacements
 from . import analysis
 from .force import SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
+from .loadcell import COVERAGE, GRAVITY, active_regression, find_regression
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
 # PARKED-GHOST: from .geometry import anchored_ghost
@@ -97,6 +98,7 @@ class Trial:
         self.force_smooth_s = SMOOTH_DEFAULT_S        # moving average for the force curve and numbers (a multiple of 20 ms removes 50 Hz hum)
         fmeta = self.meta.get("force") or {}
         self.force_cal = fmeta.get("calibration")
+        self.regression = find_regression((self.force_cal or {}).get("regression_id"))
         self.force_cal_note = ("calibration recorded with the trial" if (self.force_cal or {}).get("n_per_v") else
                                "no calibration yet: volts only")
         fname = (self.meta.get("files") or {}).get("force.csv")
@@ -169,6 +171,16 @@ class Trial:
         """Newtons from the saved volts with a calibration made AFTER the recording (the volts in the files are never changed)."""
         self.force_n = cal.to_newton(self.force_v)
         self.force_cal, self.force_cal_note = cal.to_dict(), note
+        self.regression = find_regression(cal.regression_id)
+
+    def recorded_zero_v(self):
+        """(zero volts, where it came from): the zero the operator took for this trial, else the resting level of the recording
+        (the 2nd percentile of the 100 ms smoothed signal: the strap at rest, before and after the pull)."""
+        c = self.force_cal or {}
+        if c.get("zero_set", True) and c.get("zero_v") is not None:
+            return float(c["zero_v"]), "the zero taken when this trial was recorded"
+        rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
+        return float(np.percentile(smooth_signal(self.force_v, rate, 0.1), 2)), "the resting level of the recording (no zero was taken)"
 
     def has_force(self):
         return self.force_t is not None and len(self.force_t) > 0
@@ -343,6 +355,54 @@ class _TextPane(QTextEdit):
         return self.toPlainText()
 
 
+class _CalibrationPane(QWidget):
+    """The load cell regression behind the force numbers: the points and the line, how far each run is from it (with the band a reading
+    is good to), where this trial's force lies, and the precision in words."""
+
+    def __init__(self):
+        super().__init__()
+        self.fit = pg.PlotWidget()
+        self.res = pg.PlotWidget()
+        for w, left in ((self.fit, "Volts"), (self.res, "Reading - mass (kg)")):
+            w.showGrid(x=True, y=True, alpha=0.25)
+            w.setMouseEnabled(False, False)
+            w.setLabel("left", left)
+        self.res.setLabel("bottom", "Mass on the cell (kg)")
+        self.text = _TextPane(wrap=True)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.fit, 2)
+        lay.addWidget(self.res, 2)
+        lay.addWidget(self.text, 3)
+
+    def show_regression(self, reg, lines, marks_kg=()):
+        """reg: a Regression or None; lines: the text under the plots; marks_kg: [(kg, label)] of this trial (peak, plateau) as vertical lines."""
+        self.fit.clear()
+        self.res.clear()
+        self.text.setText("\n".join(lines))
+        if reg is None:
+            return
+        kg, resid, phase = reg.residuals_kg()
+        volts = np.array([p["volts"] for p in reg.points])
+        top = max(float(kg.max()), max([m[0] for m in marks_kg], default=0.0)) * 1.04
+        xs = np.array([0.0, top])
+        self.fit.plot(xs, reg.intercept_v + reg.slope_v_per_kg * xs, pen=pg.mkPen("#555", width=2))
+        self.res.addLine(y=0, pen=pg.mkPen("#555", width=1.5))
+        band = COVERAGE * reg.sd_kg(np.linspace(0, top, 60))
+        for sign in (1, -1):
+            self.res.plot(np.linspace(0, top, 60), sign * band, pen=pg.mkPen("#2f9e44", width=1.5, style=Qt.DashLine))
+        for name, colour in (("up", "#1c7ed6"), ("down", "#e8590c"), ("", "#868e96")):
+            m = np.array([(p == name) if name else (p not in ("up", "down")) for p in phase])
+            if m.any():
+                for w, y in ((self.fit, volts), (self.res, resid)):
+                    w.plot(kg[m], y[m], pen=None, symbol="o", symbolSize=7, symbolBrush=colour, symbolPen=None)
+        for k, label in marks_kg:
+            for w in (self.fit, self.res):
+                w.addItem(pg.InfiniteLine(pos=k, angle=90, pen=pg.mkPen("#e03131", width=2, style=Qt.DashLine),
+                                          label=label, labelOpts={"position": 0.9, "color": "#e03131"}))
+        self.res.setXLink(self.fit)
+
+
 class _NoWheelSpin(QDoubleSpinBox):
     """A spin box that ignores the mouse wheel (scrolling past it must not change the number)."""
 
@@ -412,11 +472,12 @@ class ReviewTab(QWidget):
         self.tabs.addTab(self.check_text, "Check")
         self.tabs.addTab(self.stats, "Angles")
         self.tabs.addTab(self.force_text, "Force")
+        self.calib = _CalibrationPane()
+        self.tabs.addTab(self.calib, "Calibration")
         self.tabs.addTab(self.disp, "Dots and pull")
         self.tabs.setMinimumWidth(420)
 
         # force settings (shown only for a trial with force)
-        self.force_cal_path = None
         self.picture_delay = _NoWheelSpin()
         self.picture_delay.setRange(-1.0, 2.0)
         self.picture_delay.setSingleStep(0.01)
@@ -426,9 +487,16 @@ class ReviewTab(QWidget):
                                       "peak force is read from the pictures stamped this long after the force peak. Measure it with a tap on the "
                                       "sensor that shows in the video; 0 = the time stamps are taken as they are.")
         self.picture_delay.valueChanged.connect(lambda _: self.update_summary())
-        self.btn_apply_cal = QPushButton("Apply saved calibration")
-        self.btn_apply_cal.setToolTip("Computes newtons from the recorded volts with the calibration in force_calibration.json (made after the "
-                                      "recording). The volts in the files are never changed.")
+        self.zero_spin = _NoWheelSpin()
+        self.zero_spin.setRange(-10.0, 10.0)
+        self.zero_spin.setDecimals(4)
+        self.zero_spin.setSingleStep(0.001)
+        self.zero_spin.setSuffix(" V")
+        self.zero_spin.setToolTip("The voltage that counts as 0 N for this trial. It starts as the zero taken when the trial was recorded (or the "
+                                  "resting level of the recording if none was taken). Change it if the zero was wrong.")
+        self.btn_apply_cal = QPushButton("Recalculate newtons")
+        self.btn_apply_cal.setToolTip("Computes newtons from the recorded volts with this zero and the ACTIVE load cell regression (also for a "
+                                      "regression made after the recording). The volts in the files are never changed.")
         self.btn_apply_cal.clicked.connect(self.apply_force_calibration)
         self.force_smooth = _NoWheelSpin()
         self.force_smooth.setRange(0, 1000)
@@ -449,6 +517,8 @@ class ReviewTab(QWidget):
         fb.addWidget(self.force_smooth)
         fb.addWidget(QLabel("Picture delay"))
         fb.addWidget(self.picture_delay)
+        fb.addWidget(QLabel("Zero"))
+        fb.addWidget(self.zero_spin)
         fb.addWidget(self.btn_apply_cal)
         fb.addStretch(1)
         self.force_box.setVisible(False)
@@ -545,6 +615,9 @@ class ReviewTab(QWidget):
         self.btn_hold.setEnabled(tr.hold_window() is not None)
         self.btn_force_win.setEnabled(tr.has_force())
         self.force_smooth.setEnabled(tr.has_force())
+        if tr.has_force():
+            zero, _ = tr.recorded_zero_v()
+            self.zero_spin.setValue(zero)
         tr.force_smooth_s = float(self.force_smooth.value()) / 1000.0
         self.window.setRegion(tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
         self.slider.blockSignals(True)
@@ -583,15 +656,19 @@ class ReviewTab(QWidget):
         self.force_window_mirror.setRegion(self.window.getRegion())
 
     def apply_force_calibration(self):
+        """Newtons from the saved volts with the zero in the box and the active load cell regression."""
         tr = self.trial
         if tr is None or not tr.has_force():
             return
-        cal = ForceCalibration.load(self.force_cal_path) if self.force_cal_path is not None else ForceCalibration()
-        if not cal.calibrated:
-            QMessageBox.information(self, "No calibration", "There is no calibration yet (force_calibration.json). In the Live tab press Zero "
-                                    "and Calibrate with a known weight first; the recordings can be converted afterwards.")
+        reg = active_regression()
+        if reg is None:
+            QMessageBox.information(self, "No calibration", "There is no load cell regression yet (limbtrack/load_cell_calibrations.json). "
+                                    "Add one with LoadCellCalibration/add_calibration.py; the recordings can be converted afterwards.")
             return
-        tr.apply_calibration(cal, f"applied later from force_calibration.json ({cal.when or 'undated'}; {cal.method})")
+        cal = ForceCalibration.load_cell(reg)
+        cal.set_zero(self.zero_spin.value())
+        _, where = tr.recorded_zero_v()
+        tr.apply_calibration(cal, f"applied later: regression {reg.id}, zero {cal.offset_v:+.4f} V (the box; it started as {where})")
         self._show_force_curve(tr)
         self.update_summary()
 
@@ -672,6 +749,7 @@ class ReviewTab(QWidget):
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
         self.force_text.setText(self._force_text(t0, t1))
+        self._update_calibration(t0, t1)
         self.disp.setText(self._displacement_text(t0, t1))
         self.check_text.setHtml(self._check_html(t0, t1))
 
@@ -695,7 +773,7 @@ class ReviewTab(QWidget):
         lines += ["", f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg"
                   + (f"   (pictures read {fs['picture_delay_s']:+.3f} s after the peak)" if fs["picture_delay_s"] else "")
                   + "   (the plateau mean angle is on the Angles tab)",
-                  f"  Calibration: {tr.force_cal_note}"]
+                  f"  Calibration: {tr.force_cal_note}" + (f"  (regression {tr.regression.id}, see the Calibration tab)" if tr.regression else "")]
         ft = analysis.force_timing(tr, t0, t1)
         if ft is not None:
             lines += ["", "Timing and steadiness (smoothed force)",
@@ -718,6 +796,46 @@ class ReviewTab(QWidget):
             lines += ["", f"50 Hz mains interference: {fs['mains_hum_v'] * 1000:.0f} mV = {fs['mains_hum_pct_of_peak']:.0f} % of the rise above rest",
                       "  (check shielding and grounding; a smoothing window that is a multiple of 20 ms removes it)"]
         return "\n".join(lines)
+
+    def _update_calibration(self, t0, t1):
+        """The Calibration tab: the regression behind this trial's newtons (or the active one when the trial has none), and its precision."""
+        tr = self.trial
+        if tr is None or not tr.has_force():
+            self.calib.show_regression(None, ["No force was recorded in this trial."])
+            return
+        fs = tr.force_summary(t0, t1, self.picture_delay.value())
+        c = tr.force_cal or {}
+        reg = tr.regression
+        lines = []
+        if fs is None or fs["unit"] != "N":
+            reg = reg or active_regression()
+            lines += ["This trial is in volts: no zero was taken, so there are no newtons yet.",
+                      "Press Recalculate newtons (with the zero in the box) to get them from the active regression.", ""]
+        elif reg is None:
+            lines += [f"The newtons of this trial come from {c.get('method', 'an unknown calibration')} ({c.get('n_per_v', 0):.2f} N per volt),",
+                      "which has no stored regression, so no precision can be given. Recalculate newtons to use the active regression.", ""]
+            reg = active_regression()
+        marks = []
+        if reg is not None:
+            if fs is not None and fs["unit"] == "N" and tr.regression is not None:
+                lo, hi = reg.range_kg
+                lines += [f"This trial (zero {c.get('offset_v', 0):+.4f} V, {c.get('n_per_v', 0):.2f} N per volt):"]
+                for name, key in (("peak", "peak"), ("plateau mean", "plateau_mean")):
+                    f = fs[key]
+                    if f is None or math.isnan(f):
+                        continue
+                    kg = f / GRAVITY
+                    sd = COVERAGE * float(reg.sd_newton(f))
+                    lines.append(f"  {name:13s}{f:8.1f} N = {kg:6.1f} kg   +-{sd:.1f} N  ({100 * sd / max(abs(f), 1e-9):.2f} %), about 95 %")
+                    marks.append((kg, name))
+                    if kg > hi * 1.001:
+                        lines.append(f"  !! the {name} is above the heaviest calibration load ({hi:g} kg): the line is extended, not measured there")
+                lines += ["  (the calibration only; the zero adds the noise of the short average it was taken from, and a pull that is not along",
+                          "   the cell's axis is not covered)", ""]
+            lines += reg.summary_lines()
+        else:
+            lines.append("No load cell regression is stored.")
+        self.calib.show_regression(reg, lines, marks)
 
     def _check_html(self, t0, t1):
         colours = {"ok": ("#16a34a", "OK    "), "check": ("#dc2626", "CHECK "), "info": ("#6b7280", "info  ")}
@@ -827,11 +945,15 @@ class ReviewTab(QWidget):
             fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
             fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg",
                       "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note", "force_smoothing_ms", "force_mains_hum_pct_of_peak",
-                      "force_raw_peak"]
+                      "force_raw_peak", "force_regression_id", "force_peak_95pct_n"]
             cal = self.trial.force_cal or {}
+            reg = self.trial.regression
+            peak_ci = (COVERAGE * float(reg.sd_newton(fs["peak"])) if reg is not None and fs is not None and fs["unit"] == "N"
+                       and not math.isnan(fs["peak"]) else "")
             fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"],
                       fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note,
-                      fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"]]
+                      fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"],
+                      reg.id if reg is not None else "", peak_ci]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))

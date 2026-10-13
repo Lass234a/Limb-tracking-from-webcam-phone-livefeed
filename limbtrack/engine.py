@@ -32,7 +32,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.7.0"
+SOFTWARE_VERSION = "0.7.1"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -658,7 +658,7 @@ class Engine:
         if v is None:
             return ["Force: waiting for samples"]
         if n is None:
-            return [f"Force {v:+.3f} V (not calibrated)"]
+            return [f"Force {v:+.3f} V (press Zero for newtons)" if f.calibration.has_slope else f"Force {v:+.3f} V (not calibrated)"]
         peak = self._force_stats["peak"] if self._force_active and self._force_stats and not math.isnan(self._force_stats["peak"]) else None
         return [f"Force {n:.0f} N ({v:+.3f} V)" + (f"   peak {peak:.0f} N" if peak is not None else "")]
 

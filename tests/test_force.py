@@ -12,7 +12,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 from limbtrack.engine import Engine  # noqa: E402
-from limbtrack.force import (CALIBRATION_FILE, STANDARD_GRAVITY, ForceCalibration, ForceError, NiDaqForce,  # noqa: E402
+from limbtrack.force import (STANDARD_GRAVITY, ForceCalibration, ForceError, NiDaqForce,  # noqa: E402
                              SimulatedForce, make_source)
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.review import Trial  # noqa: E402
@@ -35,6 +35,18 @@ def test_calibration_is_zero_then_a_known_mass():
     assert c.to_newton(np.array([0.1, 0.6])).shape == (2,)
 
 
+def test_the_load_cell_slope_gives_newtons_only_after_a_zero():
+    c = ForceCalibration.load_cell()
+    assert c.has_slope and not c.calibrated and np.isnan(c.to_newton(0.5)).all()      # an unzeroed offset would be a guess
+    assert c.regression_id and c.method == f"load cell regression {c.regression_id}"
+    c.set_zero(0.0870)
+    assert c.calibrated and c.method.startswith("load cell regression")              # set_zero keeps the slope and its name
+    assert c.to_newton(0.0870) == pytest.approx(0.0, abs=1e-9)
+    assert c.to_newton(0.0870 + 0.0186102 * 10) == pytest.approx(10 * STANDARD_GRAVITY, rel=2e-4)       # 10 kg at 18.6102 mV/kg
+    c.calibrate_with_mass(0.0870 + 0.5, 5.0)                                         # a known weight replaces the regression's slope
+    assert c.regression_id == "" and c.n_per_v == pytest.approx(5.0 * STANDARD_GRAVITY / 0.5)
+
+
 def test_a_calibration_that_cannot_be_right_is_refused_and_changes_nothing():
     c = ForceCalibration()
     c.set_zero(0.1)
@@ -47,7 +59,7 @@ def test_calibration_is_saved_and_read_back(tmp_path):
     c = ForceCalibration()
     c.set_zero(0.2)
     c.calibrate_with_mass(0.7, 10.0)
-    path = tmp_path / CALIBRATION_FILE
+    path = tmp_path / "cal.json"
     c.save(path)
     back = ForceCalibration.load(path)
     assert back.to_dict() == c.to_dict() and back.calibrated
@@ -333,32 +345,62 @@ def test_the_picture_delay_moves_where_the_angle_at_the_peak_is_read(tmp_path):
     assert at_delay["picture_delay_s"] == 0.5
 
 
-def test_review_applies_the_saved_calibration_on_request_and_exports_what_was_used(tmp_path, monkeypatch):
+def test_review_recalculates_newtons_with_the_active_regression_and_exports_what_was_used(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication, QMessageBox
+    from limbtrack import review as review_mod
     from limbtrack.review import ReviewTab
     app = QApplication.instance() or QApplication([])
     infos = []
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: infos.append(a[2]))
     eng, paths = uncalibrated_recording(tmp_path)
     tab = ReviewTab(tmp_path)
-    tab.force_cal_path = tmp_path / CALIBRATION_FILE
     tab.load(str(paths["meta.json"]))
     assert "volts only" in tab.force_text.text() and "not calibrated" in tab.force_text.text()
-    tab.apply_force_calibration()                                              # no calibration file yet: explained, nothing changes
-    assert infos and "no calibration" in infos[-1].lower() or "There is no calibration" in infos[-1]
-    cal = ForceCalibration()
-    cal.set_zero(0.0123)
-    cal.n_per_v = 100.0
-    cal.method = "zero and 5 kg"
-    cal.save(tab.force_cal_path)
+    assert "in volts" in tab.calib.text.text()                                  # the Calibration tab says there are no newtons yet
+    assert tab.zero_spin.value() == pytest.approx(0.0123, abs=0.003)           # no zero was taken: the resting level
+    real = review_mod.active_regression
+    monkeypatch.setattr(review_mod, "active_regression", lambda *a: None)
+    tab.apply_force_calibration()                                              # no regression: explained, nothing changes
+    assert infos and "regression" in infos[-1]
+    monkeypatch.setattr(review_mod, "active_regression", real)
+    tab.zero_spin.setValue(0.0123)
     tab.apply_force_calibration()
-    assert "applied later" in tab.force_text.text() and "Force in the window (N" in tab.force_text.text()
+    txt, ctxt = tab.force_text.text(), tab.calib.text.text()
+    assert "applied later" in txt and "Force in the window (N" in txt
+    reg = real()
+    assert reg.id in ctxt and "peak" in ctxt and "about 95 %" in ctxt and "N per volt" in ctxt          # the regression and the precision of the peak
     tab.export()
     summary = list(csv.DictReader(open(next(tmp_path.rglob("*_summary.csv")), newline="")))
-    assert summary[0]["force_unit"] == "N" and float(summary[0]["force_n_per_v"]) == 100.0
+    assert summary[0]["force_unit"] == "N" and float(summary[0]["force_n_per_v"]) == pytest.approx(reg.n_per_v, abs=0.01)
+    assert summary[0]["force_regression_id"] == reg.id and float(summary[0]["force_peak_95pct_n"]) > 1.0
     assert "applied later" in summary[0]["force_calibration_note"] and summary[0]["picture_delay_s"] == "0.0"
     saved_volts = [float(r["volts"]) for r in csv.DictReader(open(paths["force.csv"], newline=""))]
     assert max(saved_volts) > 3.5                                              # the file on disk still holds the volts, unchanged
+
+
+def test_a_trial_remembers_the_regression_it_was_measured_with(tmp_path):
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    eng.process(render(PTS, seed=0), time.perf_counter())
+    for n in eng.active_dots:
+        assert eng.mark_dot(n, *(PTS[n] + 2))
+    force = SimulatedForce(rest_s=0.3, ramp_s=0.6, hold_s=1.2)
+    force.calibration = ForceCalibration.load_cell()
+    force.calibration.set_zero(0.0123)
+    force.start()
+    eng.force = force
+    time.sleep(0.3)
+    paths = eng.start_trial("P01")
+    for i in range(45):
+        eng.process(render(PTS, seed=i % 5), time.perf_counter())
+        time.sleep(1 / 30)
+    eng.stop_trial()
+    force.stop()
+    meta = json.loads(paths["meta.json"].read_text())
+    cal = meta["force_setup"]["calibration"]
+    assert cal["regression_id"] and cal["zero_v"] == 0.0123 and meta["force"]["calibrated"] is True
+    tr = Trial(paths["meta.json"])
+    assert tr.regression is not None and tr.regression.id == cal["regression_id"]
 
 
 # ------------------------------------------------------------------------------------------ smoothing, mains hum, window from the force

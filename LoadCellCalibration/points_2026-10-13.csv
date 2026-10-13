@@ -1,0 +1,30 @@
+run,kg,volts,phase,keep,note
+1kg_13-10-13-15-02-55,0,0.08588,up,1,labelled 1 kg: chain and strap only
+50kg_13-10-13-15-14-50,50,1.01429,up,1,
+75kg_13-10-13-15-21-19,75,1.47940,up,1,
+75kg_13-10-13-15-22-07,75,1.48024,up,1,
+100kg_13-10-13-15-26-38,100,1.94504,up,1,
+125kg_13-10-13-15-33-43,125,2.40943,up,1,
+100kg_13-10-13-15-35-16,100,1.94551,up,1,
+150kg_13-10-13-15-37-11,150,2.87553,up,1,
+175kg_13-10-13-15-39-56,175,3.34045,up,1,"the label column inside the file still says 150, the voltage equals the other 175 kg runs"
+175kg_13-10-13-15-40-55,175,3.34126,up,1,
+200kg_13-10-13-15-48-14,200,3.80726,up,1,
+225kg_13-10-13-15-50-06,225,4.27365,up,1,
+250kg_13-10-13-15-52-38,250,4.74005,peak,1,
+225kg_13-10-13-15-54-48,225,4.27700,down,1,
+200kg_13-10-13-15-56-45,200,3.81240,down,1,
+175kg_13-10-13-15-58-00,175,3.34726,down,1,
+150kg_13-10-13-15-59-32,150,2.88182,down,1,
+125kg_13-10-13-16-00-49,125,2.41696,down,1,
+100kg_13-10-13-16-02-31,100,1.95084,down,1,
+75kg_13-10-13-16-04-47,75,1.48585,down,1,
+50kg_13-10-13-16-06-23,50,1.02040,down,1,
+25kg_13-10-13-16-07-55,25,0.55429,down,1,
+1kg_13-10-13-16-10-05,0,0.08896,down,1,labelled 1 kg: chain and strap only
+0kg_13-10-13-16-11-12,0,0.08864,down,1,"named 0 kg, but the file's own label is 1 and its voltage equals the other 1 kg run: chain and strap only"
+0kg_13-10-13-15-00-46,0,0.06600,up,0,no chain and strap on the cell (zero reference only)
+0kg_13-10-13-15-14-30,,1.01461,up,0,6 s file named 0 kg but the signal is at the 50 kg level: the start of the 50 kg run
+lassekg_13-10-13-15-45-58,,1.15114,up,0,load applied and removed during the file (signal jumps by 3 V): not a steady run
+200kg_13-10-13-15-56-30,,3.81249,down,0,only 8 s long with a start-up disturbance; repeated in the next file
+0kg_13-10-13-16-12-09,0,0.06842,down,0,no chain and strap on the cell (zero reference only)

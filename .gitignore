@@ -28,8 +28,6 @@ settings.json
 # result of Run_tests.bat
 tests_last_run.txt
 
-# load cell calibration of this computer (a copy is stored in every trial)
-force_calibration.json
 
 # result of Check_phone_camera.bat
 phone_camera_check.txt

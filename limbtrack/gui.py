@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
 from . import privacy
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
-from .force import CALIBRATION_FILE, ForceCalibration, ForceError, NiDaqForce, SimulatedForce
+from .loadcell import GRAVITY, find_regression
+from .force import ForceCalibration, ForceError, NiDaqForce, SimulatedForce
 from .recorder import count_trials
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
@@ -662,7 +663,6 @@ class LiveTab(QWidget):
 
         # --- force: a load cell through a DAQ, sampled on its own thread (limbtrack/force.py)
         self.force_source = None
-        self.force_cal_path = None             # where the calibration is kept (set by the main window)
         self._force_msg = ""
         self.force_kind = NoWheelComboBox()
         for label, k in (("Off", "off"), ("NI DAQ (load cell)", "ni"), ("Simulated (test, no hardware)", "simulated")):
@@ -687,9 +687,12 @@ class LiveTab(QWidget):
         self.btn_force_scan.clicked.connect(self.scan_force_devices)
         self.btn_force = QPushButton("Connect")
         self.btn_force.clicked.connect(self.toggle_force)
-        self.btn_force_zero = QPushButton("Zero (nothing on the sensor)")
+        self.btn_force_zero = QPushButton("Zero: no pull on the strap  (Z)")
+        self.btn_force_zero.setToolTip("Takes the present signal (1 s) as 0 N. Do it as often as needed: after every change of set-up "
+                                       "and whenever the strap hangs differently. The zero is forgotten when the program closes. The volts of "
+                                       "every recording are saved as they are, so a wrong zero can be corrected afterwards in Review.")
         self.btn_force_zero.clicked.connect(self.zero_force)
-        self.btn_force_cal = QPushButton("Calibrate with a known weight...")
+        self.btn_force_cal = QPushButton("Re-calibrate with a known weight... (this session only)")
         self.btn_force_cal.clicked.connect(self.calibrate_force)
         self.force_label = QLabel("Force: not connected")
         self.force_label.setStyleSheet(BIG)
@@ -768,6 +771,7 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_S), self, activated=self.btn_start_mark.click)
         QShortcut(QKeySequence(Qt.Key_E), self, activated=self.btn_end_mark.click)
         QShortcut(QKeySequence(Qt.Key_M), self, activated=self.btn_mark.click)
+        QShortcut(QKeySequence(Qt.Key_Z), self, activated=self.btn_force_zero.click)
         # The F-keys work even while a text box has focus (letters would be typed into it): audit GUI-13.
         QShortcut(QKeySequence(Qt.Key_F5), self, activated=self.btn_rec.click)
         QShortcut(QKeySequence(Qt.Key_F6), self, activated=self.btn_start_mark.click)
@@ -1304,8 +1308,7 @@ class LiveTab(QWidget):
         if kind == "ni":
             src = NiDaqForce(device=self.force_dev.currentText().strip(), channel=self.force_chan.currentText(),
                              terminal=self.force_term.currentData())
-            if self.force_cal_path is not None and Path(self.force_cal_path).exists():
-                src.calibration = ForceCalibration.load(self.force_cal_path)
+            src.calibration = ForceCalibration.load_cell()          # the active regression's slope; no zero until the operator takes one
         else:
             src = SimulatedForce()
         try:
@@ -1336,24 +1339,18 @@ class LiveTab(QWidget):
         self._force_msg = ""
         self.update_force_box()
 
-    def _save_force_calibration(self):
-        src = self.force_source
-        if src is not None and src.kind != "simulated" and self.force_cal_path is not None:
-            try:
-                src.calibration.save(self.force_cal_path)
-            except OSError as e:
-                self._force_msg = f"The calibration could not be saved: {e}"
-
     def zero_force(self):
         src = self.force_source
         if src is None:
             return
+        before = src.calibration.offset_v if src.calibration.zero_v is not None else None
         why = src.zero()
         if why:
             self._force_msg = why
         else:
-            self._save_force_calibration()
-            self._force_msg = f"Zero set: {src.calibration.offset_v:+.4f} V is now 0 N."
+            cal = src.calibration
+            moved = "" if before is None or not cal.has_slope else f" (moved {(cal.offset_v - before) * cal.n_per_v:+.1f} N from the last zero)"
+            self._force_msg = f"Zero set: {cal.offset_v:+.4f} V is now 0 N{moved}."
         self.update_force_box()
 
     def calibrate_force(self):
@@ -1372,7 +1369,6 @@ class LiveTab(QWidget):
         if why:
             self._force_msg = why
         else:
-            self._save_force_calibration()
             self._force_msg = f"Calibrated with {mass:g} kg: {src.calibration.n_per_v:.2f} N per volt."
         self.update_force_box()
 
@@ -1400,11 +1396,19 @@ class LiveTab(QWidget):
                 self.force_label.setText("Force: waiting..." if v is None else f"Force {n:.1f} N   ({v:+.3f} V)" if n is not None
                                          else f"Force {v:+.4f} V")
                 cal = src.calibration
-                info = (f"Calibrated: {cal.n_per_v:.2f} N per volt, zero {cal.offset_v:+.4f} V ({cal.method})." if cal.calibrated else
-                        "Not calibrated: values are volts. Zero with nothing on the sensor, then calibrate with a known weight.")
+                if cal.calibrated:
+                    info = f"{cal.n_per_v:.2f} N per volt ({cal.method}), zero {cal.offset_v:+.4f} V set {cal.when[11:16]}."
+                    reg = find_regression(cal.regression_id)
+                    if reg is not None:
+                        sd100 = 2 * float(reg.sd_newton(100 * GRAVITY))
+                        info += f"\nA reading of 100 kg ({100 * GRAVITY:.0f} N) is good to +-{sd100:.1f} N (about 95 %)."
+                elif cal.has_slope:
+                    info, warn = "Press Zero (Z) with no pull on the strap. Until then only volts are shown and saved; newtons follow after the zero.", True
+                else:
+                    info = "No load cell calibration found: values are volts. Zero with nothing on the sensor, then calibrate with a known weight."
                 if self._force_msg:
                     info = self._force_msg + "\n" + info
-                    warn = True
+                    warn = not self._force_msg.startswith(("Zero set", "Calibrated"))        # a done zero is news, not a warning
         if info != self.force_info.text():
             self.force_info.setText(info)
         self.force_info.setStyleSheet("color: #d97706; font-weight: bold;" if warn else "")
@@ -1762,7 +1766,6 @@ class MainWindow(QWidget):
         self.live = LiveTab(self.engine, folder)
         self.review = ReviewTab(folder)
         self.live.folder_changed.connect(self.on_folder_changed)
-        self.live.force_cal_path = Path(root) / CALIBRATION_FILE
         tabs.addTab(self.live, "Live")
         tabs.addTab(self.review, "Review")
         lay = QVBoxLayout(self)

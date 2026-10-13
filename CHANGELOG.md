@@ -3,6 +3,17 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.7.1 - 2026-10-13
+
+### Force: the load cell's regression is built in, Zero is the only step, the regression is shown in Review
+- **Regression kept as data** (`limbtrack/load_cell_calibrations.json`, code in `limbtrack/loadcell.py`): every calibration ever made is stored with its points, one is *active* and the program uses it from the start. The first entry is the calibration of 13 Oct 2026 (24 steady runs with 0 to 250 kg hung on the cell): **18.6102 mV/kg = 526.95 N per volt**, slope known to 0.04 %, scatter of single runs 0.15 kg, the cell reads about 0.3 kg higher unloading than loading, no significant curvature. A reading is good to about +-3 N (95 %) from 10 to 250 kg.
+- **New calibrations need no code change**: `LoadCellCalibration/logs_to_points.py FOLDER` turns the LogFile CSVs of a session into a points file (and flags short, unsteady or wrongly named runs), `LoadCellCalibration/add_calibration.py POINTS.csv --id NAME --activate` fits it and stores it. Older recordings keep the id of the regression they were measured with.
+- **Zero** (button or **Z**) is the only step before a session and can be repeated as often as the set-up changes: it takes 1 s of signal as 0 N and says how far it moved. **The zero is not kept when the program closes**: a new start shows and saves volts only until the first zero, so a wrong zero can never carry over. The zero used is saved in every trial's `meta.json`.
+- **Volts are still the permanent record**: every sample is saved as measured (`force.csv`, `force_v`); newtons are the second channel.
+- **Review**: new *Calibration* tab with the regression (points up and down, the line, how far each run is from it with the +-95 % band, this trial's peak and plateau marked) and in words how precise this trial's peak and plateau are (+- N and %), with a warning for forces beyond the heaviest calibration load. The *Force* box has a **Zero** box and *Recalculate newtons*: it applies the zero in the box and the active regression to the saved volts (to correct a wrong zero, or to use a newer calibration). The export has `force_regression_id` and `force_peak_95pct_n`.
+- *Re-calibrate with a known weight* is kept but only for the present session (not saved).
+- Removed: `force_calibration.json` (it kept the zero between sessions).
+
 ## 0.7.0 - 2026-10-09
 
 ### Review, easier to read and more to read from
