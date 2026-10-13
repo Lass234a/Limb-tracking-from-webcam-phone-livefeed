@@ -1,5 +1,7 @@
 # Limb angle tracker (MVIC testing)
 
+> **New to the project, or picking it up from someone else?** Start with `HANDOFF.md`: what this is, where it stands, what was learned from real recordings, what must not be broken, and what is open.
+
 Tracks white or black dots on a live camera feed, shows the joint angles on screen, warns the operator when someone drifts from the set position, and saves the video + angles for each trial.
 
 **Status: version 0.2 (webcam / video file, sagittal view).** It passes its automatic tests on synthetic video. It has **not yet been validated on real footage or against a goniometer** - do that before collecting real data (see "Validation" below).
