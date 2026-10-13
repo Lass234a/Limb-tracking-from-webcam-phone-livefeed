@@ -18,13 +18,16 @@ from .tracker import DotState, TrackerSet
 NAMES = ("ruler_a", "ruler_b")
 MIN_LENGTH_PX = 60        # a ruler shorter than this in the picture gives a coarse scale
 MIN_DOT_DIAMETER_CM = 2.0  # protocol requirement: stickers at least this wide
-EDGE_BLUR_PX = 1.3        # the size read from the picture runs this many pixels too large (soft edges); measured on synthetic dots
+EDGE_BLUR_PX = 0.0        # allowance taken off the size read from the picture. Was 1.3 until 0.7.2, measured on synthetic dots that
+                          # cv2.circle draws about 1 px wider than asked. On discs of exactly known size the reading is within
+                          # +0.3 px (sharp) to -0.7 px (soft) of the truth, so nothing is taken off. Verify with real stickers.
 MIN_SEPARATION_PX = 20    # the two ruler dots must be this far apart (otherwise the same dot was clicked twice)
 
 
 def estimate_diameter_cm(diameter_px, px_per_cm):
-    """Approximate real dot width. The tracker measures the blob above half its peak brightness; with soft edges this
-    reads about EDGE_BLUR_PX too large, which is removed here. Verify with real stickers of known size."""
+    """Approximate real dot width. The tracker measures the blob above half its peak brightness; on exactly sized discs that
+    is within +0.3 px (sharp) to -0.7 px (soft picture) of the true width, so EDGE_BLUR_PX is 0 (no correction). A real
+    sticker or hand-drawn disc (ink spreading, lens blur) can differ: verify with a disc of known size."""
     return max(diameter_px - EDGE_BLUR_PX, 0.0) / px_per_cm
 
 

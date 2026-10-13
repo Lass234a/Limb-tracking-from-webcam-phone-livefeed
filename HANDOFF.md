@@ -17,8 +17,8 @@ Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed
    1000 samples per second, and has a Review tab that turns a recording into numbers (angle during the hold, peak force, torque, checks).
 2. **Why:** maximal isometric contractions (MVIC) at set joint angles for a strength-scaling study; the angles and forces feed AnyBody
    muscle models, so every number must be defensible to an external partner (AnyBody Technology).
-3. **State:** version **0.7.1** (`SOFTWARE_VERSION` in `limbtrack/engine.py`), on `origin/main` (commit `e321ff0`). Tags `v0.3.0` to `v0.7.0` are pushed; **0.7.1 has no tag**.
-   Last full test run (0.7.0): **472 passed, 1 skipped**. 0.7.1 was made in a separate session (load cell regression); I re-ran the force/load cell/analysis/provenance tests on it (56 tests; one stale version check was fixed, see section 9) but **not the full suite**.
+3. **State:** version **0.7.2** (`SOFTWARE_VERSION` in `limbtrack/engine.py`; tape dots, `MARKERS.md`), committed locally on top of `origin/main` (0.7.1 = `e321ff0`). Tags `v0.3.0` to `v0.7.0` are pushed; **0.7.1 and later have no tag**.
+   Full test runs on 2026-10-13: **0.7.1: 481 passed, 1 skipped** (the first full run of 0.7.1); **0.7.2: 496 passed, 1 skipped** (15 new tape-dot tests). Each run takes 18-19 min.
 4. **Not yet validated:** the angles have never been compared with a goniometer/inclinometer; no real session with the final camera,
    lighting and stickers has been run. Everything so far is synthetic tests plus a few bench recordings (board with black magnets, one leg
    session P12). Treat angles as positioning data until `SETUP_AND_VALIDATION.md` section 4 is done.
@@ -66,7 +66,7 @@ Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed
 
 Documents (all in the project root, written for the user as well): `README.md` (usage), `FEATURES.md` (every function, what it does to
 the numbers, CSV/meta contents, section H = what is unreliable, section I = roadmap), `CHANGELOG.md` (per version, with measured
-effects), `PARKED.md` (decided-not-to-build list), `SETUP_AND_VALIDATION.md` (set-up rules, validation plan, force/hum/strap notes).
+effects), `PARKED.md` (decided-not-to-build list), `SETUP_AND_VALIDATION.md` (set-up rules, validation plan, force/hum/strap notes), `MARKERS.md` (how to make and place the tape dots, what was tested).
 `audit/` (not in git) holds the 2026-10 Opus audit (`AUDIT.md` technical, `AUDIT_overview.html` plain, `findings.json`).
 
 ### Code map (`limbtrack/`)
@@ -117,6 +117,13 @@ Tests: 52 files in `tests/` (synthetic leg generator `synthetic.py` makes exact-
 - Dots on P12: malleolus 1.6 cm and trochanter 1.98 cm were below the 2 cm minimum (the dot-size estimate uses a 1.3 px edge allowance; verify with real stickers of known size).
 - **Strap dot** (second force trial) was lost in 95 % of pictures: it sat on the ankle buckle/sock where no dot is visible. Use a bright
   sticker (>= 2 cm) on the flat, camera-facing part of the strap, a few cm from the buckle. The **anchor dot** was steady (0.3 px).
+
+### Markers: tape dots (decided 2026-10-13, synthetic tests only; see `MARKERS.md`)
+- **Why:** black sticker dots could not be sourced. The planned dot is a **solid black disc (about 2.2 cm) drawn by hand on a square of white matt sports tape**, with *Dot colour = Black dots*. The user also floated: tape strip from ASIS to PSIS, a black line along a taped strap, tape patches at the strap/anchor. Decision after testing: dots (a strip with a disc at each end is fine), **no line tracker** (it would not improve accuracy: tracker scatter 0.2 mm is under 0.1 deg on a 15 cm ASIS-PSIS line, a 5 mm placement error is about 2 deg), revisit only if the first real session loses the ASIS/PSIS dots from the side.
+- **Side view of ASIS/PSIS:** these bone points face forward/backward, so a disc on them is seen edge-on. The camera only needs the point's position in the picture, which does not change when the disc is moved sideways towards the camera: put the disc on the outer surface of the hip level with the bone point (palpate, hold a ruler horizontally at the point towards the camera, mark where it meets the skin). Side-on discs (50-70 % width) tracked as well as round ones.
+- **Silent failures found (all avoided by the rules in `MARKERS.md`):** a thin *outline* circle on tape it is not centred on with Auto colour in a soft picture was tracked on the white tape, 11 mm off, nothing lost, no warning; an outline with a gap shifts the centre 1.3-3 mm; a thick (4 mm) marker line joining two discs merges them into one blob (marked up to 1.7 cm off, or lost). Ideas to harden this in the program (not built): a roundness/size check at marking (refuse or warn on an elongated or much larger blob), a smarter Auto that prefers a dark disc inside a white blob.
+- **Dot-size check was wrong by about 1 px** (the 1.3 px allowance came from OpenCV drawing the synthetic dots about 1 px too big); corrected in 0.7.2. Needs one check with a real disc of known size.
+- **Not known:** whether ASIS/PSIS stay visible in the real hip-extension posture (the protocol draft says "(lying??)" for the extensors; face down would hide the ASIS), real glare/creasing/sweat, tape and ink sliding on skin.
 
 ### Cameras
 - DroidCam: the virtual camera "DroidCam Video" cannot be opened by index through DirectShow; it works through Media Foundation (the
@@ -175,7 +182,7 @@ stands in (reported). It has only been exercised on synthetic geometry so far.
 ## 7. Open items, in a suggested order
 
 **Before real data collection (user/hardware):**
-1. Real-world session with the final camera, bright lamp, spec-size (>= 2 cm) stickers, ruler and anchor/strap dots; run the Check tab on it.
+1. Real-world session with the final camera, bright lamp, **tape dots made as in `MARKERS.md`** (filled disc about 2.2 cm, Dot colour = Black), ruler and anchor/strap dots; run the Check tab on it. First things to look at: do the ASIS/PSIS discs stay tracked when the hip moves, and does the size read-out agree with a disc of known size.
 2. Validation against a jig + inclinometer, and sticker placement repeatability (`SETUP_AND_VALIDATION.md` section 4).
 3. Confirm the amplifier-to-DAQ ground wiring and the isolated-outlet/charger routine; confirm the cell's rated capacity and the rig's safety rating.
 4. Tap test to measure the picture delay for the camera chain that will be used (repeat if phone/app/cable/Wi-Fi changes).
@@ -184,6 +191,9 @@ stands in (reported). It has only been exercised on synthetic geometry so far.
 
 **Software ideas the user was offered (none started):** force-versus-angle plot (slack/stiffness); automatic MVIC markers from the force;
 an automatic picture-delay estimator from a tap; a faster live loop (down-scaled tracking); a check-weight step in the calibration flow.
+**From the tape-dot work (2026-10-13, none started):** a roundness/size check when a dot is marked (an elongated or much larger blob is
+refused or warned: catches a merged line, the tape instead of the disc); a smarter *Auto* colour that prefers a dark disc inside a white blob;
+a line (stripe-on-tape) marker, only if the first real session loses ASIS/PSIS from the side.
 **Never done:** a final multi-agent Opus re-audit of 0.3-0.7 (TRK-01 neighbour protection and the recording rework were not Opus-reviewed).
 **Parked (see `PARKED.md`):** frontal view/hip abduction, two cameras, lens calibration, camera alignment aid, change-since-lock for the main
 joint, ghost pose (commented out, `# PARKED-GHOST:`), numbers-only mode, plug-in camera architecture, AVI container with repair.

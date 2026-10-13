@@ -438,6 +438,9 @@ class LiveTab(QWidget):
         for label, k in (("Auto (white or black)", "auto"), ("White dots", "white"), ("Black dots", "black")):
             self.kind_combo.addItem(label, k)
         self.kind_combo.currentIndexChanged.connect(self.on_kind_changed)
+        self.kind_combo.setToolTip("Black discs drawn on white tape (see MARKERS.md): choose Black dots. On Auto the program can follow "
+                                  "the white tape instead of a thin ink circle, without any warning. Auto is for white dots on dark "
+                                  "cloth and black dots on skin in the same picture.")
         self.facing_combo = NoWheelComboBox()
         self.facing_combo.addItem("Right side of the image", True)
         self.facing_combo.addItem("Left side of the image", False)
