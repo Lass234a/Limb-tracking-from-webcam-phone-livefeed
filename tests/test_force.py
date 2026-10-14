@@ -413,6 +413,10 @@ def humming_trial(tmp_path, hum=0.09):
     rng = np.random.RandomState(1)
     v = clean + hum * np.sin(2 * np.pi * 50.0 * t) + rng.normal(0, 0.01, t.size)
     tr.force_t, tr.force_v, tr.force_n = t, v, np.full(t.size, np.nan)
+    # The pictures of the real (3 s of pictures) recording get a time axis that spans the injected signal. Before, they ended where the
+    # real recording ended, which depends on how fast the computer renders the pictures (about 7.5 s on an idle machine): the torque
+    # and picture-delay tests, which look at 8 to 13 s, passed only on a busy machine.
+    tr.t = np.linspace(0.0, 15.0, len(tr.t))
     return tr, clean
 
 

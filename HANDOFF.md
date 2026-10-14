@@ -17,8 +17,8 @@ Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed
    1000 samples per second, and has a Review tab that turns a recording into numbers (angle during the hold, peak force, torque, checks).
 2. **Why:** maximal isometric contractions (MVIC) at set joint angles for a strength-scaling study; the angles and forces feed AnyBody
    muscle models, so every number must be defensible to an external partner (AnyBody Technology).
-3. **State:** version **0.7.2** (`SOFTWARE_VERSION` in `limbtrack/engine.py`; tape dots, `MARKERS.md`), committed locally on top of `origin/main` (0.7.1 = `e321ff0`). Tags `v0.3.0` to `v0.7.0` are pushed; **0.7.1 and later have no tag**.
-   Full test runs on 2026-10-13: **0.7.1: 481 passed, 1 skipped** (the first full run of 0.7.1); **0.7.2: 496 passed, 1 skipped** (15 new tape-dot tests). Each run takes 18-19 min.
+3. **State:** version **0.8.0** (`SOFTWARE_VERSION` in `limbtrack/engine.py`; automatic MVIC markers, tape dots), committed locally on top of `origin/main` (0.7.1 = `e321ff0`); nothing pushed. Tags `v0.3.0` to `v0.7.0` are pushed; **0.7.1 and later have no tag**.
+   Full test runs on 2026-10-13/14: 0.7.1: 481 passed, 1 skipped; 0.7.2: 496 passed, 1 skipped (both while the computer was busy, which hid three machine-speed-dependent test failures, see section 9); **0.8.0: 517 passed, 1 skipped, on an idle machine** (12 min).
 4. **Not yet validated:** the angles have never been compared with a goniometer/inclinometer; no real session with the final camera,
    lighting and stickers has been run. Everything so far is synthetic tests plus a few bench recordings (board with black magnets, one leg
    session P12). Treat angles as positioning data until `SETUP_AND_VALIDATION.md` section 4 is done.
@@ -28,7 +28,7 @@ Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed
 7. **Raw data is never smoothed or corrected.** Volts and dot positions are saved exactly as measured; smoothing and calibration are
    applied afterwards, in Review, and recorded.
 8. **Biggest practical risks right now:** (a) strap dot not visible on the strap, (b) mains hum on the force unless the laptop charges from
-   the isolated outlet, (c) live frame rate (17-20 fps, camera can do 25-30), (d) MVIC markers pressed 4-5 s before the force really rises,
+   the isolated outlet, (c) live frame rate (17-20 fps, camera can do 25-30), (d) MVIC markers pressed 4-5 s before the force really rises (answered in 0.8.0 by the automatic markers, which are untried on the real load cell),
    (e) only one program can hold the DAQ, and a phone stream allows only one viewer.
 
 ---
@@ -75,8 +75,8 @@ recording, privacy, force hand-off) | `recorder.py` (CSV row by row, two encoder
 DSHOW then MSMF, streams, 20 s open time-out) | `gui.py` (Live tab) | `review.py` (Review tab, `Trial`) | `analysis.py` (checks, force
 timing, torque, per-participant summary) | `force.py` (DAQ source, calibration, smoothing, hum) | `loadcell.py` + `load_cell_calibrations.json`
 (regression registry, precision) | `scale.py` (ruler) | `pull.py` (strap/anchor pull angle, moment arm) | `privacy.py` | `protocol.py` |
-`geometry.py`, `angles.py`, `filters.py`, `displacement.py`, `provenance.py`, `diagnose.py`, `overlay.py`, `synthetic.py`.
-Tests: 52 files in `tests/` (synthetic leg generator `synthetic.py` makes exact-angle pictures).
+`automvic.py` (automatic MVIC start/end markers from the force) | `geometry.py`, `angles.py`, `filters.py`, `displacement.py`, `provenance.py`, `diagnose.py`, `overlay.py`, `synthetic.py`.
+Tests: 52 test files in `tests/` (49 before the 2026-10-13 work) (synthetic leg generator `synthetic.py` makes exact-angle pictures).
 
 ---
 
@@ -162,13 +162,13 @@ Tests: 52 files in `tests/` (synthetic leg generator `synthetic.py` makes exact-
 
 ---
 
-## 6. Force workflow as built (0.7.1)
+## 6. Force workflow as built (0.7.1, automatic markers added in 0.8.0)
 
 1. Close MATLAB/NI MAX/anything holding the DAQ (the first attempt failed with "resource reserved" because MATLAB held `Dev1`).
 2. Live tab -> Force box -> source *NI DAQ*, `Dev1`, `ai0`, differential -> *Connect*.
 3. **Zero** (button or Z) with the rig hanging and nothing loaded; repeat whenever the set-up changes. **The zero is not kept when the program
    closes** (a new start shows volts only until zeroed); the zero used is saved in each trial. The active regression gives newtons.
-4. Record. Force appears in the picture header (N and V) and in `force.csv` / `force_v`, `force_n`. A DAQ that stops, a signal at the +-10 V
+4. Record. **Optionally tick *Mark the MVIC automatically from the force* first (Record box): Record arms it, the start marker is written when the force leaves its rest level (about 0.15-0.2 s after the ramp began) and the end marker 7 s later; S / E by hand take over.** Force appears in the picture header (N and V) and in `force.csv` / `force_v`, `force_n`. A DAQ that stops, a signal at the +-10 V
    limit, or no samples for 0.5 s is flagged in the picture and `meta.json`. Force needs a **live camera** (not a video file).
 5. Review: Check / Angles / Force / Calibration / Dots-and-pull tabs, force strip under the angle plot, *Window = force above half of
    peak*, smoothing box, hum warning, *Recalculate newtons*, precision of the peak from the regression (warns beyond the heaviest calibration load),
@@ -189,7 +189,7 @@ stands in (reported). It has only been exercised on synthetic geometry so far.
 5. Decide: plateau mean angle vs angle at peak force for AnyBody; trials per position (`TRIALS_PER_POSITION = 2` in `gui.py`; the session
    plan counts against it); storage/retention of raw video; whether numbers-only recording is needed if video is not permitted.
 
-**Software ideas the user was offered (none started):** force-versus-angle plot (slack/stiffness); automatic MVIC markers from the force;
+**Software ideas the user was offered (none started):** force-versus-angle plot (slack/stiffness); *(automatic MVIC markers from the force: done in 0.8.0)*;
 an automatic picture-delay estimator from a tap; a faster live loop (down-scaled tracking); a check-weight step in the calibration flow.
 **From the tape-dot work (2026-10-13, none started):** a roundness/size check when a dot is marked (an elongated or much larger blob is
 refused or warned: catches a merged line, the tape instead of the disc); a smarter *Auto* colour that prefers a dark disc inside a white blob;
@@ -214,6 +214,9 @@ joint, ghost pose (commented out, `# PARKED-GHOST:`), numbers-only mode, plug-in
 ---
 
 ## 9. Notes for the next agent (methods and quirks)
+
+- **Tests that depend on how fast the computer is:** the helper `humming_trial` (`tests/test_force.py`) used to keep the picture times of a real 3 s recording (about 7.5 s long on an idle machine, longer on a busy one) while the torque and picture-delay tests in `tests/test_analysis.py` look at 8 to 13 s, so they failed on an idle machine and passed on a busy one. Fixed in 0.8.0 (the pictures now get a time axis that spans the injected signal). If a test passes only 'when the machine is busy', look for a real-time recording whose length is assumed. Run the full suite on an idle machine at least once before trusting a green result.
+- **Automatic MVIC markers (0.8.0):** pure detection in `limbtrack/automvic.py` (unit tests on made-up traces, `tests/test_automvic.py`); the engine glue is `_arm_auto_mvic` / `_auto_mvic_step` / `add_event` in `engine.py` and is tested in real time with `SimulatedForce` (`tests/test_automvic_engine.py`). Starting a recording takes a variable time (video writers), so those tests read the true onset from the saved `force.csv` instead of assuming when the ramp comes. The markers use the same labels as S / E so Review needs no change. Parameters worth tuning on the real load cell: the 10 N threshold, the 70 ms sustain, the 20 ms averaging (constants at the top of `automvic.py`). One MVIC per recording by design.
 
 - **Test status of 0.7.1:** committed by another session. On 2026-10-13 I re-ran `test_loadcell`, `test_force`, `test_force_gui`, `test_analysis` and
   `test_provenance`: 55 passed and 1 failed, the failure being `test_provenance` still expecting the literal `0.7.0` after the bump to `0.7.1`. I changed that

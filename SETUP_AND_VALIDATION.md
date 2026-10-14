@@ -71,8 +71,13 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
    the start.
 2. Check *Participant faces*. The program warns and refuses Lock if the setting contradicts the marked dots.
 3. Mark the dots, position the participant, **press Lock before Record** (it cannot be changed during a recording).
-4. Record. Press **S** (or F6) at the start of the contraction and **E** (or F7) at its end for every trial: the hold
-   analysis depends on these markers. After typing in Participant or Notes press Enter first, or use the F-keys.
+4. Record. **With the force connected, tick *Mark the MVIC automatically from the force* (Record box) and press Record while the
+   person is at rest: the start marker is written when the ramp begins and the end marker 7 s later (the 1-5-1 tempo).** Watch
+   *AUTO MVIC* in the picture: *armed* before the ramp, a count while it runs, *start and end marked* after. Without the
+   force, or if you prefer: press **S** (or F6) at the start of the contraction and **E** (or F7) at its end for every trial. Either
+   way the hold analysis depends on these markers (Review's *Window = force above half of peak* does not).
+   Check the first real trials: in Review the start marker should sit right at the force rise (the Check tab says how long after
+   the real start of the ramp it came, normally 0.15 to 0.2 s), and the 10 N threshold must be above the rest noise and well below the ramp. After typing in Participant or Notes press Enter first, or use the F-keys.
 5. After the trial look at the recording label (frames, duration, "VERY SHORT", "NOTHING RECORDED"), and at any gap or
    partly covered dot message. Repeat the trial if the camera lost frames during the hold.
 6. Do not click the video, change settings or scroll over the side panel during a recording; the program ignores most of it

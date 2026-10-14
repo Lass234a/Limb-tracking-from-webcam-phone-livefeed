@@ -27,12 +27,13 @@ from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import FrameSizeChanged, TrialRecorder
 from . import privacy, provenance
 from .pull import compute_pull, describe as describe_pull
+from .automvic import DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N, DEFAULT_THRESHOLD_V, KEEP_S, TRIGGERED, AutoMvic
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.7.2"
+SOFTWARE_VERSION = "0.8.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -61,7 +62,7 @@ class _FrozenWhileRecording:
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
-                 "privacy", "force_setup"]
+                 "privacy", "force_setup", "auto_mvic_setup"]
 
 
 class Engine:
@@ -75,6 +76,9 @@ class Engine:
     privacy_crop = _FrozenWhileRecording("the privacy crop")
     privacy_masks = _FrozenWhileRecording("the privacy masks")
     force = _FrozenWhileRecording("the force source")
+    auto_mvic = _FrozenWhileRecording("the automatic MVIC markers")
+    auto_mvic_threshold = _FrozenWhileRecording("the force rise that starts the automatic MVIC")
+    auto_mvic_seconds = _FrozenWhileRecording("the length of the automatic MVIC")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -135,6 +139,13 @@ class Engine:
         self.rec_info = {}
         self._timing = {"process": [], "arrival": []}       # per recorded frame: work time, arrival time
         self.force = None            # a limbtrack.force.ForceSource (load cell through a DAQ), or None
+        self.auto_mvic = False       # mark MVIC start and end from the force (limbtrack/automvic.py); needs the force
+        self.auto_mvic_threshold = DEFAULT_THRESHOLD_N   # newtons the force must rise from its rest level to call the start
+        self.auto_mvic_seconds = DEFAULT_LENGTH_S        # the end marker comes this long after the start marker (protocol: 1-5-1 = 7 s)
+        self._auto = None            # the AutoMvic of the present recording, or None
+        self._auto_cursor = 0.0      # force samples up to this time have been given to it
+        self._auto_scale = 1.0
+        self._pending_event_auto = False   # the marker waiting to be written was set by the automatic MVIC
         self._force_active = False   # this recording has force
         self._force_cursor = 0.0     # force samples up to this time have been handed to the recording
         self._force_stats = None
@@ -526,8 +537,36 @@ class Engine:
             if label is None:
                 self._marker_n += 1
                 label = f"marker {self._marker_n}"
-            self._pending_event = label
+            if self._auto is not None and label in ("MVIC start", "MVIC end"):
+                self._auto.manual()                       # the operator took the markers over
+            self._pending_event, self._pending_event_auto = label, False
             return True
+
+    def _auto_mvic_step(self, t):
+        """Give the force samples that came in to the automatic MVIC, and write its start / end marker on this picture when due."""
+        a = self._auto
+        if a is None or self.rec is None or self.force is None or self.force.error:
+            return
+        ts, vs = self.force.samples_between(self._auto_cursor, t)
+        if ts.size:
+            self._auto_cursor = float(ts[-1]) + 1e-9
+            a.feed(ts, vs * self._auto_scale)
+        if self._pending_event is not None:               # a marker is already waiting for this picture: try again on the next
+            return
+        if a.state == TRIGGERED:
+            self._pending_event, self._pending_event_auto = "MVIC start", True
+            a.start_marked(t)
+        elif a.end_is_due(t):
+            self._pending_event, self._pending_event_auto = "MVIC end", True
+            a.end_marked(t)
+
+    def auto_mvic_status(self):
+        """(state, plain text) of the automatic MVIC for the window; ('off', '') when it is not in use in this recording."""
+        with self.lock:
+            a = self._auto
+            if a is None or self.rec is None:
+                return "off", ""
+            return a.state, a.status_text(self._times[-1] if self._times else 0.0)
 
     def _update_trails(self, states):
         """Add this frame's dot positions to the trails. A lost dot ends its segment; a new one starts when it is back."""
@@ -888,9 +927,11 @@ class Engine:
             weak = [n for n, st in states.items() if st.weak]
             if weak:
                 head.append("weak dot (fading): " + ", ".join(self.test.dot_title(n) for n in weak))
+            self._auto_mvic_step(t)
             event, self._pending_event = self._pending_event, None
+            auto_event, self._pending_event_auto = self._pending_event_auto and bool(event), False
             if event:
-                self._banner = (event, t)
+                self._banner = (event + (" (automatic)" if auto_event else ""), t)
             if self._banner and 0 <= t - self._banner[1] < 1.5:
                 head.append(f"MARK: {self._banner[0]}")
             nxt = self.next_dot_to_mark()
@@ -901,6 +942,8 @@ class Engine:
             if self.rec is not None:
                 head.extend(self._privacy_check(states))
             head.extend(self._force_header())
+            if self._auto is not None and self.rec is not None:
+                head.append(self._auto.status_text(t))
             # PARKED-GHOST: ghost = None
             # PARKED-GHOST: if self.locked and self.ghost_enabled and self._ghost:
                 # PARKED-GHOST: live = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
@@ -939,6 +982,8 @@ class Engine:
             problem = self.privacy_problem()
             if problem:
                 raise RuntimeError(problem)
+            if self.auto_mvic and self.force is None:
+                raise RuntimeError("The automatic MVIC markers need the force reading. Connect the force, or switch them off.")
             if self.force is not None:
                 if (self.camera_info or {}).get("is_file"):
                     raise RuntimeError("Force is recorded only with a live camera: a video file is not in step with the DAQ clock. "
@@ -966,6 +1011,7 @@ class Engine:
                 self._force_stats = {"n": 0, "sum": 0.0, "peak": math.nan, "peak_clock": None, "first": None, "last": None}
                 self._force_gap_frames = 0
                 self._force_clip0 = self.force.clipped_total
+            self._arm_auto_mvic()
             self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
             self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
@@ -974,6 +1020,23 @@ class Engine:
             # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
             return self.rec.paths
+
+    def _arm_auto_mvic(self):
+        """Pressing Record arms the automatic MVIC: it starts from the last few seconds of force, so a ramp that begins at once is found."""
+        self._auto = None
+        if not self.auto_mvic or self.force is None:
+            return
+        cal = self.force.calibration
+        if cal.has_slope:                                 # newtons without the zero: only the rise from the rest level is used
+            unit, self._auto_scale, thr = "N", float(cal.n_per_v), self.auto_mvic_threshold
+        else:
+            unit, self._auto_scale, thr = "V", 1.0, DEFAULT_THRESHOLD_V
+        self._auto = AutoMvic(thr, self.auto_mvic_seconds, self.force.rate, unit)
+        now = time.perf_counter()
+        ts, vs = self.force.samples_between(now - KEEP_S, now)
+        self._auto_cursor = float(ts[-1]) + 1e-9 if ts.size else now
+        if ts.size:
+            self._auto.prime(ts, vs * self._auto_scale)
 
     def _pull_meta(self):
         if not self.pull_active:
@@ -1023,6 +1086,8 @@ class Engine:
             "overlay_video_saved": self.save_overlay,
             "privacy": self._privacy_meta(),
             "force_setup": self.force.info() if self.force is not None else None,
+            "auto_mvic_setup": ({"enabled": True, "threshold_n": self.auto_mvic_threshold, "length_s": self.auto_mvic_seconds}
+                                if self.auto_mvic else {"enabled": False}),
             "privacy_dot_warnings": {"frames_near_crop_edge_or_in_mask": dict(self._privacy_hits)},
             "camera_setup_checklist": dict(self.camera_setup),
             "camera_check": self.camera_check,
@@ -1068,7 +1133,10 @@ class Engine:
             if self._force_active:
                 self._take_force(None)                    # the last samples
                 meta["force"] = self._force_meta()
+            if self._auto is not None:
+                meta["auto_mvic"] = self._auto.result(self.rec._t0)
             rec, self.rec = self.rec, None                      # cleared first: a failure while saving must not leave 'recording' on
+            self._auto = None
             if self.force is not None:
                 self.force.frozen = False
             self._force_active = False

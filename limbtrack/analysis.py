@@ -200,6 +200,17 @@ def trial_checks(tr, t0=None, t1=None):
                              "Use 'Window = force above half of peak' for the hold numbers.")
             else:
                 add("ok", f"MVIC marker and force onset agree within {abs(lag):.1f} s.")
+        am = m.get("auto_mvic")
+        if am:
+            if am.get("start_marker_t_s") is not None:
+                late = am.get("start_marker_after_onset_s")
+                add("info", "The MVIC start and end were marked automatically from the force"
+                    + (f": the start {late:.2f} s after the force began to rise, the end {am['length_s']:g} s after the start." if late is not None else "."))
+            elif am.get("state") == "manual":
+                add("info", "The automatic MVIC markers were on, but a marker was pressed by hand and took over.")
+            else:
+                add("check", f"The automatic MVIC markers were on, but the force never rose by {am.get('threshold')} {am.get('unit')}: no start was marked. "
+                              "Use 'Window = force above half of peak'.")
     # strap and anchor
     if "anchor" in tr.tracks:
         ax, ay = tr.tracks["anchor"]

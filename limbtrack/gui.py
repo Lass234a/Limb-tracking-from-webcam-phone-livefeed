@@ -23,6 +23,7 @@ from .engine import Engine
 from .loadcell import GRAVITY, find_regression
 from .force import ForceCalibration, ForceError, NiDaqForce, SimulatedForce
 from .recorder import count_trials
+from .automvic import DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab
 
@@ -562,6 +563,23 @@ class LiveTab(QWidget):
         mrow = QHBoxLayout()
         for b in (self.btn_start_mark, self.btn_end_mark, self.btn_mark):
             mrow.addWidget(b)
+        self.chk_auto_mvic = QCheckBox("Mark the MVIC automatically from the force")
+        self.chk_auto_mvic.setToolTip("Press Record to arm it. The MVIC start marker is set when the force rises from its rest level (the ramp "
+                                      "begins) and the end marker the number of seconds below after it (protocol, 1-5-1 tempo: 1 s up, 5 s hold, "
+                                      "1 s relax = 7 s). Needs the force connected. S and E still work: pressing one takes the markers over.")
+        self.chk_auto_mvic.setEnabled(False)
+        self.chk_auto_mvic.toggled.connect(self.on_auto_mvic_toggled)
+        self.auto_thr_spin = self._spin(1.0, 500.0, 1.0, " N")
+        self.auto_thr_spin.setValue(DEFAULT_THRESHOLD_N)
+        self.auto_thr_spin.setToolTip("The start is called when the force has risen this much from its rest level and keeps rising. Small enough "
+                                      "to be well inside the ramp, big enough that a touch on the strap does not count.")
+        self.auto_thr_spin.valueChanged.connect(lambda v: self._set_setting("auto_mvic_threshold", self.auto_thr_spin, v))
+        self.auto_len_spin = self._spin(1.0, 30.0, 0.5, " s")
+        self.auto_len_spin.setValue(DEFAULT_LENGTH_S)
+        self.auto_len_spin.setToolTip("The end marker comes this long after the start marker. Protocol: ramp 1 s + hold 5 s + relax 1 s = 7 s.")
+        self.auto_len_spin.valueChanged.connect(lambda v: self._set_setting("auto_mvic_seconds", self.auto_len_spin, v))
+        for w in (self.auto_thr_spin, self.auto_len_spin):
+            w.setEnabled(False)
         rc = QGroupBox("Record")
         rf = QFormLayout(rc)
         rf.addRow("Participant ID", self.participant)
@@ -569,6 +587,9 @@ class LiveTab(QWidget):
         rf.addRow(self.trial_label)
         rf.addRow(self.btn_rec)
         rf.addRow(mrow)
+        rf.addRow(self.chk_auto_mvic)
+        rf.addRow("Start when force rises by", self.auto_thr_spin)
+        rf.addRow("MVIC length", self.auto_len_spin)
         rf.addRow(self.rec_label)
         rf.addRow(self.key_hint)
         rf.addRow(btn_open)
@@ -1385,6 +1406,10 @@ class LiveTab(QWidget):
         self.btn_force.setText("Disconnect" if connected else "Connect")
         self.btn_force_zero.setEnabled(connected and not recording)
         self.btn_force_cal.setEnabled(connected and not recording)
+        if not connected and self.chk_auto_mvic.isChecked() and not recording:
+            self.chk_auto_mvic.setChecked(False)                  # the automatic markers need the force
+        for w in (self.chk_auto_mvic, self.auto_thr_spin, self.auto_len_spin):
+            w.setEnabled(connected and not recording)
         warn = False
         if not connected:
             self.force_label.setText("Force: not connected")
@@ -1586,6 +1611,15 @@ class LiveTab(QWidget):
         at = time.perf_counter() - self._rec_started if self._rec_started is not None else 0.0
         self._marker_msg = (f"{label or 'Marker'} marked at {at:.1f} s", time.monotonic() + 3.0)
 
+    def on_auto_mvic_toggled(self, on):
+        try:
+            self.engine.auto_mvic = bool(on)
+        except RuntimeError as e:
+            self.chk_auto_mvic.blockSignals(True)
+            self.chk_auto_mvic.setChecked(bool(self.engine.auto_mvic))
+            self.chk_auto_mvic.blockSignals(False)
+            self.say(str(e))
+
     def toggle_record(self, checked=None, force_stop=False):
         if self.btn_rec.isChecked() and not force_stop:
             if self.worker is None or not self.worker.isRunning():
@@ -1721,9 +1755,14 @@ class LiveTab(QWidget):
                 self.rec_label.setText("NO VIDEO - nothing is being recorded")
                 self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
             else:
-                c = self._marker_counts
+                c = dict(self._marker_counts)
+                a_state, a_text = self.engine.auto_mvic_status()
+                c['start'] += a_state in ("running", "done")             # markers the automatic MVIC wrote count too
+                c['end'] += a_state == "done"
                 text = (f"RECORDING  {time.perf_counter() - self._rec_started:5.1f} s   "
                         f"(MVIC start {c['start']}, end {c['end']}, other {c['other']})")
+                if a_text:
+                    text += "\n" + a_text
                 if time.monotonic() < self._marker_msg[1]:
                     text += "\n" + self._marker_msg[0]
                 self.rec_label.setText(text)
