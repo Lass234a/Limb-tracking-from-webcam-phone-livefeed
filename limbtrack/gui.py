@@ -1707,7 +1707,8 @@ class LiveTab(QWidget):
             self.cam_info.setText(f"Video file: {g['width']}x{g['height']}, {cam.file_fps:.1f} fps")
             self.cam_info.setStyleSheet("")
             return
-        text = f"Camera delivers {g['width']}x{g['height']}" + (f", {m:.1f} fps measured" if m else ", measuring frame rate...")
+        text = (f"Camera delivers {g['width']}x{g['height']}" + (f", {m:.1f} fps measured" if m else ", measuring frame rate...")
+                + (f" ({cam.device_name})" if cam.device_name else ""))
         problems = cam.settings_problems()
         if problems:
             text += "\nWARNING: " + "; ".join(problems)

@@ -134,6 +134,8 @@ def test_a_camera_directshow_cannot_open_is_opened_through_media_foundation(monk
             pass
 
     monkeypatch.setattr(cam_mod.cv2, "VideoCapture", Cap)
+    monkeypatch.setattr(cam_mod, "camera_names", lambda: None)          # (names unknown: the same number, as before;
+    monkeypatch.setattr(cam_mod, "msmf_camera_names", lambda: None)     #  matching by name is tested in test_camera_by_name.py)
     cam = cam_mod.CameraSource(1)
     assert cam.backend == "MSMF" and calls[:2] == [cv2.CAP_DSHOW, cv2.CAP_MSMF]
     assert cam.info()["capture_backend"] == "MSMF"

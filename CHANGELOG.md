@@ -3,6 +3,15 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.8.1 - 2026-10-14
+
+### The DroidCam camera is opened by name: the program was opening the laptop webcam instead (bug fix)
+- **Found with the new DroidCam Client over USB.** DirectShow lists the cameras as `DroidCam Video, Integrated Camera`; Windows Media Foundation lists them as `Integrated Camera, DroidCam Video`. DirectShow cannot open the DroidCam camera (it refuses at once, known since 0.4.1), so the program fell back to Media Foundation **under the same number, 0, which is the laptop webcam**. That camera is slow to open, so the program waited 20 s and then blamed the phone ("Opening the camera did not answer ... not connected to the phone"), although the client preview moved and the Windows Camera app worked. The DroidCam camera itself, as Media Foundation camera 1, opens in 0.3 s and delivers 1280x720 at about 28 fps.
+- **Now** the fallback lists the Media Foundation cameras by name (`camera.msmf_camera_names`, which opens no camera) and opens the one with the same name as the camera chosen in the list. If the names are known and the camera is not in the Media Foundation list, it **refuses** (it will not open another camera under its number). If the names cannot be read at all, the same number is used as before. The window's camera line names the camera opened through Media Foundation, and `meta.json` `camera_settings` records `capture_device_name`, `capture_media_foundation_index` and `capture_matched_by_name`. With the real DroidCam: list number 0 opens in 0.7 s as 'DroidCam Video' (Media Foundation 1), 1280x720.
+- **Heads-up for older recordings:** before this version a camera opened through the Media Foundation fallback could silently be a different camera than the one chosen if the two numberings differed. Look at the video of any trial recorded with `capture_backend: MSMF` (the first stream and phone tests) to be sure it shows what you expect.
+- The advice texts ("did not answer within 20 s" and the phone check) no longer blame only a client that is not connected: they say how to add the phone in the new client (Add > DroidCam, Refresh Device List; the older client has Wi-Fi and USB tabs) and that a hung camera open stays inside the program until it is closed and started again.
+- No tracking, angle, force or recording number changes. `tests/test_camera_by_name.py` (no camera hardware: OpenCV and the name lists are faked). **Not tried:** other phone apps (Iriun, Camo) and other virtual cameras. (An idea that turned out wrong on the way: that OpenCV's hardware-accelerated Media Foundation conversion made the DroidCam open stall; it only slowed down the laptop webcam that was being opened by mistake, and no such setting is made.)
+
 ## 0.8.0 - 2026-10-13
 
 ### Automatic MVIC start and end markers from the force

@@ -3,6 +3,7 @@
 Phones will appear here as well: apps such as Iriun / Camo / DroidCam show up as an
 ordinary webcam index, and a network stream is just a URL string.
 """
+import ctypes
 import re
 import threading
 from urllib.parse import urlsplit, urlunsplit
@@ -57,7 +58,9 @@ def call_with_timeout(fn, seconds, what="The camera"):
         box["abandoned"] = True
         raise CameraOpenTimeout(f"{what} did not answer within {seconds:g} s. For a phone camera the usual cause is that the phone's PC "
                                 "program (for example DroidCam Client) is not connected to the phone: connect it there first and wait "
-                                "until its preview moves. Also close other programs that may be using the camera (browser, Teams, OBS).")
+                                "until its preview moves. Also close other programs that may be using the camera (browser, Teams, OBS). If it IS "
+                                "connected and its preview moves, close this program completely and start it again: a camera open that hung stays "
+                                "inside it until then.")
     if "error" in box:
         raise box["error"]
     return box["value"]
@@ -112,6 +115,10 @@ class CameraSource:
     reconnects = 0
     kind = "webcam"        # 'webcam', 'stream' or 'file' (set when the source is opened)
     backend = "DSHOW"      # how a webcam was opened: DirectShow, or Media Foundation when DirectShow could not open it
+    device_name = None     # the camera's name when it was opened through Media Foundation (found by name, see _media_foundation_index)
+    msmf_index = None      # the Media Foundation number it was opened under (not the same as its DirectShow number in the list)
+    name_matched = None    # True: the Media Foundation camera was chosen by its name; False: by the same number (names unavailable)
+    open_problem = ""      # why a webcam could not be opened, in plain English (when it could not)
     _grabber = None
 
     def __init__(self, source=0, width=1280, height=720, fps=30):
@@ -124,7 +131,7 @@ class CameraSource:
         self.reconnects = 0
         self.cap = self._open_capture()
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open video source: {source}")
+            raise RuntimeError(f"Could not open video source: {source}" + (f" ({self.open_problem})" if self.open_problem else ""))
         self._grabber = self._start_grabber()
         self.file_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.requested = {"width": width, "height": height, "fps": fps} if isinstance(source, int) else None
@@ -156,17 +163,39 @@ class CameraSource:
             # Some virtual cameras (DroidCam's "DroidCam Video") cannot be opened through DirectShow by index but work through
             # Windows Media Foundation. Only the size and rate are requested there; the format is not under our control.
             cap.release()
-            alt = cv2.VideoCapture(source, cv2.CAP_MSMF)
-            if alt.isOpened():
-                alt.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                alt.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                alt.set(cv2.CAP_PROP_FPS, fps)
-                self.backend = "MSMF"
-                return alt
-            alt.release()
+            # Media Foundation numbers its cameras in another order than DirectShow (2026-10-14: DirectShow 0 = DroidCam Video,
+            # Media Foundation 0 = Integrated Camera). The same number would open a different camera, so it is found by name.
+            index, name, by_name, problem = self._media_foundation_index(source)
+            if index is not None:
+                alt = cv2.VideoCapture(index, cv2.CAP_MSMF)
+                if alt.isOpened():
+                    alt.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    alt.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    alt.set(cv2.CAP_PROP_FPS, fps)
+                    self.backend, self.msmf_index, self.device_name, self.name_matched = "MSMF", index, name, by_name
+                    return alt
+                alt.release()
+                problem = f"Windows Media Foundation could not open '{name or index}' either"
+            self.open_problem = problem or ""
             return cv2.VideoCapture(source, cv2.CAP_DSHOW)       # (not opened: the caller reports it)
         self.backend = "DSHOW"
         return cap
+
+    @staticmethod
+    def _media_foundation_index(source):
+        """The Media Foundation number of the camera that has number `source` in the DirectShow list, found by its name.
+        Returns (index, name, matched_by_name, problem). `index` is None when it must not be opened this way: the names are known and
+        the camera is not in the Media Foundation list (opening some other camera under that number would be wrong). When the names
+        cannot be read at all (pygrabber missing) the same number is used, as before (matched_by_name False)."""
+        shown, mf = camera_names(), msmf_camera_names()
+        if shown is None or mf is None or not 0 <= source < len(shown):
+            return source, None, False, ""
+        name = shown[source]
+        for i, other in enumerate(mf):
+            if other.strip().lower() == name.strip().lower():
+                return i, name, True, ""
+        return None, name, True, (f"DirectShow cannot open '{name}' and Windows Media Foundation does not list it "
+                                  f"(it lists: {', '.join(mf) or 'no cameras'}). Is the phone program connected?")
 
     def _open_other(self):
         source = self.source
@@ -333,7 +362,9 @@ class CameraSource:
                 "exposure_wb_lock": getattr(self, "lock_report", None),
                 "failed_reads": self.failed_reads, "reconnects": self.reconnects,
                 "source_kind": self.kind, "frames_discarded": self.frames_discarded,
-                "capture_backend": self.backend if isinstance(self.source, int) else None}
+                "capture_backend": self.backend if isinstance(self.source, int) else None,
+                "capture_device_name": self.device_name, "capture_media_foundation_index": self.msmf_index,
+                "capture_matched_by_name": self.name_matched}
 
     def read(self):
         """Returns (frame, t) or (None, None). For files, t follows the video's own frame rate."""
@@ -373,14 +404,89 @@ class CameraSource:
         self.cap.release()
 
 
+def _com_init():
+    """COM must be started on the thread that lists the cameras (a camera is opened on a helper thread). Single-threaded apartment,
+    the model the DirectShow listing (pygrabber / comtypes) uses; an 'already started' or 'another model' answer is fine."""
+    dll = getattr(ctypes, "windll", None)
+    if dll is not None:
+        try:
+            dll.ole32.CoInitializeEx(None, 2)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def camera_names():
     """Names of the video devices Windows knows (webcams, and phone apps such as Iriun, DroidCam or Camo that appear as
     webcams), in the order OpenCV's DirectShow indexes use. Opens no camera. None if they cannot be listed."""
     try:
-        from pygrabber.dshow_graph import FilterGraph
+        from pygrabber.dshow_graph import FilterGraph      # (importing it starts COM for the first thread that does)
+        _com_init()                                          # ... and for any other thread that lists cameras
         return [str(n) for n in FilterGraph().get_input_devices()]
     except Exception:  # noqa: BLE001 - pygrabber missing or COM not available
         return None
+
+
+class _Guid(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.c_uint32), ("Data2", ctypes.c_uint16), ("Data3", ctypes.c_uint16), ("Data4", ctypes.c_ubyte * 8)]
+
+    def __init__(self, text):
+        import uuid
+        u = uuid.UUID(text)
+        super().__init__(u.time_low, u.time_mid, u.time_hi_version, (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+
+
+def _com_call(obj, index, restype, argtypes, *args):
+    """Call method number `index` of a COM interface pointer."""
+    vtbl = ctypes.cast(ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+    return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtbl[index])(obj, *args)
+
+
+def msmf_camera_names():
+    """Names of the video devices in the order Windows Media Foundation lists them, which is the order OpenCV's CAP_MSMF indexes use.
+    It is NOT the DirectShow order (2026-10-14: DirectShow lists DroidCam Video, Integrated Camera; Media Foundation the other way
+    round). Opens no camera. None if they cannot be listed."""
+    if getattr(ctypes, "windll", None) is None:
+        return None
+    started = False
+    try:
+        _com_init()
+        mfplat, mf, ole32 = ctypes.WinDLL("mfplat"), ctypes.WinDLL("mf"), ctypes.WinDLL("ole32")
+        if mfplat.MFStartup((0x0002 << 16) | 0x0070, 0) != 0:
+            return None
+        started = True
+        attrs = ctypes.c_void_p()
+        if mfplat.MFCreateAttributes(ctypes.byref(attrs), 1) != 0:
+            return None
+        source_type, vidcap = _Guid("c60ac5fe-252a-478f-a0ef-bc8fa5f7cad3"), _Guid("8ac3587a-4ae7-42d8-99e0-0a6013eef90f")
+        friendly = _Guid("60d0e559-52f8-4fa2-bbce-acdb34a8ec01")
+        ptr = ctypes.POINTER(_Guid)
+        _com_call(attrs, 24, ctypes.c_long, (ptr, ptr), ctypes.byref(source_type), ctypes.byref(vidcap))         # IMFAttributes::SetGUID
+        devices, count = ctypes.POINTER(ctypes.c_void_p)(), ctypes.c_uint32(0)
+        mf.MFEnumDeviceSources.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)), ctypes.POINTER(ctypes.c_uint32)]
+        if mf.MFEnumDeviceSources(attrs, ctypes.byref(devices), ctypes.byref(count)) != 0:
+            _com_call(attrs, 2, ctypes.c_ulong, ())
+            return None
+        out = []
+        for i in range(count.value):
+            device = devices[i]
+            text, length = ctypes.c_wchar_p(), ctypes.c_uint32(0)
+            hr = _com_call(device, 13, ctypes.c_long, (ptr, ctypes.POINTER(ctypes.c_wchar_p), ctypes.POINTER(ctypes.c_uint32)),
+                           ctypes.byref(friendly), ctypes.byref(text), ctypes.byref(length))                  # GetAllocatedString
+            out.append(text.value if hr == 0 and text.value else "")
+            if hr == 0:
+                ole32.CoTaskMemFree(ctypes.cast(text, ctypes.c_void_p))
+            _com_call(device, 2, ctypes.c_ulong, ())                                                          # Release
+        ole32.CoTaskMemFree(devices)
+        _com_call(attrs, 2, ctypes.c_ulong, ())
+        return out
+    except Exception:  # noqa: BLE001 - no Media Foundation, or a call that did not work: the caller falls back
+        return None
+    finally:
+        if started:
+            try:
+                ctypes.WinDLL("mfplat").MFShutdown()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def list_cameras(max_index=6):

@@ -91,9 +91,10 @@ def verdict(f):
                        + (f" via {r['backend']}" if r.get("backend") else "") + ". In the program choose it in the camera list and press Start camera.")
         else:
             out.append(f"'{name}' (camera {index}) is listed but no pictures arrive ({r['error'] or 'nothing was delivered'}). The usual cause: the "
-                       "PC program is open but NOT connected to the phone. In DroidCam Client choose the Wi-Fi tab, type the phone's IP and "
-                       "port (shown on the phone), press Start/Connect, and wait until the preview in that window moves. Only then can "
-                       "this program see the picture. Also close any other program that uses the camera (browser tab, Teams, OBS).")
+                       "PC program is open but NOT connected to the phone. In DroidCam Client add your phone (new client: Add > DroidCam, then "
+                       "Refresh Device List; older client: the Wi-Fi or USB tab, then Start) and wait until the preview in that window moves. "
+                       "Only then can this program see the picture. Also close any other program that uses the camera (browser tab, "
+                       "Teams, OBS). If the preview IS moving and this still fails, close this program completely and run the check again.")
     addr = f.get("address")
     if addr:
         reach = f.get("reach")
