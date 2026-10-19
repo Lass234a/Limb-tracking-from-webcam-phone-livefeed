@@ -48,7 +48,7 @@ def test_a_correct_marking_raises_no_label_warning_in_any_posture(side, rotate, 
 @pytest.mark.parametrize("swap, word", [
     ((("mt5_base", "mt5_head"),), "metatarsal head"),
     ((("epicondyle", "fibular_head"),), "swapped"),
-    ((("asis", "epicondyle"),), "thigh"),
+    ((("iliac_crest", "epicondyle"),), "thigh"),
 ])
 def test_swapped_landmarks_are_flagged_and_block_lock(swap, word):
     eng, res, _ = mark(swap=swap)

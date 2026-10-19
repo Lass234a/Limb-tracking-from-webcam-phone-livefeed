@@ -230,6 +230,18 @@ class DotTracker:
         _, _, _, area, _, w, h = blob
         return (self.marked_area is not None and area > MERGED_AREA_FACTOR * self.marked_area) or max(w, h) > MERGED_ASPECT * min(w, h) + 1
 
+    def hold(self):
+        """Freeze the dot where it is, exactly as if it had just been lost (used after a pause for a break).
+
+        From now on it searches only the small fixed circle round this position and takes a dot back only if it is round, the
+        right size and nearly as contrasty as when it was marked. Nothing about how a dot is followed changes."""
+        if not self.initialised:
+            return
+        if self.lost_frames == 0:
+            self.lost_radius = LOST_RADIUS_FACTOR * self.diam
+            self.lost_frames = 1
+        self.vx = self.vy = 0.0
+
     def undo_update(self):
         """Take back the latest update and declare the dot lost at its previous position."""
         if self._before is not None:
@@ -358,6 +370,12 @@ class TrackerSet:
 
     def is_ready(self):
         return all(t.initialised for n, t in self.trackers.items() if n in self.enabled)
+
+    def hold_all(self):
+        """Freeze every marked dot where it is (see DotTracker.hold)."""
+        for n, t in self.trackers.items():
+            if n in self.enabled:
+                t.hold()
 
     def update(self, gray):
         active = {n: t for n, t in self.trackers.items() if t.initialised and n in self.enabled}

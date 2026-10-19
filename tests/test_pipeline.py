@@ -38,7 +38,7 @@ def values(res):
 
 def test_protocol_loads_with_goniometer_landmarks():
     t = TESTS["knee_extension"]
-    assert t.dots == ["asis", "psis", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"]
+    assert t.dots == ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"]
     assert t.primary.name == "knee"
     assert TESTS["hip_extension_k90"].primary.name == "hip"
     assert TESTS["ankle_dorsiflexion"].primary.name == "ankle"
@@ -75,10 +75,10 @@ def test_all_angles_accurate_static(kind, facing, hip, knee, ankle, tilt):
     eng.process(render(pts, kind=kind, seed=3), 0.0)
     click_all(eng, pts)
     got = values(eng.process(render(pts, kind=kind, seed=4), 0.033))
+    assert set(got) == {"knee", "hip", "ankle"}
     assert got["knee"] == pytest.approx(knee, abs=0.6)
-    assert got["hip"] == pytest.approx(hip, abs=0.6)
+    assert got["hip"] == pytest.approx(hip, abs=0.6)       # also with the pelvis tipped by `tilt`: the hip is measured against the pelvis
     assert got["ankle"] == pytest.approx(ankle, abs=0.6)
-    assert got["pelvic_tilt"] == pytest.approx(tilt, abs=0.6)
 
 
 def test_facing_flag_mirrors_signs():
@@ -137,24 +137,37 @@ def test_tracking_a_moving_knee_and_recording(tmp_path):
     assert meta["facing"] == "right" and meta["angles"][0]["name"] == "knee"
 
 
-def test_neighbour_drift_is_flagged_after_lock(tmp_path):
+def _locked_engine(tmp_path, still):
     eng = make_engine(tmp_path)
     eng.target = 60.0
-    still = leg_points(hip_flex=70, knee_flex=60, ankle_df=5, pelvic_tilt=0)
     eng.process(render(still), 0.0)
     click_all(eng, still)
     eng.process(render(still), 0.01)
     assert eng.lock_position()
-    # pelvis tips 9 deg forward while the leg stays put: tilt AND hip (the pelvis midline rotates) drift
-    tipped = leg_points(hip_flex=70, knee_flex=60, ankle_df=5, pelvic_tilt=9)
-    drifted = dict(still)
-    drifted["asis"], drifted["psis"] = tipped["asis"], tipped["psis"]
+    return eng
+
+
+def _statuses(eng, pts):
     res = None
     for i in range(3):
-        res = eng.process(render(drifted, seed=i), (i + 1) / 30)
-    st = {a.name: a.status for a in res.angles}
-    assert st["pelvic_tilt"] == "out" and st["hip"] == "out"
-    assert st["knee"] == "ok" and st["ankle"] == "ok"
+        res = eng.process(render(pts, seed=i), (i + 1) / 30)
+    return {a.name: a.status for a in res.angles}
+
+
+def test_neighbour_drift_is_flagged_after_lock(tmp_path):
+    still = leg_points(hip_flex=90, knee_flex=60, ankle_df=5, pelvic_tilt=0)       # hip 90 = the required neighbour angle in this test
+    # the ankle moves 10 deg while everything else stays put: judged against its value at Lock
+    eng = _locked_engine(tmp_path, still)
+    foot_moved = leg_points(hip_flex=90, knee_flex=60, ankle_df=15, pelvic_tilt=0)
+    st = _statuses(eng, foot_moved)
+    assert st["ankle"] == "out" and st["knee"] == "ok" and st["hip"] == "ok"
+    # the pelvis tips 9 deg forward while the leg stays put: the hip (measured against the pelvis midline) changes by 9 deg
+    eng = _locked_engine(tmp_path, still)
+    tipped = leg_points(hip_flex=90, knee_flex=60, ankle_df=5, pelvic_tilt=9)
+    drifted = dict(still)
+    drifted["iliac_crest"] = tipped["iliac_crest"]
+    st = _statuses(eng, drifted)
+    assert st["hip"] == "out" and st["knee"] == "ok" and st["ankle"] == "ok"
 
 
 def test_lost_dot_is_flagged_and_reacquired(tmp_path):
@@ -173,7 +186,7 @@ def test_lost_dot_is_flagged_and_reacquired(tmp_path):
         statuses.append({a.name: a.status for a in res.angles})
     for s in statuses[11:20]:
         assert s["knee"] == "lost" and s["hip"] == "lost"       # both use the epicondyle
-        assert s["ankle"] != "lost" and s["pelvic_tilt"] != "lost"
+        assert s["ankle"] != "lost"
     assert statuses[0]["knee"] != "lost" and statuses[-1]["knee"] != "lost"
     assert values(res)["knee"] == pytest.approx(50, abs=0.7)
 

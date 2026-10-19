@@ -34,6 +34,7 @@ KEEP_S = REFERENCE_FROM_S + 1.5
 DEFAULT_THRESHOLD_N = 10.0
 DEFAULT_THRESHOLD_V = 0.02      # used when there is no load cell slope (volts only)
 DEFAULT_LENGTH_S = 7.0          # the protocol's 1-5-1 tempo
+AUTO_STOP_AFTER_END_S = 2.0     # the window stops the recording this long after the MVIC end marker (0 = the operator stops it)
 
 WAITING, TRIGGERED, RUNNING, DONE, MANUAL = "waiting", "triggered", "running", "done", "manual"
 

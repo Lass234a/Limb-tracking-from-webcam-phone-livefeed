@@ -1,9 +1,9 @@
 """Tape dots: a hand-drawn black disc on a square of white sports tape (see MARKERS.md).
 
 The planned stickers are not sticker dots but a white tape square with a black disc drawn on it. These tests pin what
-MARKERS.md promises: the tracker follows the disc, not the tape, as well as it follows a bare dot; a disc seen side-on (ASIS and
-PSIS from the side) is still followed; the dot-size reading is close to the true width; and the dot colour *Black* keeps the
-tracker on the ink even when the circle is only an outline on tape it is not centred on.
+MARKERS.md promises: the tracker follows the disc, not the tape, as well as it follows a bare dot; a disc seen side-on (a disc
+on a curved part of the body) is still followed; the dot-size reading is close to the true width; and the dot colour *Black*
+keeps the tracker on the ink even when the circle is only an outline on tape it is not centred on.
 """
 import os
 from pathlib import Path
@@ -124,7 +124,7 @@ def test_a_disc_drawn_a_little_over_the_minimum_passes_the_two_centimetre_check(
 
 @pytest.mark.parametrize("hip_flex", [-20.0, 10.0, 60.0])
 def test_angles_from_taped_dots_equal_angles_from_bare_dots(tmp_path, hip_flex):
-    """The full leg: eight black dots, each on a white tape square, against the same eight dots bare. Dot colour = Black."""
+    """The full leg: seven black dots, each on a white tape square, against the same seven dots bare. Dot colour = Black."""
     def angles(patch):
         eng = Engine(TESTS, recordings_dir=tmp_path)
         eng.set_test("hip_extension_k0")

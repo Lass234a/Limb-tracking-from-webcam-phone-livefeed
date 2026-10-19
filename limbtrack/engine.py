@@ -20,20 +20,20 @@ from dataclasses import asdict, replace
 
 from . import overlay
 from .angles import measure, segment_pairs
-from .geometry import view_handedness
+from .geometry import KNEE_FACING_MIN_DEG, foot_handedness, view_handedness
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import FrameSizeChanged, TrialRecorder
-from . import privacy, provenance
+from . import cues, privacy, provenance
 from .pull import compute_pull, describe as describe_pull
-from .automvic import DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N, DEFAULT_THRESHOLD_V, KEEP_S, TRIGGERED, AutoMvic
+from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N, DEFAULT_THRESHOLD_V, KEEP_S, TRIGGERED, AutoMvic
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
 from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.8.1"
+SOFTWARE_VERSION = "0.13.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -62,7 +62,7 @@ class _FrozenWhileRecording:
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
-                 "privacy", "force_setup", "auto_mvic_setup"]
+                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues"]
 
 
 class Engine:
@@ -79,6 +79,8 @@ class Engine:
     auto_mvic = _FrozenWhileRecording("the automatic MVIC markers")
     auto_mvic_threshold = _FrozenWhileRecording("the force rise that starts the automatic MVIC")
     auto_mvic_seconds = _FrozenWhileRecording("the length of the automatic MVIC")
+    audio_cues = _FrozenWhileRecording("the sound cues")
+    cue_push_every_s = _FrozenWhileRecording("the interval of the motivating ticks")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -95,6 +97,7 @@ class Engine:
         self.fps_source = None                   # callable giving the video source's frame rate (set by set_source)
         self.facing_detected = None              # +1 / -1 / None: which side of the body the marked dots show (see geometry.view_handedness)
         self._facing_bad_frames = 0              # consecutive frames in which that disagrees with 'Participant faces'
+        self._facing_from_knee = False           # facing_detected came from the bend of the knee (the foot dots are not marked)
         self.last_stop_reason = None             # why the engine itself ended the last recording (picture size changed), if it did
         self._notice = None                      # (text, time) shown in the header for a few seconds
         self._ref_avg, self._ref_last = {}, {}      # unsmoothed 0.2 s average per angle, used as the neighbour reference at Lock
@@ -111,6 +114,8 @@ class Engine:
         # PARKED-GHOST: self.ghost_enabled = True    # draw a faint copy of the locked pose
         # PARKED-GHOST: self.ghost_anchored = True   # ...shifted so the main joint's fulcrum stays on its live position
         # PARKED-GHOST: self._ghost = None           # dot positions (px) when the position was locked
+        self.paused = False          # a break: tracking is off, nothing can be recorded, a ghost of the dots is shown (see pause)
+        self._pause_ghost = None     # dot name -> (x, y, diameter) of where the dots were when the break began; kept until they are back
         self.trails_enabled = True   # draw the path of every dot (display only)
         self._trails = {}            # dot name -> list of segments of (x, y); filled while recording, kept until the next recording
         self._trail_open = {}        # dot name -> was it tracked on the previous recorded frame?
@@ -143,9 +148,16 @@ class Engine:
         self.auto_mvic_threshold = DEFAULT_THRESHOLD_N   # newtons the force must rise from its rest level to call the start
         self.auto_mvic_seconds = DEFAULT_LENGTH_S        # the end marker comes this long after the start marker (protocol: 1-5-1 = 7 s)
         self._auto = None            # the AutoMvic of the present recording, or None
+        self._rehearsal = None       # an AutoMvic trying the automatic markers and the beeps WITHOUT a recording (see rehearsal_start)
+        self._reh_cursor, self._reh_scale, self._reh_began = 0.0, 1.0, 0.0
+        self.audio_cues = True      # beeps for the recording, the ramp, the hold, the relax and the end of an MVIC (limbtrack/cues.py)
+        self.cue_push_every_s = cues.PUSH_INTERVAL_S      # the motivating tick during the hold, in seconds; 0 = none
+        self._cues = cues.CuePlayer()
         self._auto_cursor = 0.0      # force samples up to this time have been given to it
         self._auto_scale = 1.0
         self._pending_event_auto = False   # the marker waiting to be written was set by the automatic MVIC
+        self.auto_stop_s = AUTO_STOP_AFTER_END_S   # the window stops the recording this long after the MVIC end marker; 0 = never
+        self._mvic_end_t = None      # picture time of the latest MVIC end marker in this recording
         self._force_active = False   # this recording has force
         self._force_cursor = 0.0     # force samples up to this time have been handed to the recording
         self._force_stats = None
@@ -205,7 +217,57 @@ class Engine:
             self._trails, self._trail_open = {}, {}
             self.locked = False
             self._refs = {}
+            self.paused, self._pause_ghost = False, None
             # PARKED-GHOST: self._ghost = None
+
+    # ------------------------------------------------------------------- break
+    @property
+    def pause_ghost(self):
+        """Where the dots were when the break began (dot name -> (x, y, diameter in pixels)), or None when there is no ghost."""
+        with self.lock:
+            return dict(self._pause_ghost) if self._pause_ghost else None
+
+    def pause(self):
+        """Begin a break (the participant rests or leaves). Tracking stops, nothing is judged or recorded, and a ghost of the dots
+        as they were shows where the stickers have to be again. Returns None if done, else the reason it was not."""
+        with self.lock:
+            if self.rec is not None:
+                return "Stop recording before pausing: a break would leave a hole in the recording."
+            if self.paused:
+                return None
+            lost_now = {n for n, st in self._last_states.items() if st.lost}
+            self._pause_ghost = {n: (t.x, t.y, t.diam) for n, t in self.trackers.trackers.items()
+                                 if n in self.trackers.enabled and t.initialised and n not in lost_now}
+            self.paused = True
+            return None
+
+    def resume(self):
+        """End the break. Every dot is frozen where it was and is taken back only when a convincing dot shows up inside its small
+        circle (the lost-dot rule), so nothing is guessed. The ghost stays until every dot is back. Returns None."""
+        with self.lock:
+            if not self.paused:
+                return None
+            self.paused = False
+            self.trackers.hold_all()
+            if not self._pause_ghost:
+                self._pause_ghost = None
+            return None
+
+    def cancel_pause(self):
+        """Forget a break without holding the dots (the camera was stopped)."""
+        with self.lock:
+            self.paused, self._pause_ghost = False, None
+
+    def _paused_frame(self, frame, t):
+        """A picture during a break: nothing is tracked, recorded or judged; the ghost shows where the dots were."""
+        head = ["PAUSED for a break: tracking is off and nothing is recorded.",
+                "Put the stickers on the dashed circles, then press Resume (P)."]
+        if self._notice and 0 <= t - self._notice[1] < 10.0:
+            head.append(self._notice[0])
+        img = overlay.draw(frame, {}, [], head, False, ghost=self._pause_ghost, ghost_segments=segment_pairs(self.active_angles))
+        res = FrameResult(self.frame_index, t, img, [], dict(self._last_states), head, None)
+        self.frame_index += 1
+        return res
 
     # ----------------------------------------------------- landmark selection
     @property
@@ -299,11 +361,14 @@ class Engine:
     def lock_problem(self):
         """Plain-English reason why the position cannot be locked right now."""
         with self.lock:
-            if self.facing_mismatch:
-                return self.facing_message() + " Change 'Participant faces' (or the mirror) to match the picture, then lock."
+            if self.paused:
+                return "The program is paused for a break. Press Resume (P) first, then lock the position."
+            # Labels first: the side of the body is read from the foot dots, so swapped foot dots also look like the other side.
             bad = self.marking_problems()
             if bad:
                 return "The dots look mislabelled: " + "; ".join(bad) + ". Use 'Re-mark all dots' and click them in the order asked."
+            if self.facing_mismatch:
+                return self.facing_message() + " Change 'Participant faces' (or the mirror) to match the picture, then lock."
             if not self.active_angles:
                 return ("No angle can be computed with the chosen landmarks. Tick the missing landmarks, "
                         "or choose a three-point angle.")
@@ -355,6 +420,16 @@ class Engine:
                 if not self.trackers.trackers[n].initialised:
                     return n
             return None
+
+    def dot_status(self):
+        """For the list of landmarks: dot name -> 'off' (switched off), 'unmarked', 'lost' (frozen where it was last seen) or 'ok'."""
+        with self.lock:
+            out = {}
+            for n in self.test.all_dots:
+                st = self._last_states.get(n)
+                out[n] = ("off" if n in self.disabled_dots else "unmarked" if not self.trackers.trackers[n].initialised
+                          else "lost" if st is not None and st.lost else "ok")
+            return out
 
     def mark_scale_dot(self, index, x, y):
         """Operator clicked ruler dot `index` (0 or 1). On failure, `mark_problem` says why when it is not simply 'no dot found'."""
@@ -415,6 +490,9 @@ class Engine:
             if self.rec is not None:
                 self.mark_problem = "Stop recording before re-marking a dot."
                 return False
+            if self.paused:
+                self.mark_problem = "Resume first (press P): dots cannot be marked during a break."
+                return False
             if self._last_gray is None or name in self.disabled_dots:
                 return False
             old = copy.deepcopy(self.trackers.trackers[name])      # a re-mark must never damage a working tracker
@@ -460,7 +538,7 @@ class Engine:
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
             self._forbid_while_recording("the locked position")
-            if self.facing_mismatch or self.marking_problems():
+            if self.paused or self.facing_mismatch or self.marking_problems():
                 return False
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
@@ -542,6 +620,43 @@ class Engine:
             self._pending_event, self._pending_event_auto = label, False
             return True
 
+    # ------------------------------------------------------------ sound cues
+    def _cue_now(self, name):
+        if self.audio_cues:
+            self._cues.play(name)
+
+    def _cues_after_start(self, automatic, auto=None):
+        """The ramp was registered (the MVIC start marker is being written): the cues that follow keep the 1-5-1 tempo."""
+        if not self.audio_cues:
+            return
+        now = time.perf_counter()
+        ref = now                                                   # a start marked by hand: the ramp is taken to begin now
+        a = auto if auto is not None else self._auto
+        if automatic and a is not None and a.trigger:
+            onset = a.trigger.get("onset_t")
+            if onset is not None and 0.0 <= now - onset <= 1.0:
+                ref = onset                                         # the force began to rise a moment before it was registered
+        self._cues.cancel()
+        self._cues.schedule(cues.plan(ref, now, self.auto_mvic_seconds, push_every_s=self.cue_push_every_s))
+
+    def warm_up_cues(self):
+        """Wake the sound device (silent), so the first beep of a session is not late. Called when a camera starts and a trial begins."""
+        if self.audio_cues:
+            self._cues.warm_up()
+
+    @property
+    def cue_problem(self):
+        """Why the latest beep could not be played, or None."""
+        return self._cues.last_error
+
+    def test_cues(self):
+        """Play every cue once, in the order of a contraction, so the operator can hear them (also when they are switched off)."""
+        now = time.perf_counter()
+        self._cues.cancel()
+        self._cues.last_error, self._cues.error_count = None, 0       # a test starts afresh: whatever fails now is reported now
+        self._cues.schedule([(now + dt, name) for dt, name in ((0.0, "record"), (0.8, "ramp"), (1.6, "hold"), (2.5, "push"),
+                                                              (3.0, "push"), (3.7, "relax"), (4.6, "end"))])
+
     def _auto_mvic_step(self, t):
         """Give the force samples that came in to the automatic MVIC, and write its start / end marker on this picture when due."""
         a = self._auto
@@ -559,6 +674,83 @@ class Engine:
         elif a.end_is_due(t):
             self._pending_event, self._pending_event_auto = "MVIC end", True
             a.end_marked(t)
+
+    # ------------------------------------------------------------ trying the automatic markers without a recording
+    REHEARSAL_GIVE_UP_S = 60.0
+
+    def rehearsal_start(self):
+        """Arm the automatic MVIC and the beeps WITHOUT recording, so the whole chain (force -> start called -> beeps -> end) can be
+        tried before a real trial and no empty trial is saved. Nothing is written anywhere. Returns None if armed, else the reason not."""
+        with self.lock:
+            if self.rec is not None:
+                return "Stop recording first."
+            if self.force is None or self.force.error:
+                return "Connect the force first: the automatic markers read it."
+            cal = self.force.calibration
+            if cal.has_slope:
+                unit, self._reh_scale, thr = "N", float(cal.n_per_v), self.auto_mvic_threshold
+            else:
+                unit, self._reh_scale, thr = "V", 1.0, DEFAULT_THRESHOLD_V
+            a = AutoMvic(thr, self.auto_mvic_seconds, self.force.rate, unit)
+            now = time.perf_counter()
+            ts, vs = self.force.samples_between(now - KEEP_S, now)
+            self._reh_cursor = float(ts[-1]) + 1e-9 if ts.size else now
+            if ts.size:
+                a.prime(ts, vs * self._reh_scale)
+            self._rehearsal, self._reh_began = a, now
+            self._cues.cancel()
+            self._cues.last_error, self._cues.error_count = None, 0
+            return None
+
+    def rehearsal_stop(self):
+        with self.lock:
+            self._rehearsal = None
+            self._cues.cancel()
+
+    def rehearsal_step(self):
+        """Call a few times a second. Returns (state, plain text): state is 'off' when no try-out is running, else the AutoMvic state
+        ('waiting', 'running', 'done'); 'gave up' when no push came."""
+        with self.lock:
+            a = self._rehearsal
+            if a is None:
+                return "off", ""
+            if self.rec is not None or self.force is None or self.force.error:
+                self._rehearsal = None
+                return "off", "The try-out stopped (a recording started or the force was lost)."
+            now = time.perf_counter()
+            ts, vs = self.force.samples_between(self._reh_cursor, now)
+            if ts.size:
+                self._reh_cursor = float(ts[-1]) + 1e-9
+                a.feed(ts, vs * self._reh_scale)
+            if a.state == TRIGGERED:
+                a.start_marked(now)
+                self._cues_after_start(True, auto=a)
+            elif a.end_is_due(now):
+                a.end_marked(now)
+                self._cues.cancel()
+                self._cue_now("end")
+            if a.state == "waiting" and now - self._reh_began > self.REHEARSAL_GIVE_UP_S:
+                self._rehearsal = None
+                return "gave up", f"No push seen for {self.REHEARSAL_GIVE_UP_S:g} s. Press the button and push on the strap."
+            tr = a.trigger or {}
+            if a.state == "done":
+                self._rehearsal = None
+                return "done", (f"Start found {a.start_marker_t - tr.get('onset_t', a.start_marker_t):.2f} s after the force began to rise "
+                                f"(a rise of {tr.get('rise_at_trigger', 0.0):.1f} {a.unit} over the rest level), end {a.length_s:g} s later. "
+                                f"In a recording both markers would be written. {'Beeps played.' if self.audio_cues else 'Beeps are switched off.'}")
+            if a.state == "running":
+                return "running", f"Start found. {max(now - a.start_marker_t, 0.0):.1f} / {a.length_s:g} s"
+            return "waiting", (f"Waiting for a push: the force has to rise by {a.threshold:g} {a.unit}" if not a.reason
+                               else f"Getting ready: {a.reason}")
+
+    def seconds_to_auto_stop(self):
+        """Seconds (picture time) until the recording should stop by itself: `auto_stop_s` after the MVIC end marker, whether the
+        automatic MVIC or the E key wrote it. None while that is not set (no recording, auto stop off, or no end marker yet);
+        0 or less means it is due. The window does the stopping, exactly as if Stop had been pressed."""
+        with self.lock:
+            if self.rec is None or not self.auto_stop_s or self._mvic_end_t is None or not self._times:
+                return None
+            return self.auto_stop_s - (self._times[-1] - self._mvic_end_t)
 
     def auto_mvic_status(self):
         """(state, plain text) of the automatic MVIC for the window; ('off', '') when it is not in use in this recording."""
@@ -642,8 +834,8 @@ class Engine:
          "the 5th metatarsal head should be farther from the lateral malleolus than the base is (head and base swapped?)", 1.0),
         (("fibular_head", "malleolus"), ("mt5_base", "mt5_head"),
          "the foot (metatarsal base to head) should be shorter than the shank (fibular head to malleolus)", 1.0),
-        (("trochanter", "epicondyle"), ("asis", "psis"),
-         "the thigh (trochanter to epicondyle) should be longer than the pelvis line (ASIS to PSIS)", 1.0),
+        (("trochanter", "epicondyle"), ("iliac_crest", "trochanter"),
+         "the thigh (trochanter to epicondyle) should be longer than the pelvis arm (iliac crest to trochanter)", 1.0),
         (("epicondyle", "malleolus"), ("fibular_head", "malleolus"),
          "the lateral malleolus should be farther from the epicondyle than from the fibular head (epicondyle and fibular head swapped?)", 0.97),
     ]
@@ -665,8 +857,10 @@ class Engine:
 
     def _check_facing(self, states):
         """Compare the side of the body the dots show with the 'Participant faces' setting (audit ANG-04)."""
-        h = view_handedness({n: (st.x, st.y) for n, st in states.items() if not st.lost})
+        xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
+        h = view_handedness(xy)
         self.facing_detected = h
+        self._facing_from_knee = h is not None and foot_handedness(xy) is None
         expected = 1 if self.facing_right else -1
         self._facing_bad_frames = self._facing_bad_frames + 1 if (h is not None and h != expected) else 0
 
@@ -678,8 +872,12 @@ class Engine:
     def facing_message(self):
         shown = "RIGHT" if self.facing_detected == 1 else "LEFT"
         chosen = "RIGHT" if self.facing_right else "LEFT"
+        if self._facing_from_knee:
+            return (f"CHECK 'Participant faces': the knee bends the wrong way for {chosen} (it would read as over-straightened by more "
+                    f"than {KNEE_FACING_MIN_DEG:g} deg). Pick {shown}: lying face down usually needs the other side than sitting or lying "
+                    "on the back. The hip and knee signs would be wrong.")
         return (f"CHECK 'Participant faces': the dots look like a {shown}-facing view of the picture, but {chosen} is selected. "
-                "The hip and pelvic-tilt signs would be wrong.")
+                "The hip sign would be wrong.")
 
     # ------------------------------------------------------------------- force
     def _force_header(self):
@@ -895,8 +1093,12 @@ class Engine:
             if not self._times or t > self._times[-1]:      # (an equal time is the same frame redrawn: not a new frame)
                 self._times.append(t)
             self._frame_stamp = time.perf_counter()
+            if self.paused:
+                return self._paused_frame(frame, t)
             states = self.trackers.update(gray)
             self._last_states = states
+            if self._pause_ghost is not None and not any(st.lost for st in states.values()):
+                self._pause_ghost = None                       # after a break: every dot is back on its circle, the ghost has done its job
             self.scale.update(gray)
             angles = self._compute_angles(states, t)
             self._check_facing(states)
@@ -921,6 +1123,8 @@ class Engine:
             lost = [n for n, st in states.items() if st.lost]
             if lost:
                 head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
+            if self._pause_ghost is not None:
+                head.append("After the break: put the stickers on the pale dashed circles; each dot is tracked again once it is there.")
             partial = [n for n, st in states.items() if st.partial]
             if partial:
                 head.append("dot partly covered or cut off (its centre may be shifted): " + ", ".join(self.test.dot_title(n) for n in partial))
@@ -930,13 +1134,20 @@ class Engine:
             self._auto_mvic_step(t)
             event, self._pending_event = self._pending_event, None
             auto_event, self._pending_event_auto = self._pending_event_auto and bool(event), False
+            if event == "MVIC start":
+                self._cues_after_start(auto_event)
+            elif event == "MVIC end":
+                self._cues.cancel()
+                self._cue_now("end")
+            if event == "MVIC end" and self.rec is not None:
+                self._mvic_end_t = t
             if event:
                 self._banner = (event + (" (automatic)" if auto_event else ""), t)
             if self._banner and 0 <= t - self._banner[1] < 1.5:
                 head.append(f"MARK: {self._banner[0]}")
             nxt = self.next_dot_to_mark()
             if nxt:
-                head = [self.test.label, f"click dot: {self.test.dot_title(nxt)}"]
+                head = [self.test.label, f"{overlay.PROMPT_PREFIX}{self.test.dot_title(nxt)}"]
             if self._notice and 0 <= t - self._notice[1] < 10.0:
                 head.append(self._notice[0])
             if self.rec is not None:
@@ -952,7 +1163,8 @@ class Engine:
             if self.rec is not None:
                 self._update_trails(states)
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
-                               trails=self._trails if self.trails_enabled else None, scale=self.scale.overlay_info())
+                               trails=self._trails if self.trails_enabled else None, scale=self.scale.overlay_info(),
+                               ghost=self._pause_ghost, ghost_segments=segment_pairs(self.active_angles))
             # PARKED-GHOST: # (with the ghost: overlay.draw(frame, states, angles, head, self.rec is not None, ghost,
             # PARKED-GHOST: #                               segment_pairs(self.active_angles), trails=...))
             if self.rec is not None:
@@ -975,6 +1187,8 @@ class Engine:
         with self.lock:
             if self.rec is not None:
                 return None
+            if self.paused:
+                raise RuntimeError("The program is paused for a break. Press Resume (P) first, then record.")
             if not self.active_angles:
                 raise RuntimeError("None of the angles can be computed with the chosen landmarks.")
             if not self.trackers.is_ready():
@@ -995,6 +1209,8 @@ class Engine:
                 h, w = self._last_gray.shape[:2]
                 frame_size = (w, h)
             self._privacy_hits = {}
+            self._rehearsal = None                            # a try-out of the markers ends where the real thing begins
+            self._pause_ghost = None                          # a trial's overlay video must not carry the ghost of a break
             self.rec = TrialRecorder(
                 self.recordings_dir, participant or "unnamed", self.test.key,
                 self.target if self.primary_angle else None,
@@ -1002,6 +1218,7 @@ class Engine:
                 save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks, with_force=self.force is not None)
             self._marker_n = 0
             self._pending_event = None
+            self._mvic_end_t = None
             self._trails, self._trail_open = {}, {}          # trails cover one recording: start afresh
             self._scale_values = []
             self._force_active = self.force is not None
@@ -1019,6 +1236,8 @@ class Engine:
             self.rec.write_start_meta(self._meta_start)               # a complete meta.json right away (status 'recording')
             # PARKED-GHOST: # with the ghost: self.rec_info = {"participant": participant, "notes": notes,
             # PARKED-GHOST: #                                  "ghost": dict(self._ghost) if self.locked and self._ghost else None}
+            self._cues.cancel()
+            self._cue_now("record")                           # only now: the recording has really started
             return self.rec.paths
 
     def _arm_auto_mvic(self):
@@ -1088,6 +1307,10 @@ class Engine:
             "force_setup": self.force.info() if self.force is not None else None,
             "auto_mvic_setup": ({"enabled": True, "threshold_n": self.auto_mvic_threshold, "length_s": self.auto_mvic_seconds}
                                 if self.auto_mvic else {"enabled": False}),
+            "audio_cues": ({"enabled": True, "length_s": self.auto_mvic_seconds, "ramp_s": cues.RAMP_S, "relax_s": cues.RELAX_S,
+                            "push_every_s": self.cue_push_every_s, "cues": sorted(cues.CUES),
+                            "note": "beeps the participant may have heard; times after the ramp follow the 1-5-1 tempo from the force onset (or the S key)"}
+                           if self.audio_cues else {"enabled": False}),
             "privacy_dot_warnings": {"frames_near_crop_edge_or_in_mask": dict(self._privacy_hits)},
             "camera_setup_checklist": dict(self.camera_setup),
             "camera_check": self.camera_check,
@@ -1129,13 +1352,21 @@ class Engine:
                 meta["changed_during_recording"] = changed      # should never happen: the settings are frozen while recording
             if reason:
                 meta["stopped_because"] = reason
+            due = self.seconds_to_auto_stop()
+            if due is not None and due <= 0:
+                meta["stopped_automatically"] = {"after_mvic_end_s": self.auto_stop_s,
+                                                 "meaning": "the recording was stopped by the program this long after the MVIC end marker"}
             meta["pipeline_timing"] = self._timing_meta()
             if self._force_active:
                 self._take_force(None)                    # the last samples
                 meta["force"] = self._force_meta()
             if self._auto is not None:
                 meta["auto_mvic"] = self._auto.result(self.rec._t0)
+            if self.audio_cues and self._cues.last_error:
+                meta["audio_cue_problem"] = {"error": self._cues.last_error, "times": self._cues.error_count,
+                                             "meaning": "a beep could not be played during or before this recording; the participant may not have heard every cue"}
             rec, self.rec = self.rec, None                      # cleared first: a failure while saving must not leave 'recording' on
+            self._cues.cancel()                                 # no cue after the recording has ended
             self._auto = None
             if self.force is not None:
                 self.force.frozen = False

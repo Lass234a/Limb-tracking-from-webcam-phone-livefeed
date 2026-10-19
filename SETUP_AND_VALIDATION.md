@@ -22,7 +22,7 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
   saved up to that frame).
 
 **Dots**
-- **The planned stickers are tape dots: a solid black disc (about 2.2 cm) drawn on a square of white matt sports tape, with *Dot colour = Black dots*. How to make and place them, and why, is in `MARKERS.md`** (in particular: fill the disc, never an outline circle; no black line between dots; ASIS/PSIS discs on the outer side of the hip level with the bone point).
+- **The planned stickers are tape dots: a solid black disc (about 2.2 cm) drawn on a square of white matt sports tape, with *Dot colour = Black dots*. How to make and place them, and why, is in `MARKERS.md`** (in particular: fill the disc, never an outline circle; no black line between dots; the single iliac crest disc on the side of the pelvis, halfway between ASIS and PSIS).
 - Stickers at least 2 cm wide, matt, clearly lighter (white) or darker (black) than their surroundings: white dots on dark
   clothing, black dots on skin. Keep neighbouring stickers at least one sticker-width apart; keep the strap marker at least
   three sticker-widths from the malleolus dot.
@@ -71,7 +71,7 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
    the start.
 2. Check *Participant faces*. The program warns and refuses Lock if the setting contradicts the marked dots.
 3. Mark the dots, position the participant, **press Lock before Record** (it cannot be changed during a recording).
-4. Record. **With the force connected, tick *Mark the MVIC automatically from the force* (Record box) and press Record while the
+4. Record. **With the force connected, tick *Mark the MVIC automatically from the force* (Markers and sound section; *Try it without recording* shows first that it works) and press Record while the
    person is at rest: the start marker is written when the ramp begins and the end marker 7 s later (the 1-5-1 tempo).** Watch
    *AUTO MVIC* in the picture: *armed* before the ramp, a count while it runs, *start and end marked* after. Without the
    force, or if you prefer: press **S** (or F6) at the start of the contraction and **E** (or F7) at its end for every trial. Either

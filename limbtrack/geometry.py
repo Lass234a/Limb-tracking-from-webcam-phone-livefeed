@@ -135,29 +135,55 @@ def _cross(a, b):
     return a[0] * b[1] - a[1] * b[0]
 
 
+KNEE_FACING_MIN_DEG = 25.0      # a knee bent further than this the 'wrong' way tells the view (no knee over-straightens that far)
+
+
 def view_handedness(xy):
     """Which side of the body the picture shows: +1 for the view the setting "Participant faces: right side of the image" assumes,
     -1 for the mirror-image view, None when it cannot be told.
 
-    Uses the sign of two turning directions that do not depend on posture (upright, seated, lying) or on the leg: the pelvis
-    (ASIS, PSIS, trochanter) and, if the pelvis dots are not available, the foot (malleolus, fibular head, 5th metatarsal base
-    and head). The result is only given when the turn is clearly not flat (so nearly collinear dots give None).
+    Uses the sign of a turning direction that does not depend on posture (upright, seated, lying) or on the leg: the foot
+    (malleolus, fibular head, 5th metatarsal base and head) when those four dots are marked, otherwise the bend of the knee
+    (see knee_bend_handedness). The pelvis cannot be used: with one iliac crest dot the turn from crest to trochanter to
+    epicondyle changes sign with the hip angle, so it does not tell which way the person faces. Until 0.9.0 the ASIS-PSIS-
+    trochanter turn was used when those dots were marked.
     """
+    h = foot_handedness(xy)
+    return h if h is not None else knee_bend_handedness(xy)
+
+
+def foot_handedness(xy):
+    """+1 / -1 from the turn of the foot (fibula to 5th metatarsal), None without the four foot dots or when the turn is nearly flat."""
     def pt(n):
         return np.array(xy[n], float) if n in xy else None
 
-    a, s, t = pt("asis"), pt("psis"), pt("trochanter")
-    if a is not None and s is not None and t is not None:
-        v1, v2 = a - s, t - (a + s) / 2
-        c = _cross(v1, v2)
-        n = float(np.hypot(*v1) * np.hypot(*v2))
-    else:
-        m, f, b, h = pt("malleolus"), pt("fibular_head"), pt("mt5_base"), pt("mt5_head")
-        if any(v is None for v in (m, f, b, h)):
-            return None
-        v1, v2 = f - m, h - b
-        c = _cross(v1, v2)
-        n = float(np.hypot(*v1) * np.hypot(*v2))
+    m, f, b, h = pt("malleolus"), pt("fibular_head"), pt("mt5_base"), pt("mt5_head")
+    if any(v is None for v in (m, f, b, h)):
+        return None
+    v1, v2 = f - m, h - b
+    c = _cross(v1, v2)
+    n = float(np.hypot(*v1) * np.hypot(*v2))
     if n < 1e-9 or abs(c) < 0.05 * n:
         return None
     return 1 if c > 0 else -1
+
+
+def knee_bend_handedness(xy):
+    """+1 / -1 from which way the knee bends, None when the knee is nearly straight or its four dots are not all marked.
+
+    A knee bends one way only. Seen in the view 'faces right', bending turns the shank (fibular head -> malleolus) clockwise on screen
+    from the thigh (trochanter -> epicondyle); in the mirror view, the other way. The angle between them is used only when it is
+    larger than KNEE_FACING_MIN_DEG, more than any knee over-straightens (normal: 0 to 10 deg), so a straight knee tells nothing.
+    Found on 2026-10-15: two lying-face-down trials with 'faces right' read the knee as -55 and -78 deg (the sign was wrong) and
+    nothing warned, because the foot dots were switched off."""
+    need = ("trochanter", "epicondyle", "fibular_head", "malleolus")
+    if any(n not in xy for n in need):
+        return None
+    t, e, f, m = (np.array(xy[n], float) for n in need)
+    thigh, shank = e - t, m - f
+    if np.hypot(*thigh) < 1e-9 or np.hypot(*shank) < 1e-9:
+        return None
+    bend = math.degrees(math.atan2(_cross(thigh, shank), float(np.dot(thigh, shank))))
+    if abs(bend) < KNEE_FACING_MIN_DEG:
+        return None
+    return 1 if bend > 0 else -1

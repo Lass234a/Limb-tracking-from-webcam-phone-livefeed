@@ -108,7 +108,7 @@ def test_pause_and_frame_stepping(tmp_path, monkeypatch):
     # marking while paused redraws the frame
     before = len(imgs)
     p = leg_points(hip_flex=80, knee_flex=20 + frozen - 2, ankle_df=5)
-    live.view.clicked.emit(float(p["asis"][0]) + 1, float(p["asis"][1]) + 1)
+    live.view.clicked.emit(float(p["iliac_crest"][0]) + 1, float(p["iliac_crest"][1]) + 1)
     assert pump(app, lambda: len(imgs) > before)
     assert pos[-1][0] == frozen - 1
 

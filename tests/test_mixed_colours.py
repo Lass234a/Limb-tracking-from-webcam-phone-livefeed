@@ -14,7 +14,7 @@ from limbtrack.synthetic import leg_points  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
-WHITE_ON_DARK = {"asis", "psis", "trochanter", "epicondyle"}          # e.g. over black shorts
+WHITE_ON_DARK = {"iliac_crest", "trochanter", "epicondyle"}          # e.g. over black shorts
 BLACK_ON_LIGHT = {"fibular_head", "malleolus", "mt5_base", "mt5_head"}  # e.g. on skin and socks
 
 

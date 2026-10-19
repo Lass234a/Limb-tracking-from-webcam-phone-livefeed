@@ -23,7 +23,7 @@ from limbtrack.tracker import TrackerSet, to_gray  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
 THREE = ("trochanter", "epicondyle", "malleolus")          # the dots on your video
-OTHERS = ["asis", "psis", "fibular_head", "mt5_base", "mt5_head"]
+OTHERS = ["iliac_crest", "fibular_head", "mt5_base", "mt5_head"]
 
 
 def engine(tmp_path, pts, only_three=True, facing="right"):
@@ -73,14 +73,14 @@ def test_it_works_with_the_middle_dot_anywhere_and_rejects_bad_choices(tmp_path)
     pts = leg_points(hip_flex=70, knee_flex=60)
     eng = engine(tmp_path, pts, only_three=False)
     mark_all(eng, pts)
-    eng.set_three_point("psis", "trochanter", "epicondyle")           # hip-like angle from other dots
+    eng.set_three_point("iliac_crest", "trochanter", "epicondyle")    # hip-like angle from other dots
     res = eng.process(render(pts, seed=2), 0.06)
     tp = next(a for a in res.angles if a.name == "three_point")
-    assert tp.raw_value == pytest.approx(interior_angle(pts["psis"], pts["trochanter"], pts["epicondyle"]), abs=0.6)
+    assert tp.raw_value == pytest.approx(interior_angle(pts["iliac_crest"], pts["trochanter"], pts["epicondyle"]), abs=0.6)
     with pytest.raises(ValueError):
-        eng.set_three_point("asis", "asis", "psis")
+        eng.set_three_point("iliac_crest", "iliac_crest", "trochanter")
     with pytest.raises(ValueError):
-        eng.set_three_point("asis", "nonsense", "psis")
+        eng.set_three_point("iliac_crest", "nonsense", "trochanter")
     eng.clear_three_point()
     assert "three_point" not in [a.name for a in eng.active_angles]
 

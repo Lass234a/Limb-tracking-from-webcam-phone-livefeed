@@ -38,7 +38,13 @@ ALIGN_WINDOW_S = 20.0
 CLIP_FRACTION = 0.99                # a sample this close to +-range is 'at the limit'
 SMOOTH_DEFAULT_S = 0.1              # display and analysis smoothing: a moving average of this length (a multiple of 20 ms removes 50 Hz hum)
 MAINS_HZ = 50.0
-MAX_STEADY_SD_V = 0.02            # zero and calibration readings must be this steady (standard deviation)
+MAX_STEADY_SD_V = 0.03            # noise allowed in a zero or calibration reading: the spread of the signal WITHOUT its 50 Hz mains hum
+                                  # (was 0.02 on the whole spread, hum included, until 0.10.0). The hum averages out of the mean exactly
+                                  # (the window is a whole number of mains cycles), so it does not make the zero less accurate; random
+                                  # noise averages out too: the mean of N samples is good to noise / sqrt(N) (30 mV over 1000 samples: 1 mV).
+MAX_DRIFT_V = 0.01                # the first and the second half of a reading may differ by at most this: a drifting signal is what would
+                                  # bias the zero (a person leaning on the rig, a settling strap), and averaging does not remove it
+HUM_NOTE_V = 0.01                 # a zero taken with at least this much 50 Hz hum is reported with a note about the charger and outlet
 ZERO_SECONDS = 1.0                # the zero is the mean of this much signal (a multiple of 20 ms, so the 50 Hz hum averages out exactly)
 
 
@@ -91,6 +97,9 @@ class ForceCalibration:
     note: str = ""
     zero_set: bool = True
     regression_id: str = ""            # which load cell regression the slope came from ("" = a known weight or none)
+    zero_noise_v: float = None         # spread of the signal (mains hum taken out) in the window the zero was taken from
+    zero_hum_v: float = None           # 50 Hz hum amplitude in that window (it averages out of the zero)
+    zero_se_v: float = None            # how well the zero is known: noise / sqrt(samples), in volts
 
     @classmethod
     def load_cell(cls, regression=None):
@@ -113,11 +122,19 @@ class ForceCalibration:
         v = np.asarray(volts, dtype=np.float64)
         return (v - self.offset_v) * self.n_per_v if self.calibrated else np.full(v.shape, np.nan)
 
-    def set_zero(self, volts):
-        """The signal with nothing loaded."""
+    def set_zero(self, volts, noise_v=None, hum_v=None, samples=None):
+        """The signal with nothing loaded. `noise_v`, `hum_v` and `samples` describe the window it was taken from (saved with the trial)."""
         self.offset_v, self.zero_v, self.zero_set = float(volts), float(volts), True
+        self.zero_noise_v = None if noise_v is None else float(noise_v)
+        self.zero_hum_v = None if hum_v is None else float(hum_v)
+        self.zero_se_v = float(noise_v) / math.sqrt(samples) if noise_v is not None and samples else None
         self.when = datetime.now().isoformat(timespec="seconds")
         self.method = "zero only" if not self.has_slope else self.method
+
+    @property
+    def zero_se_n(self):
+        """The zero's uncertainty in newtons (one standard error), or None when it is not known or there is no slope."""
+        return self.zero_se_v * self.n_per_v if self.zero_se_v is not None and self.has_slope else None
 
     def calibrate_with_mass(self, load_volts, mass_kg):
         """Two points: the zero set before (zero_v) and a known mass hanging on, or pushing on, the sensor.
@@ -198,6 +215,7 @@ class ForceSource:
         self.range_v = 10.0                       # the input range is +-range_v volts
         self.smooth_s = SMOOTH_DEFAULT_S          # what the live read-out and trace show (display only; the files hold every raw sample)
         self.clipped_total = 0                    # samples at the very edge of the range (the signal may be cut off there)
+        self.last_reading = None                  # what the latest zero / calibration reading measured (see _steady_mean)
         self._last_clip = None
 
     # --- life cycle
@@ -294,9 +312,19 @@ class ForceSource:
         return None if v is None or not self.calibration.calibrated else float(self.calibration.to_newton(v))
 
     def samples_between(self, t0, t1):
-        """(times, volts) of the samples with t0 <= time < t1."""
+        """(times, volts) of the samples with t0 <= time < t1.
+
+        The chunks are in time order (_push keeps time running forward), so the search walks back from the newest chunk and stops
+        at the first one that ended before t0. Looking at all 10 minutes of chunks instead cost 13 ms per call once the force had
+        run for 10 minutes, several times per picture, and held the live picture to 4-11 per second (P11, 2026-10-15)."""
         with self._lock:
-            parts = [c for c in self._chunks if c[0][-1] >= t0 and c[0][0] < t1]
+            parts = []
+            for c in reversed(self._chunks):
+                if c[0][-1] < t0:
+                    break                  # this chunk and every older one ended before t0
+                if c[0][0] < t1:
+                    parts.append(c)
+            parts.reverse()
         if not parts:
             return np.empty(0), np.empty(0)
         t = np.concatenate([p[0] for p in parts])
@@ -326,26 +354,40 @@ class ForceSource:
         return float(v.std()) if v.size > 1 else None
 
     def _steady_mean(self, seconds):
-        """(mean volts, None) of the last `seconds`, or (None, reason) when there is too little or the signal is not steady."""
+        """(mean volts, None) of the last `seconds`, or (None, reason) when there is too little or the signal is not steady.
+
+        Steady means: no drift (the two halves agree within MAX_DRIFT_V) and little noise (the spread without the 50 Hz hum is within
+        MAX_STEADY_SD_V). The hum is taken out because a whole number of its cycles averages out of the mean exactly. What was
+        measured is kept in `last_reading` (mean, noise, hum, drift, samples)."""
         if self.frozen:
             return None, "Stop recording first: the zero and the calibration cannot change during a recording."
         if self.error:
             return None, self.error
-        v, n = self.average_volts(seconds)
-        if v is None or n < 0.5 * seconds * self.rate:
+        now = time.perf_counter()
+        _, v = self.samples_between(now - seconds, now + 1.0)
+        if v.size < 0.5 * seconds * self.rate or v.size < 4:
             return None, "Not enough force samples yet. Wait a moment and try again."
-        sd = self.spread_volts(seconds)
-        if sd is not None and sd > MAX_STEADY_SD_V:
-            return None, (f"The signal is not steady (spread {sd * 1000:.0f} mV over {seconds:g} s). Keep the sensor still and "
-                          f"the load constant while it measures.")
-        return v, None
+        hum = mains_amplitude(v, self.rate)
+        hum = hum if math.isfinite(hum) else 0.0
+        noise = math.sqrt(max(float(v.std()) ** 2 - hum ** 2 / 2.0, 0.0))        # a sine's variance is amplitude squared / 2
+        half = v.size // 2
+        drift = float(v[half:].mean() - v[:half].mean())
+        self.last_reading = {"mean_v": float(v.mean()), "noise_v": noise, "hum_v": hum, "drift_v": drift, "samples": int(v.size)}
+        if abs(drift) > MAX_DRIFT_V:
+            return None, (f"The signal is not steady: it moved {drift * 1000:+.0f} mV during the {seconds:g} s (limit {MAX_DRIFT_V * 1000:.0f} mV). "
+                          f"Keep the sensor still and the load constant while it measures.")
+        if noise > MAX_STEADY_SD_V:
+            return None, (f"The signal is not steady enough: it wobbles {noise * 1000:.0f} mV over {seconds:g} s (limit {MAX_STEADY_SD_V * 1000:.0f} mV, "
+                          f"the 50 Hz mains hum not counted). Keep the sensor still and the load constant while it measures.")
+        return float(v.mean()), None
 
     def zero(self, seconds=ZERO_SECONDS):
         """Take the present signal as 'no load'. Returns None if done, else the reason it was not."""
         v, why = self._steady_mean(seconds)
         if why:
             return why
-        self.calibration.set_zero(v)
+        r = self.last_reading
+        self.calibration.set_zero(v, noise_v=r["noise_v"], hum_v=r["hum_v"], samples=r["samples"])
         return None
 
     def calibrate(self, mass_kg, seconds=2.0):

@@ -1,12 +1,11 @@
 {
-  "_note": "EDIT ME. Landmarks and arms follow Tabel 3 (goniometer alignment), sagittal view of the tested side. Target angles come from ChenData/StrengthCurve/plot_proposal.m. An angle is the angle between two 'arms'. An arm is [dotA, dotB] (vector from A to B), {\"perp\": [dotA, dotB]} (perpendicular to A-B, pointing towards the feet), or \"up\" / \"down\" / \"forward\". Shown value = sign * angle + offset. 'signed' angles can be negative (extension, posterior tilt); their sign assumes the participant faces RIGHT, and the app mirrors automatically when you choose 'faces left'.",
+  "_note": "EDIT ME. Landmarks and arms follow Tabel 3 (goniometer alignment), sagittal view of the tested side. Target angles come from ChenData/StrengthCurve/plot_proposal.m. An angle is the angle between two 'arms'. An arm is [dotA, dotB] (vector from A to B), {\"perp\": [dotA, dotB]} (perpendicular to A-B, pointing towards the feet), or \"up\" / \"down\" / \"forward\". The hip's pelvis arm runs from the iliac crest dot (halfway between ASIS and PSIS, on the side of the pelvis) down to the greater trochanter: the goniometer's lateral midline of the pelvis. Shown value = sign * angle + offset. 'signed' angles can be negative (extension, posterior tilt); their sign assumes the participant faces RIGHT, and the app mirrors automatically when you choose 'faces left'.",
   "tolerance_deg": 3.0,
   "neighbour_tolerance_deg": 5.0,
 
-  "dot_order": ["asis", "psis", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"],
+  "dot_order": ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"],
   "dot_labels": {
-    "asis": "ASIS (front of pelvis)",
-    "psis": "PSIS (back of pelvis)",
+    "iliac_crest": "iliac crest (side of pelvis, halfway between ASIS and PSIS)",
     "trochanter": "greater trochanter",
     "epicondyle": "lateral femoral epicondyle",
     "fibular_head": "fibular head",
@@ -22,7 +21,7 @@
   "angle_library": {
     "hip": {
       "label": "Hip flex (+) / ext (-)",
-      "vectors": [{"perp": ["asis", "psis"]}, ["trochanter", "epicondyle"]],
+      "vectors": [["iliac_crest", "trochanter"], ["trochanter", "epicondyle"]],
       "signed": true, "sign": -1, "offset": 0, "fulcrum": "trochanter"
     },
     "knee": {
@@ -35,11 +34,6 @@
       "label": "Ankle dorsiflex (+)",
       "vectors": [["malleolus", "fibular_head"], ["mt5_base", "mt5_head"]],
       "sign": -1, "offset": 90, "fulcrum": "malleolus"
-    },
-    "pelvic_tilt": {
-      "label": "Pelvic tilt (ant +)",
-      "vectors": ["forward", ["psis", "asis"]],
-      "signed": true, "fulcrum": "asis"
     }
   },
 
@@ -50,55 +44,55 @@
       "primary": "knee",
       "targets": [20, 70, 110],
       "neighbour_targets": {"hip": 90},
-      "angles": ["knee", "hip", "ankle", "pelvic_tilt"]
+      "angles": ["knee", "hip", "ankle"]
     },
     "knee_flexion": {
       "label": "Knee flexion, hip 90 (MVIC)",
       "primary": "knee",
       "targets": [20, 90],
       "neighbour_targets": {"hip": 90},
-      "angles": ["knee", "hip", "ankle", "pelvic_tilt"]
+      "angles": ["knee", "hip", "ankle"]
     },
     "hip_extension_k0": {
       "label": "Hip extension, knee straight (MVIC)",
       "primary": "hip",
       "targets": [0, 45],
       "neighbour_targets": {"knee": 0},
-      "angles": ["hip", "knee", "ankle", "pelvic_tilt"]
+      "angles": ["hip", "knee", "ankle"]
     },
     "hip_extension_k90": {
       "label": "Hip extension, knee 90 (MVIC)",
       "primary": "hip",
       "targets": [0, 90],
       "neighbour_targets": {"knee": 90},
-      "angles": ["hip", "knee", "ankle", "pelvic_tilt"]
+      "angles": ["hip", "knee", "ankle"]
     },
     "hip_flexion": {
       "label": "Hip flexion, knee 90 (MVIC)",
       "primary": "hip",
       "targets": [0, 90],
       "neighbour_targets": {"knee": 90},
-      "angles": ["hip", "knee", "ankle", "pelvic_tilt"]
+      "angles": ["hip", "knee", "ankle"]
     },
     "ankle_plantarflexion": {
       "label": "Ankle plantarflexion, knee straight (MVIC)",
       "primary": "ankle",
       "targets": [0, -20],
       "neighbour_targets": {"knee": 0},
-      "angles": ["ankle", "knee", "hip", "pelvic_tilt"]
+      "angles": ["ankle", "knee", "hip"]
     },
     "ankle_dorsiflexion": {
       "label": "Ankle dorsiflexion, knee straight (MVIC)",
       "primary": "ankle",
       "targets": [0, -20],
       "neighbour_targets": {"knee": 0},
-      "angles": ["ankle", "knee", "hip", "pelvic_tilt"]
+      "angles": ["ankle", "knee", "hip"]
     },
     "belt_squat": {
       "label": "Belt squat (MVIC)",
       "primary": "knee",
       "targets": [],
-      "angles": ["knee", "hip", "ankle", "pelvic_tilt"]
+      "angles": ["knee", "hip", "ankle"]
     }
   }
 }

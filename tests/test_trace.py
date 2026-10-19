@@ -46,7 +46,7 @@ def test_history_window_deviation_and_reset(tmp_path):
     assert h["t"][-1] == 0 and h["t"][0] >= -1.0 and 30 <= len(h["t"]) <= 32
     assert h["primary"] == "knee" and h["target"] == 60.0 and h["tolerance"] == 3.0
     assert np.nanmax(np.abs(h["deviations"]["knee"])) < 1.0           # still at target: deviation about 0
-    assert set(h["values"]) == {"knee", "hip", "ankle", "pelvic_tilt"}
+    assert set(h["values"]) == {"knee", "hip", "ankle"}
     assert np.all(np.isnan(h["deviations"]["ankle"]))                 # not locked yet: no reference for neighbours without a required angle
     assert np.isfinite(h["deviations"]["hip"][-1])                    # the hip has one: the required 90 deg of the knee tests
 
@@ -101,7 +101,7 @@ def test_live_trace_draws_both_modes(tmp_path):
     assert len(live._trace_items) == 2                                # main curve + tolerance band
     live.trace_mode.setCurrentIndex(1)
     live.update_trace()
-    assert len(live._trace_items) == 5                                # four curves + band
+    assert len(live._trace_items) == 4                                # three curves (knee, hip, ankle) + band
     lo, hi = live.trace.viewRange()[1]
     assert lo < 0 < hi
     live.stop_camera()

@@ -92,7 +92,7 @@ def test_trails_survive_stop_and_reset_at_the_next_recording(tmp_path):
 def test_changing_landmarks_clears_the_trails(tmp_path):
     eng = make_engine(tmp_path)
     run_trial(eng)
-    eng.set_dot_enabled("asis", False)
+    eng.set_dot_enabled("iliac_crest", False)
     assert eng._trails == {}
 
 

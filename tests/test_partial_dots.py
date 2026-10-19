@@ -24,7 +24,7 @@ def run(radius=7.0, noise=3.0, blur=0.0, cover=None, frames=40, edge=False):
     eng.set_test("knee_extension")
     p = dict(leg_points(hip_flex=90, knee_flex=70, ankle_df=5))
     if edge:
-        p["asis"] = np.array([300.0, 3.0])                      # a dot at the very edge of the picture
+        p["iliac_crest"] = np.array([300.0, 3.0])                      # a dot at the very edge of the picture
     eng.process(render(p, seed=0, dot_radius=radius, noise=noise), 0.0)
     for n in eng.active_dots:
         assert eng.mark_dot(n, *(p[n] + 2))
@@ -64,7 +64,7 @@ def test_a_half_covered_dot_is_flagged_in_nearly_every_frame_and_only_that_dot(r
 
 def test_a_dot_at_the_edge_of_the_picture_is_flagged():
     rates, _, _ = run(edge=True)
-    assert rates["asis"] >= 0.95 and all(v == 0.0 for k, v in rates.items() if k != "asis")
+    assert rates["iliac_crest"] >= 0.95 and all(v == 0.0 for k, v in rates.items() if k != "iliac_crest")
 
 
 def test_the_flag_changes_no_position_and_no_angle():
@@ -107,7 +107,7 @@ def test_no_false_alarms_on_the_real_practice_video():
     eng = Engine(TESTS, recordings_dir=ROOT / "tests" / "_out")
     eng.set_test("knee_extension")
     eng.set_dot_kind("black")
-    for d in ["asis", "psis", "fibular_head", "mt5_base", "mt5_head"]:
+    for d in ["iliac_crest", "fibular_head", "mt5_base", "mt5_head"]:
         eng.set_dot_enabled(d, False)
     eng.set_three_point("trochanter", "epicondyle", "malleolus")
     cap = cv2.VideoCapture(str(VIDEO))

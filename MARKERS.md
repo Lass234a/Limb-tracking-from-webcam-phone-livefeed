@@ -24,17 +24,9 @@ point, draw round it and fill it in. Do all the tape dots in the test posture (t
 - **Trochanter, lateral epicondyle, fibular head, lateral malleolus**: on the outer side of the leg, so they already face a side
   camera. Because the epicondyle and the fibular head are only a few cm apart, use **one strip of tape with two discs** instead of two
   squares. Do the same along the outer edge of the foot for the 5th metatarsal base and head.
-- **ASIS and PSIS (the problem dots for a side view).** These bone points face forward and backward, so from the side a disc sitting
-  right on them is seen very edge-on. What the camera needs is only the point's **position in the picture** (how far forward and how
-  high). Moving the disc sideways, towards the camera, does not change that position. So put the disc on the **outer surface of the
-  hip, level with and in line with the bone point**, facing the camera. A simple way: palpate the point, hold a ruler or pen
-  horizontally against it pointing straight at the camera, and mark where it meets the skin of the side of the hip. The camera must be
-  square to the movement plane for this to be exact (already a set-up rule).
-- **Joining ASIS and PSIS with tape:** fine, as **one strip of white tape with a disc at each end** (the strip then also shows the
-  pelvis line to the eye and to Kinovea). **Do not draw a black line along the strip, and do not draw a line between any two
-  dots.** A thick marker line (about 4 mm) joins the two discs into one long dark shape: in the test the marked centre landed up
-  to 1.7 cm away from the disc, with no warning, or the dot was lost. A thin pen line (2 mm) did no harm, but there is no gain in
-  drawing one, and the margin depends on how sharp the picture is.
+- **Iliac crest dot (the pelvis dot; since 0.9.0 it replaces ASIS and PSIS; the argument for it is in `PELVIS_LANDMARK.md`).** Place it on the side of the pelvis, **on the iliac crest, halfway between the ASIS and the PSIS**. A simple way: palpate both bone points and mark each with a pen dot on the skin, measure along the crest between the two marks with a flexible tape (or a string laid on the skin) and mark the middle; put the tape square and disc on that mark. The side of the crest faces a side camera more than the ASIS or PSIS themselves do, so the disc is less edge-on than it would be there.
+  The hip angle is now measured from the line **iliac crest dot to trochanter dot** (the goniometer's lateral midline of the pelvis) against the thigh, so the angle depends on where this one dot is put: with about 12 cm between the two dots, 5 mm of sideways error is about 2.4 deg. One person places both dots, in the test posture, and the same person repeats it every session.
+- **No strip or line between the pelvis dots any more.** There is only one pelvis dot. Still true for any two dots that are near each other (the epicondyle and fibular head on one strip): **do not draw a black line along the strip, and do not draw a line between any two dots.** A thick marker line (about 4 mm) joins two discs into one long dark shape: in the test the marked centre landed up to 1.7 cm away from the disc, with no warning, or the dot was lost. A thin pen line (2 mm) did no harm, but there is no gain in drawing one, and the margin depends on how sharp the picture is.
 - **Strap dot:** a wrap of white tape round the strap, on the part that faces the camera, a few cm from the buckle, with the disc on
   it (the dot on the buckle or under the sock was the one that was lost). **Anchor dot:** a tape patch with a disc at the fixed
   end, or on the rope itself, as far from the strap dot as the picture allows, if the anchor is out of frame. A pulled strap or
@@ -51,7 +43,7 @@ tracked centre was compared with the true centre over a moving 120-picture seque
 | Black disc on 3, 4, 5, 6 cm tape squares, tape turned 20 deg | No lost pictures, the centre as exact as for a bare black disc (about 0.1 px, 0.2 mm). Tape size does not matter to the tracker |
 | Streaky, hand-filled disc | Same |
 | More noise, a soft (blurred) picture, dim light (45 %) | Same, with and without tape |
-| Disc seen side-on (70 % and 50 % as wide as tall), as ASIS/PSIS are | Tracked without loss, same accuracy. The size check will read it smaller (see below) |
+| Disc seen side-on (70 % and 50 % as wide as tall), as a disc on the front or back of the hip would be | Tracked without loss, same accuracy. The size check will read it smaller (see below) |
 | **Thin outline circle, Auto colour, soft picture, circle not exactly in the middle of the tape** | **The program followed the white tape, 11 mm away from the circle, with no picture lost and no warning.** With *Dot colour = Black* the same case was exact |
 | Outline circle with a gap in it | Centre pulled 1.3 mm (40 deg gap) to 3 mm (90 deg gap) towards the closed side |
 | Two discs on one tape strip joined by a black line, 3.5, 6 and 15 cm apart | 2 mm line: no effect. **4 mm line: marked up to 1.7 cm off the disc (nothing lost, no warning), or marking failed, or the dot was lost in every picture** |
@@ -68,19 +60,20 @@ reads narrower than 2 cm; that is the picture, not a wrong sticker (the tall sid
 ## 4. Why not a line instead of dots
 
 - A line (a black stripe on a tape strip, tracked as a line) would only help if the **end points** could not be seen. It would not
-  make the angle more accurate: the tracker's own scatter is about 0.2 mm, which on a 15 cm ASIS-PSIS line is under 0.1 deg, whereas
-  a 5 mm placement error at one end is about 2 deg. The error that matters is where the tape and disc are put on the body.
+  make the angle more accurate: the tracker's own scatter is about 0.2 mm, which on a 12 cm iliac crest to trochanter line is under 0.1 deg, whereas
+  a 5 mm placement error at one end is about 2.4 deg. The error that matters is where the tape and disc are put on the body.
 - A line detector would be new code and a new thing to validate, and the strap, anchor, angles, Review and lost-dot rule all work on points.
-- If the first real session shows that ASIS or PSIS dots are lost or off from the side even with the discs moved outward, a line
-  detector is the next thing to build. Until then: dots.
-- If the pelvis dots turn out to be unusable in the real hip-extension posture (for example lying face down on a bench, which hides
-  the ASIS), the goniometer's own proximal arm in Tabel 3 is "the lateral midline of the pelvis", so a dot on the side of the iliac
-  crest above the trochanter could replace ASIS-PSIS in the hip angle. That changes the hip angle's definition: a decision for you,
-  the supervisor and the AnyBody side, not something to switch quietly.
+- If the first real session shows that the iliac crest dot is lost or off from the side, a line detector is the next thing to
+  build. Until then: dots.
+- **Done in 0.9.0 (2026-10-15, your decision):** the goniometer's own proximal arm in Tabel 3 is "the lateral midline of the pelvis", so
+  one dot on the side of the iliac crest, halfway between ASIS and PSIS, replaced ASIS and PSIS in the hip angle (and the pelvic tilt
+  angle, which needs two pelvis dots, was dropped). That changed the hip angle's definition: make sure the supervisor and the AnyBody
+  side know, and note that hip angles from before 0.9.0 (measured against the perpendicular of the ASIS-PSIS line) are not directly
+  comparable with hip angles from 0.9.0 on.
 
 ## 5. Quick check at the start of a session
 
 1. Dot colour is **Black dots**; the ruler is marked; every dot reads at least 2.0 cm in the scale box.
 2. After marking, every dot's ring is yellow (strong), none orange ("weak" or "partly covered").
-3. Move the hip and the leg by hand: no dot goes grey. If a pelvis dot is lost when the hip moves, move its disc further out on the side of the hip and mark it again.
+3. Move the hip and the leg by hand: no dot goes grey. If the iliac crest dot is lost when the hip moves, move its disc further out on the side of the hip and mark it again.
 4. Record a few seconds, open it in Review, look at the *Check* tab.

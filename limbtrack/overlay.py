@@ -14,12 +14,29 @@ COLOURS = {  # BGR
 }
 DOT_OK, DOT_WEAK = (0, 215, 255), (0, 140, 255)   # yellow / orange
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+PROMPT_PREFIX = "click dot: "                         # header line that asks for the next dot (engine.py writes it), drawn in yellow
 
 
 def _text(img, s, org, scale, colour, thick=2):
     x, y = int(org[0]), int(org[1])
     cv2.putText(img, s, (x, y), FONT, scale, (0, 0, 0), thick + 3, cv2.LINE_AA)
     cv2.putText(img, s, (x, y), FONT, scale, colour, thick, cv2.LINE_AA)
+
+
+def _shade_behind(img, rows, x, y_first, keep=0.45):
+    """Darken the picture behind the text lines (to `keep` of its brightness), each line only as wide as its text, so white text stays
+    readable on a pale wall (seen on the P11 pictures, 2026-10-15) and the picture still shows through. `rows`: (text, scale, colour,
+    thickness, advance) as drawn from baseline y_first downwards."""
+    h, w = img.shape[:2]
+    y = y_first
+    for line, scale, _, th, advance in rows:
+        (tw, tht), base = cv2.getTextSize(line, FONT, scale, th + 3)
+        x0, x1 = max(int(x - 6), 0), min(int(x + tw + 6), w)
+        y0, y1 = max(int(y - tht - 6), 0), min(int(y + base + 2), h)
+        if x1 > x0 and y1 > y0:
+            roi = img[y0:y1, x0:x1]
+            roi[:] = (roi * keep).astype(img.dtype)
+        y += advance
 
 
 def _arc(img, vertex, a, c, radius, colour, thick):
@@ -93,11 +110,35 @@ def _dashed(img, p, q, col, thick, dash=12):
     # PARKED-GHOST: return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
 
 
-def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, scale=None):
+BREAK_GHOST = (255, 255, 160)         # BGR: pale cyan, unlike any dot, angle, rope or ruler colour
+
+
+def _dashed_circle(img, c, r, col, thick, n=14):
+    for k in range(n):
+        a0 = 360.0 * k / n
+        cv2.ellipse(img, (int(c[0]), int(c[1])), (r, r), 0, a0, a0 + 360.0 / n * 0.55, col, thick, cv2.LINE_AA)
+
+
+def _draw_break_ghost(img, ghost, segments, s, thick):
+    """Pale dashed copy of the pose before a break: a ring round every dot (big enough for the sticker), dashed limb lines and the
+    dot names. `ghost`: dot name -> (x, y, diameter in pixels); `segments`: pairs of dot names to join."""
+    layer = img.copy()
+    for a, b in segments:
+        if a in ghost and b in ghost:
+            _dashed(layer, ghost[a][:2], ghost[b][:2], BREAK_GHOST, thick)
+    for n, (gx, gy, diam) in ghost.items():
+        r = int(max(diam / 2.0 + 7 * s, 10 * s))
+        _dashed_circle(layer, (gx, gy), r, BREAK_GHOST, thick + 1)
+        _text(layer, n, (gx + r + 4, gy - r), 0.5 * s, BREAK_GHOST, 1)
+    return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
+
+
+def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, scale=None, ghost=None, ghost_segments=()):
 # PARKED-GHOST: # with the ghost: def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=(), trails=None)
     """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost.
 
     `trails`: dot name -> list of segments of (x, y), drawn as thin paths (or None).
+    `ghost`: dot name -> (x, y, diameter) of where the dots were before a break (drawn under everything else), or None.
     """
     img = frame.copy()
     if img.ndim == 2:
@@ -107,6 +148,8 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
     thick = max(1, int(round(2 * s)))
     # PARKED-GHOST: if ghost:
         # PARKED-GHOST: img = _draw_ghost(img, ghost, ghost_segments, dots, s, thick)
+    if ghost:
+        img = _draw_break_ghost(img, ghost, ghost_segments, s, thick)
     if trails:
         _draw_trails(img, trails, s)
     if scale:
@@ -142,11 +185,14 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
             cv2.circle(img, c, r, col, thick, cv2.LINE_AA)
         _text(img, name, (c[0] - r * 2, c[1] - r - 6 * s), 0.5 * s, col, 1)
 
-    y = 34 * s
+    rows = []                                # (text, scale, colour, thickness, advance to the next line)
     for line in header_lines:
-        _text(img, line, (12, y), 0.7 * s, (255, 255, 255), 2)
-        y += 30 * s
-    y += 6 * s
+        if line.startswith(PROMPT_PREFIX):       # the dot to click next: the one instruction the operator must not miss
+            rows.append((line, 0.8 * s, DOT_OK, 2, 34 * s))
+        else:
+            rows.append((line, 0.7 * s, (255, 255, 255), 2, 30 * s))
+    if rows:
+        rows[-1] = rows[-1][:4] + (rows[-1][4] + 6 * s,)
     for a in angles:
         col = COLOURS[a.status]
         if a.status == LOST:
@@ -155,8 +201,12 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
             s_val = f"{a.value:6.1f}"
             if a.reference is not None:
                 s_val += f"  ({a.deviation:+.1f} vs {a.reference:.0f})"
-        _text(img, f"{a.title}: {s_val}", (12, y), 0.75 * s, col, thick)
-        y += 32 * s
+        rows.append((f"{a.title}: {s_val}", 0.75 * s, col, thick, 32 * s))
+    y = 34 * s
+    _shade_behind(img, rows, 12, y)
+    for line, scale, col, th, advance in rows:
+        _text(img, line, (12, y), scale, col, th)
+        y += advance
 
     if recording:
         cv2.circle(img, (w - int(28 * s), int(28 * s)), int(9 * s), (40, 40, 240), -1, cv2.LINE_AA)

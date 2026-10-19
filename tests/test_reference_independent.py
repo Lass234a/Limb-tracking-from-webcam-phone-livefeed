@@ -30,6 +30,6 @@ def locked_refs(tmp_path, smoothing):
 
 def test_the_saved_reference_is_the_same_with_smoothing_on_and_off(tmp_path):
     on, off = locked_refs(tmp_path / "on", True), locked_refs(tmp_path / "off", False)
-    assert set(on) == set(off) == {"hip", "ankle", "pelvic_tilt"}
+    assert set(on) == set(off) == {"hip", "ankle"}
     for k in on:
         assert on[k] == pytest.approx(off[k], abs=1e-9), k

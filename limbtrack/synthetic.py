@@ -22,17 +22,17 @@ def leg_points(hip_flex=0.0, knee_flex=0.0, ankle_df=0.0, pelvic_tilt=0.0, facin
                trochanter_xy=(560.0, 170.0), size=(1280, 720), thigh=190.0, shank=180.0, foot=110.0):
     """Dot positions (pixels) whose angles, in protocol.json's convention, are exactly the ones given.
 
-    hip_flex: + flexion, - extension (0 = femur along the pelvis midline)
+    hip_flex: + flexion, - extension (0 = femur along the pelvis midline, i.e. the line from the iliac crest dot to the trochanter)
     knee_flex: 0 = straight
     ankle_df: + dorsiflexion, 0 = fibula 90 deg to the 5th metatarsal
-    pelvic_tilt: + anterior tilt (ASIS lower than PSIS)
+    pelvic_tilt: the whole pelvis tipped forward by this many degrees (the iliac crest dot swings round the trochanter;
+        no angle follows it, the hip angle is measured against the pelvis and does not change)
     facing: 'right' or 'left' way the participant faces in the image
     """
     T = np.array(trochanter_xy, float)
-    u = np.array([math.cos(math.radians(pelvic_tilt)), math.sin(math.radians(pelvic_tilt))])  # PSIS -> ASIS
-    mid = T + np.array([0.0, -95.0])
-    asis, psis = mid + 60 * u, mid - 60 * u
+    u = np.array([math.cos(math.radians(pelvic_tilt)), math.sin(math.radians(pelvic_tilt))])  # the pelvis's own forward direction
     down = np.array([-u[1], u[0]])                        # pelvis midline, towards the feet
+    crest = T - 95.0 * down                               # iliac crest dot (halfway between ASIS and PSIS), above the trochanter
     femur = _rot(down, -hip_flex)                         # trochanter -> epicondyle
     epi = T + thigh * femur
     fib = _rot(femur, knee_flex)                          # direction fibular head -> malleolus
@@ -43,7 +43,7 @@ def leg_points(hip_flex=0.0, knee_flex=0.0, ankle_df=0.0, pelvic_tilt=0.0, facin
     foot_dir = _rot(up_shank, 90.0 - ankle_df)            # 5th metatarsal base -> head
     mt5_base = malleolus + 18 * foot_dir + 34 * fib
     mt5_head = mt5_base + foot * foot_dir
-    pts = {"asis": asis, "psis": psis, "trochanter": T, "epicondyle": epi, "fibular_head": fibular_head,
+    pts = {"iliac_crest": crest, "trochanter": T, "epicondyle": epi, "fibular_head": fibular_head,
            "malleolus": malleolus, "mt5_base": mt5_base, "mt5_head": mt5_head}
     if facing == "left":
         pts = {k: np.array([size[0] - v[0], v[1]]) for k, v in pts.items()}
@@ -60,7 +60,7 @@ def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, se
     img = np.full((h, w, 3), bg, np.uint8)
     limb_col = (95, 110, 140) if kind == "white" else (120, 140, 175)
     names = list(points)
-    for a, b in [("asis", "psis"), ("trochanter", "epicondyle"), ("fibular_head", "malleolus"),
+    for a, b in [("iliac_crest", "trochanter"), ("trochanter", "epicondyle"), ("fibular_head", "malleolus"),
                  ("epicondyle", "fibular_head"), ("mt5_base", "mt5_head"), ("malleolus", "mt5_base")]:
         cv2.line(img, tuple(np.int32(points[a])), tuple(np.int32(points[b])), limb_col, 26, cv2.LINE_AA)
     if distractors:  # something bright and something dark that is NOT a dot
