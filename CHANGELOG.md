@@ -3,6 +3,15 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.17.0 - 2026-10-20
+
+### Review: force against angle
+- **Why:** the first force trials showed the knee falling about 5.8 deg between rest and hold (slack in the strap, stretch, or the position slipping), which a plot against time shows only indirectly. The new view draws the joint's angle on one axis and the force on the other, picture by picture, so the shift under load is one look.
+- **What:** a switch above the graphs, *Graphs: Graphs against time / Force against angle* (enabled for a trial with force; the time graphs stay the default). x = the main joint's angle of each picture (unsmoothed, from the CSV), y = the force shown in the Force strip (smoothed with the chosen moving average, newtons when calibrated, else volts). A thin line goes through every picture, with a dot per picture coloured from purple (the start of the trial) to yellow (its end), larger dots inside the analysis window (the blue band follows when it is dragged), a star at the peak force (with the angle read at the peak, the same number as the Force tab), and a ring that follows the video. The force is paired with the picture that shows the same moment: a picture is stamped *Picture delay* seconds after it was taken, so the force at `t - delay` goes with the picture stamped `t` (the same rule as the angle at peak force). Pictures without an angle (lost dots) or outside the recorded force are left out, never filled in. Code: `analysis.force_angle_path`, `analysis.time_colours`, `ReviewTab._update_force_angle`.
+- **Changes no number.** It only draws numbers that are already shown (tested: the Angles, Force and Check texts are the same with the view on).
+- **Not tested:** on a real trial with a person (the synthetic trial has a made-up force); a long trial with 60 pictures per second.
+- Tests: new `test_force_angle.py` (12). Version 0.17.0. **Full suite on the final code of 0.14.0-0.17.0: 829 passed, 1 skipped, 0 failed** (17.4 min, nothing else running). Looked at in a real window: a synthetic trial with simulated force (the path, the window, the star and the ring).
+
 ## 0.16.0 - 2026-10-20
 
 ### Reference readings: what a goniometer or an inclinometer said, typed in beside the app's own angle

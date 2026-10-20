@@ -106,6 +106,38 @@ def torque_series(tr, picture_delay=0.0):
     return {"t": tr.t, "torque": f_at * arm / 100.0, "arm_cm": arm, "estimated": est, "force_n": f_at}
 
 
+TIME_COLOUR_STOPS = [(68, 1, 84), (59, 82, 139), (33, 145, 140), (94, 201, 98), (253, 231, 37)]      # purple -> teal -> green -> yellow (viridis)
+
+
+def time_colours(n):
+    """`n` colours (r, g, b) running from purple (the first picture) to yellow (the last), for a path drawn in time order."""
+    if n <= 0:
+        return []
+    stops = np.array(TIME_COLOUR_STOPS, float)
+    pos = np.linspace(0.0, len(stops) - 1.0, n)
+    return [tuple(int(round(float(np.interp(p, np.arange(len(stops)), stops[:, c])))) for c in range(3)) for p in pos]
+
+
+def force_angle_path(tr, picture_delay=0.0):
+    """The main joint's angle against the force, picture by picture, for the 'force against angle' view of Review.
+
+    x = the main joint's angle of each picture (unsmoothed, from the CSV; blank where its dots were lost), y = the force at the moment the
+    picture shows: a picture is stamped `picture_delay` seconds after it was taken, so the force at `t - picture_delay` goes with the picture
+    stamped `t` (the same rule as the angle at peak force). The force is the one Review shows (smoothed with the chosen moving average,
+    newtons when calibrated, else volts). Nothing is smoothed or invented for the angle. Returns None without force or without an angle;
+    otherwise a dict: t, angle, force (all per picture), ok (both numbers there), unit, angle_name."""
+    if not tr.has_force():
+        return None
+    main = next((a for a in tr.angle_defs if a.primary), tr.angle_defs[0] if tr.angle_defs else None)
+    if main is None:
+        return None
+    unit, ys, _ = tr.force_signal()
+    t = np.asarray(tr.t, float)
+    angle = np.asarray(tr.deg[main.name], float)
+    force = np.interp(t - picture_delay, tr.force_t, ys, left=np.nan, right=np.nan)           # no force is made up outside what was recorded
+    return {"t": t, "angle": angle, "force": force, "ok": np.isfinite(angle) & np.isfinite(force), "unit": unit, "angle_name": main.title}
+
+
 def torque_summary(tr, t0, t1, picture_delay=0.0):
     """Peak torque, torque at the peak force and the plateau torque in the window; None when torque cannot be computed."""
     ts = torque_series(tr, picture_delay)

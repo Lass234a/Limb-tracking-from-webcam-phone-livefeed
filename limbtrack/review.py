@@ -592,6 +592,21 @@ class ReviewTab(QWidget):
         self.force_plot.setXLink(self.plot)
         self.force_plot.setVisible(False)
         self.plot.setLabel("bottom", "Time (s)")
+        # the same recording as force against angle: how far the joint moved while the force rose (slack, stretch, the position slipping)
+        self.fa_plot = pg.PlotWidget()
+        self.fa_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.fa_plot.getAxis("left").enableAutoSIPrefix(False)
+        self.fa_plot.setVisible(False)
+        self._fa_cursor = pg.ScatterPlotItem(size=17, symbol="o", pen=pg.mkPen(CURSOR_COLOUR, width=3), brush=pg.mkBrush(0, 0, 0, 0))
+        self._fa_path = None
+        self.plot_view = QComboBox()
+        self.plot_view.addItem("Graphs against time", "time")
+        self.plot_view.addItem("Force against angle", "fa")
+        self.plot_view.setToolTip("Force against angle draws the joint's angle on one axis and the force on the other, picture by picture, "
+                                  "from purple (the start of the trial) to yellow (the end). It shows how far the joint moved while the force "
+                                  "rose. Needs a trial with force.")
+        self.plot_view.currentIndexChanged.connect(lambda _: self._apply_plot_view())
+        self.plot_view.setEnabled(False)
         self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
         self.force_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
         self.window = pg.LinearRegionItem(brush=(30, 120, 220, 40))
@@ -705,8 +720,14 @@ class ReviewTab(QWidget):
         plots = QWidget()
         pl = QVBoxLayout(plots)
         pl.setContentsMargins(6, 0, 0, 0)
+        vrow = QHBoxLayout()
+        vrow.addWidget(QLabel("Graphs:"))
+        vrow.addWidget(self.plot_view)
+        vrow.addStretch(1)
+        pl.addLayout(vrow)
         pl.addWidget(self.plot, 3)
         pl.addWidget(self.force_plot, 2)
+        pl.addWidget(self.fa_plot, 5)
         pl.addLayout(erow)
         pl.addWidget(self.force_box)
         pl.addWidget(hint)
@@ -787,8 +808,8 @@ class ReviewTab(QWidget):
         self.plot.addItem(self.window)
         self._show_force_curve(tr)
         has_f = tr.has_force()
-        self.force_plot.setVisible(has_f)
         self.force_box.setVisible(has_f)
+        self._apply_plot_view()
         self.plot.setLabel("bottom", "" if has_f else "Time (s)")         # the time axis label is under the lower plot when there are two
         for k, a in enumerate(tr.angle_defs):
             self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
@@ -824,6 +845,58 @@ class ReviewTab(QWidget):
         self.update_summary()
 
     # ------------------------------------------------------------ playback
+    def _apply_plot_view(self):
+        """Time graphs (angles over the force) or force against angle. The second needs force; a trial without force always shows the first."""
+        has_f = self.trial is not None and self.trial.has_force()
+        self.plot_view.setEnabled(has_f)
+        fa = has_f and self.plot_view.currentData() == "fa"
+        self.plot.setVisible(not fa)
+        self.force_plot.setVisible(has_f and not fa)
+        self.fa_plot.setVisible(fa)
+        if fa:
+            self._update_force_angle()
+
+    def _update_force_angle(self):
+        """Draw the force-against-angle path: a thin line through every picture, a dot per picture coloured by time (purple to yellow), larger
+        dots inside the analysis window, a star at the peak force (with the angle read at the peak, as in the Force tab), and a ring that
+        follows the video. The force is paired with the picture that shows the same moment (the picture delay box)."""
+        tr, pl = self.trial, self.fa_plot
+        pl.clear()
+        pl.addItem(self._fa_cursor)
+        self._fa_cursor.setData([], [])
+        self._fa_path = analysis.force_angle_path(tr, self.picture_delay.value()) if tr is not None else None
+        path = self._fa_path
+        if path is None or not path["ok"].any():
+            pl.setTitle("No picture has both an angle and a force.", color="#bbbbbb", size="10pt")
+            return
+        ok = path["ok"]
+        x, y, t = path["angle"][ok], path["force"][ok], path["t"][ok]
+        t0, t1 = self.window.getRegion()
+        cols = np.array(analysis.time_colours(len(x)))
+        pl.setLabel("bottom", f"{path['angle_name']} (deg)")
+        pl.setLabel("left", f"Force ({path['unit']})")
+        pl.setTitle("purple = start of the trial, yellow = its end;  large dots = the analysis window;  star = peak force",
+                    color="#bbbbbb", size="9pt")
+        pl.plot(x, y, pen=pg.mkPen((190, 190, 190, 110), width=1))
+        pl.addItem(pg.ScatterPlotItem(x=x, y=y, size=6, pen=None, brush=[pg.mkBrush(*(int(v) for v in c)) for c in cols]))
+        inside = (t >= t0) & (t <= t1)
+        if inside.any():
+            pl.addItem(pg.ScatterPlotItem(x=x[inside], y=y[inside], size=10, pen=pg.mkPen("w", width=1.2),
+                                          brush=[pg.mkBrush(*(int(v) for v in c)) for c in cols[inside]]))
+        fs = tr.force_summary(t0, t1, self.picture_delay.value())
+        if fs is not None and not math.isnan(fs["main_angle_at_peak_deg"]):
+            pl.addItem(pg.ScatterPlotItem(x=[fs["main_angle_at_peak_deg"]], y=[fs["peak"]], size=20, symbol="star",
+                                          pen=pg.mkPen("k", width=1), brush=pg.mkBrush("#ffd43b")))
+        self._update_fa_cursor(self.slider.value())
+
+    def _update_fa_cursor(self, i):
+        """The ring on the force-against-angle path that marks the picture shown in the video."""
+        path = self._fa_path
+        if path is None or self.plot_view.currentData() != "fa" or not 0 <= i < len(path["t"]) or not path["ok"][i]:
+            self._fa_cursor.setData([], [])
+            return
+        self._fa_cursor.setData([float(path["angle"][i])], [float(path["force"][i])])
+
     def _show_force_curve(self, tr):
         """The force in its own strip under the angle plot: every raw sample faint, the smoothed curve (the one the numbers come from) bold."""
         fp = self.force_plot
@@ -874,6 +947,7 @@ class ReviewTab(QWidget):
         img = self.trial.drawn(i, trails=self.chk_trails.isChecked())
         self.cursor.setValue(self.trial.t[i])
         self.force_cursor.setValue(self.trial.t[i])
+        self._update_fa_cursor(i)
         if img is None:
             return
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -944,6 +1018,8 @@ class ReviewTab(QWidget):
         if not self.trial.hold_window():
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
+        if self.plot_view.currentData() == "fa" and self.trial.has_force():
+            self._update_force_angle()                       # follows the window, the smoothing and the picture delay
         self.ref_text.setText(self._reference_text())
         self.force_text.setText(self._force_text(t0, t1))
         self._update_calibration(t0, t1)
