@@ -152,7 +152,7 @@ def test_review_shows_force_in_its_own_strip_and_numbers_in_tabs(tmp_path, monke
     eng, paths = T.recording(tmp_path, seconds=2.0)
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert tab.tabs.count() == 5 and [tab.tabs.tabText(i) for i in range(5)] == ["Check", "Angles", "Force", "Calibration", "Dots and pull"]
+    assert tab.tabs.count() == 6 and [tab.tabs.tabText(i) for i in range(6)] == ["Check", "Angles", "Force", "Reference", "Calibration", "Dots and pull"]
     assert not tab.force_plot.isHidden() and not tab.force_box.isHidden()
     assert "Pictures" in tab.check_text.text() or "Dot" in tab.check_text.text() or "calibration" in tab.check_text.text()
     assert "Force in the window" in tab.force_text.text() and "Knee" in tab.stats.text() or "mean" in tab.stats.text()

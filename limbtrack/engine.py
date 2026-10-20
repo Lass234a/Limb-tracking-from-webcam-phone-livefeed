@@ -13,6 +13,7 @@ import math
 import threading
 import time
 from collections import deque
+from datetime import datetime
 
 import numpy as np
 
@@ -27,6 +28,7 @@ from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .recorder import FrameSizeChanged, TrialRecorder
 from . import cues, privacy, provenance
+from .reference import INSTRUMENTS, ReferenceReadings
 from .pull import compute_pull, describe as describe_pull
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N, DEFAULT_THRESHOLD_V, KEEP_S, TRIGGERED, AutoMvic
 from .scale import MIN_DOT_DIAMETER_CM, ScaleReference, estimate_diameter_cm
@@ -34,7 +36,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.15.0"
+SOFTWARE_VERSION = "0.16.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -64,7 +66,7 @@ class _FrozenWhileRecording:
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
-                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues", "view", "tested_leg", "tape_pelvic_width_mm"]
+                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues", "view", "tested_leg", "tape_pelvic_width_mm", "reference_readings"]
 
 
 class Engine:
@@ -141,6 +143,7 @@ class Engine:
         self.tested_leg = "right"    # frontal tests: which leg is tested (the participant faces the camera: the right leg is on the picture's left)
         self.tape_pelvic_width_mm = None   # frontal tests: ASIS-to-ASIS distance measured with a tape or calipers (a cross-check of the ruler scale), or None
         self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
+        self.reference = ReferenceReadings()   # what the operator typed from a goniometer or inclinometer, and the app's angles at that moment (limbtrack/reference.py)
         self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
         self._refs = {}
         self._last_gray = None
@@ -583,6 +586,77 @@ class Engine:
         if f is None:
             f = self._filters[name] = MovingAverage(SMOOTHING_WINDOW_S)
         return f(raw, t)
+
+    # ------------------------------------------------- reference readings (a hand instrument, typed in; 0.16.0)
+    def reference_keys(self):
+        """[(key, name)] of what can be typed for the present test: its angles, then the test's own extras (the typed hip flexion of a frontal test)."""
+        with self.lock:
+            return [(a.name, a.title) for a in self.all_angles] + list(self.test.reference_extras.items())
+
+    def reference_position(self):
+        """Which position the readings belong to: (test key, target)."""
+        return (self.test.key, self.target)
+
+    def _drop_readings_of_another_position(self):
+        r = self.reference
+        if r.position is not None and tuple(r.position) != self.reference_position():
+            r.clear()                                        # a reading of another posture must never be saved with this trial
+
+    def set_reference(self, values=None, instrument=None, resolution_deg=None):
+        """Keep what the operator typed. `values`: key -> list of readings in degrees (an empty list = not measured). Refused while recording."""
+        with self.lock:
+            self._forbid_while_recording("the reference readings")
+            self._drop_readings_of_another_position()
+            r = self.reference
+            if instrument is not None:
+                if instrument not in INSTRUMENTS:
+                    raise ValueError(f"unknown instrument '{instrument}'")
+                r.instrument = instrument
+            if resolution_deg is not None:
+                if not resolution_deg > 0:
+                    raise ValueError("the resolution must be above 0")
+                r.resolution_deg = float(resolution_deg)
+            valid = {k for k, _ in self.reference_keys()}
+            for k, v in (values or {}).items():
+                if k not in valid:
+                    raise ValueError(f"'{k}' is not something this test takes a reading for")
+                r.set_values(k, v)
+            r.position = self.reference_position()
+
+    def take_reference_stamp(self):
+        """'Reading taken now': keep the app's own angles of this moment (unsmoothed, averaged over 0.2 s), so the typed reading is compared
+        with the app at the same moment and not with the hold of the contraction. Returns {angle name: value or None}."""
+        with self.lock:
+            self._forbid_while_recording("the reference readings")
+            if self.paused:
+                raise RuntimeError("The program is paused for a break: there are no angles to keep. Press Resume (P) first.")
+            app = {a.name: self._ref_last.get(a.name) for a in self.active_angles}
+            if not any(v is not None for v in app.values()):
+                raise ValueError("No angle can be read at the moment: mark the dots first.")
+            self._drop_readings_of_another_position()
+            self.reference.stamp = {"taken_at": datetime.now().isoformat(timespec="seconds"), "app_deg": app}
+            self.reference.position = self.reference_position()
+            return dict(app)
+
+    def clear_reference(self):
+        with self.lock:
+            self._forbid_while_recording("the reference readings")
+            self.reference.clear()
+
+    def reference_for_this_position(self):
+        """False when readings are held for another test or target (they will not be saved with the next trial)."""
+        r = self.reference
+        return r.position is None or tuple(r.position) == self.reference_position()
+
+    def _reference_meta(self):
+        r = self.reference
+        if not r.has_data():
+            return None
+        if not self.reference_for_this_position():
+            return {"not_used": {"entered_for": {"test_key": r.position[0], "target_deg": r.position[1]},
+                                 "this_trial": {"test_key": self.test.key, "target_deg": self.target}},
+                    "note": "readings were typed for another position and are not saved with this trial"}
+        return r.to_meta(titles=dict(self.reference_keys()))
 
     # ------------------------------------------------- computed points (frontal tests)
     def _derived_points(self, xy):
@@ -1431,6 +1505,8 @@ class Engine:
                                   "operator_ticked": bool(self.wall_posture)} if self.test.view == "frontal" else None),
             "derived_points": self._derived_meta(),
             "hip_centre_scale": self._hip_centre_scale_meta(),
+            "reference_readings": self._reference_meta(),
+            "reference_extras": dict(self.test.reference_extras),
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {
                 "enabled": self.smoothing,

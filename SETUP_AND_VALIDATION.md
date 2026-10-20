@@ -117,8 +117,14 @@ posture on each of about 5 participants, with the stickers removed in between; c
 for each joint. This gives the real uncertainty of an angle in people, and it will be largest at the ankle and hip. For the
 ankle, consider an inclinometer on the foot as the main measure, or an extra dot on the calcaneus.
 
-**C. Comparison with the goniometer or inclinometer on people.** For the positions of Tabel 2, read the inclinometer on the
-participant at the moment you press Lock and compare it with the app. Note differences by joint.
+**C. Comparison with the goniometer or inclinometer on people.** For the positions of Tabel 2, read the instrument on the
+participant in the position, press **Reading taken now (G)** in the Live tab's *Reference reading* section as you read it, and type
+what it said (since 0.16.0). The program keeps its own angles of that moment, so the two numbers are compared at the same moment
+(not with the hold of the contraction). In Review, the *Reference* tab shows them side by side and *Reference validation...* gives
+the average difference, the spread, the 95 % limits and an agreement plot over all trials. Take two or three readings of each angle
+and type them all (they are averaged). Note which instrument was used: a handheld goniometer is read to about a degree and has an
+error of its own of a few degrees, so agreement to +-1 deg can only be shown against a digital inclinometer on a jig (section 4A);
+the goniometer readings tell you how the app and a physio's reading agree in practice. Note differences by joint.
 
 **D. Known limits to state in the methods.** 2D angle in the image (out-of-plane rotation and camera tilt add error);
 lens distortion is not corrected (keep the joint central); dots on skin and straps can slide; the ruler scale is valid

@@ -96,7 +96,7 @@ Tests, positions and required neighbour angles follow Tabel 2 of the protocol dr
 - Dot tracking assumes the dots are clearly brighter (white) or darker (black) than what's around them. Good even lighting and matte dots help. Glare on shiny dots or clothing seams near a dot can confuse it. Dots closer together than about 3 dot-widths can be confused.
 
 ## Validation (do once, and again if the camera setup changes)
-1. **Goniometer check**: set the limb to 5+ angles per joint (e.g. 30/60/90/120/150 deg), hold still ~5 s each while recording (use S / E markers), then in Review select each hold and compare the mean with the goniometer. Aim for agreement within about 2-3 deg.
+1. **Goniometer check**: set the limb to 5+ angles per joint (e.g. 30/60/90/120/150 deg), hold still ~5 s each while recording (use S / E markers). Since 0.16.0 the reading can be typed in: in the Live tab's *Reference reading* section press **Reading taken now (G)** as you read the goniometer or inclinometer, type what it said, then record. Review's *Reference* tab shows the reading beside the app's angle at that moment, and *Reference validation...* gives the average difference, spread and an agreement plot over all trials. Aim for agreement within about 2-3 deg with a hand goniometer (it cannot show better).
 2. **Kinovea check**: open a `..._raw.mp4` in Kinovea, measure the angle with its angle tool at a few moments, and compare with the CSV at the same times.
 3. **Noise floor**: record a still participant (or a mannequin) for 60 s; the SD in Review is the tracking noise. It should be well under your tolerance.
 4. **Stress it**: cover a dot with a hand, change the lighting, and confirm the dot goes orange/grey and comes back correctly.

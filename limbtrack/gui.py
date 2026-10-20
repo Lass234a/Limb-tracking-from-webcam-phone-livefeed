@@ -1,6 +1,7 @@
 """The window: a Live tab (camera, marking dots, lock, record) and a Review tab."""
 import json
 import os
+from datetime import datetime
 import threading
 import time
 import traceback
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
                                QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
 
-from . import privacy, session_memory
+from . import privacy, reference, session_memory
 from .session_log import SessionLog
 from .panels import Accordion, Section, StepStrip
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
@@ -764,6 +765,49 @@ class LiveTab(QWidget):
         pvl.addWidget(self.btn_folder)
         self.update_privacy_label()
 
+        # --- reference reading: what a goniometer or an inclinometer said, typed in next to the app's own angle (0.16.0)
+        self.ref_instrument = NoWheelComboBox()
+        for k, label in reference.INSTRUMENTS.items():
+            self.ref_instrument.addItem(label, k)
+        self.ref_instrument.setToolTip("What the readings were taken with. Saved with the trial.")
+        self.ref_resolution = NoWheelComboBox()
+        for v in reference.RESOLUTIONS_DEG:
+            self.ref_resolution.addItem(f"{v:g} deg", v)
+        self.ref_resolution.setCurrentIndex(self.ref_resolution.findData(1.0))
+        self.ref_resolution.setToolTip("What the instrument can be read to (a goniometer: about 1 deg, a digital inclinometer: 0.1 deg).")
+        self.ref_instrument.currentIndexChanged.connect(self._reference_edited)
+        self.ref_resolution.currentIndexChanged.connect(self._reference_edited)
+        self.ref_fields, self.ref_titles, self._ref_problem = {}, {}, ""
+        self.ref_form = QFormLayout()
+        self.btn_ref_stamp = QPushButton("Reading taken now  (G)")
+        self.btn_ref_stamp.setToolTip("Press it at the moment you read the instrument. The program keeps its own angles of that moment "
+                                      "(unsmoothed, averaged over 0.2 s), so the reading is compared with the app at the same moment, "
+                                      "not with the hold of the contraction.")
+        self.btn_ref_stamp.clicked.connect(self.take_reference_now)
+        self.btn_ref_clear = QPushButton("Clear the readings")
+        self.btn_ref_clear.clicked.connect(self.clear_reference)
+        self.ref_status = QLabel("")
+        self.ref_status.setWordWrap(True)
+        ref_hint = QLabel("Put the instrument on the participant in the position, press 'Reading taken now' as you read it, then type what "
+                          "it said, in degrees. Several readings of one angle: separate them with a space. An empty box means 'not "
+                          "measured'. The readings stay for the same position (the second trial) and are never saved with another one.")
+        ref_hint.setWordWrap(True)
+        rr = QWidget()
+        rrl = QVBoxLayout(rr)
+        rrl.setContentsMargins(0, 0, 0, 0)
+        rrl.addWidget(ref_hint)
+        rif = QFormLayout()
+        rif.addRow("Instrument", self.ref_instrument)
+        rif.addRow("Read to", self.ref_resolution)
+        rrl.addLayout(rif)
+        rrl.addLayout(self.ref_form)
+        rrow = QHBoxLayout()
+        rrow.addWidget(self.btn_ref_stamp)
+        rrow.addWidget(self.btn_ref_clear)
+        rrl.addLayout(rrow)
+        rrl.addWidget(self.ref_status)
+        self.rebuild_reference_fields()
+
         # --- scale (ruler with a dot at each end)
         self.ruler_len = self._spin(1.0, 100.0, 1.0, " cm")
         self.ruler_len.setValue(self.engine.scale.length_cm)
@@ -943,6 +987,7 @@ class LiveTab(QWidget):
                                             ("7", "force", "Force", [fc]),
                                             ("8", "markers", "Markers and sound", [mkb]),
                                             ("9", "record", "Record", [rc]),
+                                            (None, "reference", "Reference reading (goniometer, inclinometer)", [rr]),
                                             (None, "checklist", "Camera set-up checklist (set once)", [cs]),
                                             (None, "advanced", "Advanced: three-point angle", [self.btn_adv, self.adv_body])):
             self.accordion.add(key, title, widgets, number)
@@ -993,6 +1038,7 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_E), self, activated=self.btn_end_mark.click)
         QShortcut(QKeySequence(Qt.Key_M), self, activated=self.btn_mark.click)
         QShortcut(QKeySequence(Qt.Key_Z), self, activated=self.btn_force_zero.click)
+        QShortcut(QKeySequence(Qt.Key_G), self, activated=self.btn_ref_stamp.click)
         # The F-keys work even while a text box has focus (letters would be typed into it): audit GUI-13.
         QShortcut(QKeySequence(Qt.Key_F5), self, activated=self.btn_rec.click)
         QShortcut(QKeySequence(Qt.Key_F6), self, activated=self.btn_start_mark.click)
@@ -1354,7 +1400,114 @@ class LiveTab(QWidget):
         self.btn_lock.setChecked(False)
         self._update_view_rows()
         self.rebuild_landmarks()
+        self.rebuild_reference_fields()
         self.refresh_plan()
+
+    # ------------------------------------------------- reference readings (a hand instrument, typed in)
+    def rebuild_reference_fields(self):
+        """One box per angle of the test (and per extra the test offers, such as the typed hip flexion of a frontal test)."""
+        while self.ref_form.rowCount():
+            self.ref_form.removeRow(0)
+        self.ref_fields, self.ref_titles, self._ref_problem = {}, dict(self.engine.reference_keys()), ""
+        for key, title in self.engine.reference_keys():
+            box = TextField()
+            box.setPlaceholderText("e.g. 88 90 89")
+            box.setToolTip("Degrees, as the instrument says them. Several readings: separate with a space. Empty = not measured.")
+            box.focus_changed.connect(self._update_key_hint)
+            box.editingFinished.connect(self._reference_edited)
+            self.ref_form.addRow(title, box)
+            self.ref_fields[key] = box
+        r = self.engine.reference
+        if r.position is None or self.engine.reference_for_this_position():
+            for key, box in self.ref_fields.items():
+                box.setText(reference.format_values(r.values.get(key, [])))
+            for combo, value in ((self.ref_instrument, r.instrument), (self.ref_resolution, r.resolution_deg)):
+                combo.blockSignals(True)
+                combo.setCurrentIndex(max(combo.findData(value), 0))
+                combo.blockSignals(False)
+        self.update_reference_box()
+
+    def _reference_edited(self, *_):
+        """What was typed (or the instrument) changed: hand it to the engine. A box that cannot be read is marked and keeps the old value."""
+        values, problems = {}, []
+        for key, box in self.ref_fields.items():
+            try:
+                values[key] = reference.parse_values(box.text())
+                box.setStyleSheet("")
+            except reference.ReadingError as e:
+                box.setStyleSheet("border: 1px solid #dc2626;")
+                problems.append(f"{self.ref_titles.get(key, key)}: {e}")
+        try:
+            self.engine.set_reference(values=values, instrument=self.ref_instrument.currentData(), resolution_deg=self.ref_resolution.currentData())
+        except (RuntimeError, ValueError) as e:
+            self.say(str(e))
+        self._ref_problem = "\n".join(problems)
+        self.update_reference_box()
+
+    def take_reference_now(self):
+        try:
+            app = self.engine.take_reference_stamp()
+        except (RuntimeError, ValueError) as e:
+            self.say(str(e))
+            return
+        self.say("Reading moment kept (" + ", ".join(f"{self.ref_titles.get(k, k)} {v:.1f}" for k, v in app.items() if v is not None)
+                 + "). Now type what the instrument said.", 8.0)
+        first = next(iter(self.ref_fields.values()), None)
+        if first is not None:
+            first.setFocus()
+        self.update_reference_box()
+
+    def clear_reference(self):
+        try:
+            self.engine.clear_reference()
+        except RuntimeError as e:
+            self.say(str(e))
+            return
+        for box in self.ref_fields.values():
+            box.clear()
+            box.setStyleSheet("")
+        self._ref_problem = ""
+        self.update_reference_box()
+
+    def update_reference_box(self, recording=None):
+        """The status under the reference boxes (what is kept, what is typed, whether it belongs to this position) and the section's summary."""
+        if recording is None:
+            recording = getattr(self, "_rec_started", None) is not None
+        e = self.engine
+        r = e.reference
+        for w in (self.ref_instrument, self.ref_resolution, self.btn_ref_stamp, self.btn_ref_clear, *self.ref_fields.values()):
+            w.setEnabled(not recording)
+        lines, warn, summary = [], False, "none yet"
+        if not r.has_data():
+            lines.append("No reading yet for this position.")
+        elif not e.reference_for_this_position():
+            was = e.tests.get(r.position[0])
+            lines.append(f"These readings were typed for {was.label if was else r.position[0]}"
+                         + ("" if r.position[1] is None else f", {r.position[1]:g} deg")
+                         + " and will NOT be saved with a trial of this position. Clear them, or type new ones.")
+            warn, summary = True, "for another position"
+        else:
+            if r.stamp:
+                when = datetime.fromisoformat(r.stamp["taken_at"])
+                age = (datetime.now() - when).total_seconds()
+                ago = f"{age:.0f} s" if age < 90 else f"{age / 60:.0f} min"
+                kept = ", ".join(f"{self.ref_titles.get(k, k)} {v:.1f}" for k, v in r.stamp["app_deg"].items() if v is not None)
+                lines.append(f"Moment kept at {when:%H:%M:%S} ({ago} ago). The app said: {kept}.")
+            else:
+                lines.append("No moment kept: press 'Reading taken now' as you read the instrument. Without it the first second of the "
+                             "recording stands in for the comparison.")
+            typed = [f"{self.ref_titles.get(k, k)} {sum(v) / len(v):.1f}" + (f" ({len(v)} readings)" if len(v) > 1 else "") for k, v in r.values.items()]
+            lines.append("Typed: " + ", ".join(typed) + "." if typed else "Nothing typed yet.")
+            summary = f"{len(r.values)} typed" + (", moment kept" if r.stamp else ", no moment kept")
+        if self._ref_problem:
+            lines.append(self._ref_problem)
+            warn = True
+        text = "\n".join(lines)
+        if text != self.ref_status.text():
+            self.ref_status.setText(text)
+        self.ref_status.setStyleSheet("color: #d97706; font-weight: bold;" if warn else "")
+        if hasattr(self, "accordion"):                  # (not yet built while the boxes are first made)
+            self.accordion.set_summary("reference", summary)
 
     def _update_view_rows(self):
         """A frontal test (camera in front of the participant) has no 'Participant faces': it asks which leg is tested, and offers the
@@ -1507,6 +1660,7 @@ class LiveTab(QWidget):
         self.btn_lock.setChecked(False)
         self.update_landmark_info()
         self.update_three_point_info()
+        self.rebuild_reference_fields()                   # the angles of the test changed: so did what a reading can be typed for
         self.target_spin.blockSignals(True)               # the engine may have converted or cleared the target
         self.target_spin.setValue(self.target_spin.minimum() if self.engine.target is None else self.engine.target)
         self.target_spin.blockSignals(False)
@@ -2529,6 +2683,7 @@ class LiveTab(QWidget):
     def refresh_status(self):
         recording = self._rec_started is not None
         self.update_force_box()
+        self.update_reference_box(recording)
         self.plan.setEnabled(not recording)
         for w in (self.btn_crop, self.btn_mask, self.btn_priv_clear, self.btn_folder):
             w.setEnabled(not recording)

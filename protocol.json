@@ -125,6 +125,7 @@
       "primary": "abd_goniometer",
       "targets": [0, 20],
       "optional_dots": [],
+      "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
       "angles": ["abd_goniometer", "abd_hip_centre"]
     },
     "hip_adduction": {
@@ -133,6 +134,7 @@
       "primary": "add_goniometer",
       "targets": [0, 20],
       "optional_dots": [],
+      "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
       "angles": ["add_goniometer", "add_hip_centre"]
     },
     "belt_squat": {

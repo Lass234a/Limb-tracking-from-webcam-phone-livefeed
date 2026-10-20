@@ -48,6 +48,7 @@ class TestDef:
     optional_dots: list = field(default_factory=list)   # extra tracked dots (strap, anchor): off until switched on, never part of an angle
     view: str = "sagittal"                        # "frontal": the camera is in front of the participant (hip abduction/adduction)
     derived: dict = field(default_factory=dict)   # computed points this test's angles use: name -> definition (geometry.DERIVED_KINDS)
+    reference_extras: dict = field(default_factory=dict)   # readings the operator may type that are not one of the angles (key -> name), e.g. the hip flexion of a frontal test
 
     @property
     def all_dots(self):
@@ -89,7 +90,7 @@ class ProtocolError(ValueError):
 
 _TOP_KEYS = {"tolerance_deg", "neighbour_tolerance_deg", "dot_order", "dot_labels", "optional_dots", "derived_points", "angle_library", "tests"}
 _TEST_KEYS = {"label", "primary", "targets", "angles", "dots", "tolerance_deg", "neighbour_tolerance_deg", "optional_dots",
-              "neighbour_targets", "view"}
+              "neighbour_targets", "view", "reference_extras"}
 _ANGLE_KEYS = {"name", "vectors", "label", "signed", "sign", "offset", "primary", "fulcrum", "kind", "points", "judged"}
 _FIXED_ARMS = ("up", "down", "forward")
 _MAX_TOLERANCE = (30.0, 45.0)        # the ranges of the tolerance boxes in the window (main joint, other joints)
@@ -254,6 +255,14 @@ def validate_protocol(data):
             names.append(_angle_name(item))
         if t.get("view") is not None and t["view"] not in VIEWS:
             errs.append(f'{path}.view: "{t["view"]}" is not a view; use one of {", ".join(VIEWS)}{_near(t["view"], VIEWS)}')
+        extras = t.get("reference_extras")
+        if extras is not None:
+            if not (isinstance(extras, dict) and all(isinstance(k, str) and isinstance(v, str) and k and v for k, v in extras.items())):
+                errs.append(f"{path}.reference_extras: must be an object {{key: name}} of text, for example "
+                            '{"hip_flexion": "Hip flexion (inclinometer)"}')
+            else:
+                errs += [f'{path}.reference_extras: "{k}" is also the name of an angle of this test; use another key'
+                         for k in extras if k in [n for n in names if n]]
         primary = t.get("primary")
         if primary is not None and primary not in names:
             errs.append(f'{path}.primary: "{primary}" is not one of this test\'s angles {[n for n in names if n]}{_near(primary, [n for n in names if n])}')
@@ -337,6 +346,7 @@ def load_protocol(path):
             optional_dots=list(t.get("optional_dots", data.get("optional_dots", []))),
             neighbour_targets=dict(t.get("neighbour_targets", {})),
             view=t.get("view", "sagittal"),
+            reference_extras=dict(t.get("reference_extras", {})),
             derived={n: dict(derived_defs[n]) for a in angles for v in a.vectors for n in spec_dots(v) if n in derived_defs},
         )
     return tests

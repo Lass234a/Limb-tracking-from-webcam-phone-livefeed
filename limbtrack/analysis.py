@@ -234,7 +234,8 @@ SESSION_COLUMNS = ["trial", "participant", "test_key", "target_deg", "software_v
                    "pictures_per_s", "force_unit", "force_peak", "force_t_peak_s", "force_plateau", "force_rest", "force_onset_s",
                    "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
-                   "checks_to_look_at", "repeatability_pct_same_position", "third_trial_needed"]
+                   "checks_to_look_at", "repeatability_pct_same_position", "third_trial_needed",
+                   "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis"]
 
 
 def session_row(tr):
@@ -266,6 +267,11 @@ def session_row(tr):
         row.update(torque_peak_nm=tq["peak_nm"], torque_at_peak_force_nm=tq["at_peak_force_nm"], arm_at_peak_force_cm=tq["arm_at_peak_force_cm"],
                    torque_stand_in_pictures=tq["pictures_with_stand_in"])
     row["checks_to_look_at"] = " | ".join(text for lvl, text in trial_checks(tr, *win) if lvl == "check")
+    primary = next((a for a in tr.angle_defs if a.primary), None)        # the typed reference of the main joint, beside the app's angle at the same moment
+    ref = next((r for r in tr.reference_rows() if primary is not None and r["key"] == primary.name), None)
+    if ref is not None:
+        row.update(reference_main_deg=ref["reference_deg"], reference_instrument=ref["instrument"], app_main_at_reading_deg=ref["app_deg"],
+                   app_minus_reference_main_deg=ref["difference_deg"], reference_app_basis=ref["app_basis"] or "")
     return row
 
 

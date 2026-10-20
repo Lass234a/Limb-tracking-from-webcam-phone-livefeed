@@ -10,10 +10,10 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QSplitter, QTabWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QLineEdit, QSplitter, QTabWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import overlay, privacy, session_memory
+from . import overlay, privacy, reference, session_memory
 from .displacement import window_displacements
 from . import analysis
 from .force import SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
@@ -50,7 +50,9 @@ class Trial:
 
     def __init__(self, meta_path):
         meta_path = Path(meta_path)
+        self.meta_path = meta_path
         self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.reference_side = reference.read_sidecar(meta_path)        # reference readings added or changed later in Review (never in meta.json)
         folder = meta_path.parent
         self.base = meta_path.name[: -len("_meta.json")]
         self.folder = folder
@@ -117,6 +119,18 @@ class Trial:
         pv = self.meta.get("privacy") or {}        # a cropped video is put back at its place on a black full-size picture
         self.crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
         self.full_size = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
+
+    # ------------------------------------------------------------------ reference readings (typed from a hand instrument)
+    def reference_rows(self):
+        """One row per reading: the typed reference, the app's angle at the same moment, the difference (see limbtrack/reference.py)."""
+        return reference.comparison(self.meta, self.reference_side, self.folder / (self.meta.get("files") or {}).get("data.csv", "data.csv"))
+
+    def reference_edit_keys(self):
+        """[(key, name)] a reading can be typed for in Review: the trial's angles, then the extras of its test (the typed hip flexion of a frontal trial)."""
+        return [(a.name, a.title) for a in self.angle_defs] + list((self.meta.get("reference_extras") or {}).items())
+
+    def reload_reference(self):
+        self.reference_side = reference.read_sidecar(self.meta_path)
 
     def frame(self, i):
         if i != self._pos + 1:
@@ -422,6 +436,115 @@ class _NoWheelSpin(QDoubleSpinBox):
         e.ignore()
 
 
+class ReferenceDialog(QDialog):
+    """Type, change or remove the reference readings of one trial. They are saved in a small file next to the trial
+    (`<trial>_reference.json`); the trial's own `meta.json` is never rewritten."""
+
+    def __init__(self, trial, parent=None):
+        super().__init__(parent)
+        self.trial = trial
+        self.setWindowTitle("Reference readings of this trial")
+        merged = reference.merged_readings(trial.meta, trial.reference_side)
+        saved = trial.meta.get("reference_readings") or {}
+        side = trial.reference_side or {}
+        lay = QVBoxLayout(self)
+        note = QLabel("What a goniometer or an inclinometer said, in degrees, for this trial's position. Several readings of one angle: "
+                      "separate them with a space. An empty box means 'not measured'. These are numbers a person typed, not measurements "
+                      "of this program. They are saved next to the trial and never change its recorded files.")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        form = QFormLayout()
+        self.instrument = QComboBox()
+        for k, label in reference.INSTRUMENTS.items():
+            self.instrument.addItem(label, k)
+        self.resolution = QComboBox()
+        for v in reference.RESOLUTIONS_DEG:
+            self.resolution.addItem(f"{v:g} deg", v)
+        current = side if side.get("readings") else saved
+        self.instrument.setCurrentIndex(max(self.instrument.findData(current.get("instrument") or "goniometer"), 0))
+        self.resolution.setCurrentIndex(max(self.resolution.findData(current.get("resolution_deg") or 1.0), 0))
+        form.addRow("Instrument", self.instrument)
+        form.addRow("Read to", self.resolution)
+        self.boxes = {}
+        for key, title in trial.reference_edit_keys():
+            box = QLineEdit(reference.format_values((merged.get(key) or {}).get("values_deg") or []))
+            box.setPlaceholderText("e.g. 88 90 89")
+            form.addRow(title, box)
+            self.boxes[key] = box
+        lay.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _save(self):
+        values = {}
+        for key, box in self.boxes.items():
+            try:
+                values[key] = reference.parse_values(box.text())
+            except reference.ReadingError as e:
+                QMessageBox.warning(self, "Cannot read that", f"{self.windowTitle()}: {e}")
+                box.setFocus()
+                return
+        recorded = list(((self.trial.meta.get("reference_readings") or {}).get("readings") or {}))
+        reference.write_sidecar(self.trial.meta_path, self.instrument.currentData(), self.resolution.currentData(), values,
+                                recorded_keys=recorded)
+        self.trial.reload_reference()
+        self.accept()
+
+
+class ReferenceValidationDialog(QDialog):
+    """How far the app's angles are from the hand instrument over all trials of a folder: a table in words and an agreement plot
+    (the difference against the mean of the two, with the average difference and the 95 % limits)."""
+
+    def __init__(self, folder, rows, parent=None):
+        super().__init__(parent)
+        self.folder, self.rows, self.stats = Path(folder), rows, reference.agreement(rows)
+        self.setWindowTitle("Agreement with the reference readings")
+        self.resize(900, 700)
+        lay = QVBoxLayout(self)
+        self.text = _TextPane(wrap=True)
+        self.text.setText(reference.agreement_text(self.stats))
+        self.text.setMaximumHeight(230)
+        lay.addWidget(self.text)
+        self.combo = QComboBox()
+        for key, s in self.stats.items():
+            self.combo.addItem(f"{s['title']}  (n = {s['n']})", key)
+        self.combo.currentIndexChanged.connect(self._plot)
+        lay.addWidget(self.combo)
+        self.plot = pg.PlotWidget()
+        self.plot.setLabel("bottom", "Mean of the app and the reading (deg)")
+        self.plot.setLabel("left", "App minus reference (deg)")
+        self.plot.showGrid(x=True, y=True, alpha=0.25)
+        lay.addWidget(self.plot, 1)
+        btn_save = QPushButton("Save the table as CSV")
+        btn_save.setToolTip(f"Writes reference_validation.csv into {self.folder}: one row per reading, with the app's angle, the difference and "
+                            "a mark for a reading that two trials of one position share.")
+        btn_save.clicked.connect(self.save_table)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.addButton(btn_save, QDialogButtonBox.ActionRole)
+        lay.addWidget(buttons)
+        self._plot()
+
+    def _plot(self, *_):
+        self.plot.clear()
+        s = self.stats.get(self.combo.currentData())
+        if s is None:
+            return
+        refs, apps = np.array([p[0] for p in s["pairs"]]), np.array([p[1] for p in s["pairs"]])
+        self.plot.plot((refs + apps) / 2.0, apps - refs, pen=None, symbol="o", symbolSize=10, symbolBrush="#4dabf7", symbolPen=None)
+        self.plot.addLine(y=0, pen=pg.mkPen((200, 200, 200), width=1))
+        self.plot.addLine(y=s["bias_deg"], pen=pg.mkPen("#ffd43b", width=2))
+        for v in s["limits_deg"]:
+            if not math.isnan(v):
+                self.plot.addLine(y=v, pen=pg.mkPen("#ff922b", width=1.5, style=Qt.DashLine))
+
+    def save_table(self):
+        out = reference.write_csv(self.rows, self.folder / "reference_validation.csv")
+        QMessageBox.information(self, "Saved", f"Saved {out.name} in {self.folder}: {len(self.rows)} readings.")
+
+
 class ReviewTab(QWidget):
     def __init__(self, recordings_dir):
         super().__init__()
@@ -434,6 +557,10 @@ class ReviewTab(QWidget):
         btn_session.setToolTip("One row per trial (force peak, plateau, the angle at the peak, torque if possible, checks) and whether two trials of the "
                                "same position differ by more than 10 %. Saved as <participant>_session_summary.csv in the participant's folder.")
         btn_session.clicked.connect(self.export_session)
+        btn_refval = QPushButton("Reference validation...")
+        btn_refval.setToolTip("How far the app's angles are from the goniometer or inclinometer readings, over all trials in the recordings folder "
+                              "(average difference, spread, an agreement plot, and a table to save).")
+        btn_refval.clicked.connect(self.show_reference_validation)
         self.title = QLabel("Open a trial (choose a *_meta.json file in the recordings folder).")
         self.title.setWordWrap(True)
         self.btn_play = QPushButton("Play")
@@ -485,6 +612,17 @@ class ReviewTab(QWidget):
         self.tabs.addTab(self.check_text, "Check")
         self.tabs.addTab(self.stats, "Angles")
         self.tabs.addTab(self.force_text, "Force")
+        self.ref_text = _TextPane(wrap=False)                  # what a person read off a goniometer or inclinometer, beside the app's angle
+        self.btn_ref_edit = QPushButton("Add or change the reference readings...")
+        self.btn_ref_edit.setToolTip("Type what a goniometer or an inclinometer said for this trial. Saved in a small file next to the trial; "
+                                     "the trial's own files are never rewritten.")
+        self.btn_ref_edit.clicked.connect(self.edit_reference)
+        ref_pane = QWidget()
+        rpl = QVBoxLayout(ref_pane)
+        rpl.setContentsMargins(0, 0, 0, 0)
+        rpl.addWidget(self.btn_ref_edit, 0, Qt.AlignLeft)
+        rpl.addWidget(self.ref_text, 1)
+        self.tabs.addTab(ref_pane, "Reference")
         self.calib = _CalibrationPane()
         self.tabs.addTab(self.calib, "Calibration")
         self.tabs.addTab(self.disp, "Dots and pull")
@@ -545,6 +683,7 @@ class ReviewTab(QWidget):
         top.addWidget(self.title, 1)
         top.addWidget(btn_export)
         top.addWidget(btn_video)
+        top.addWidget(btn_refval)
         top.addWidget(btn_session)
         ctrl = QHBoxLayout()
         ctrl.addWidget(self.btn_play)
@@ -805,10 +944,62 @@ class ReviewTab(QWidget):
         if not self.trial.hold_window():
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
+        self.ref_text.setText(self._reference_text())
         self.force_text.setText(self._force_text(t0, t1))
         self._update_calibration(t0, t1)
         self.disp.setText(self._displacement_text(t0, t1))
         self.check_text.setHtml(self._check_html(t0, t1))
+
+    def _reference_text(self):
+        """The reference readings of the open trial beside the app's angle at the same moment."""
+        tr = self.trial
+        rows = tr.reference_rows()
+        saved = tr.meta.get("reference_readings") or {}
+        lines = ["Reference readings: numbers a person typed from a goniometer or an inclinometer. They are not measured by this program."]
+        if saved.get("not_used"):
+            nu = saved["not_used"]
+            lines.append(f"Readings typed for {nu['entered_for']['test_key']} {nu['entered_for']['target_deg']} were NOT saved with this trial "
+                         "(they belong to another position).")
+        if not rows:
+            lines += ["", "No reading for this trial. Type it in the Live tab (section Reference reading) before recording, or add it here."]
+            return "\n".join(lines)
+        lines += ["", f"{'':26s}{'reference':>10s}{'n':>3s}{'app':>8s}{'app-ref':>9s}  instrument, from"]
+        for r in rows:
+            app = "-" if r["app_deg"] is None else f"{r['app_deg']:.1f}"
+            diff = "-" if r["difference_deg"] is None else f"{round(r['difference_deg'], 1) + 0.0:+.1f}"          # (no "-0.0")
+            lines.append(f"{r['title'][:25]:26s}{r['reference_deg']:10.1f}{r['n_readings']:3d}{app:>8s}{diff:>9s}  "
+                         f"{reference.INSTRUMENTS.get(r['instrument'], r['instrument'])} (read to {r['resolution_deg']:g} deg), {r['source']}")
+        bases = sorted({r["app_basis"] for r in rows if r["app_basis"]})
+        lines.append("")
+        if bases:
+            lines += [f"The app's angle is {b}." for b in bases]
+        if any(r["app_deg"] is None and r["key"] in {a.name for a in tr.angle_defs} for r in rows):
+            lines.append("For an angle without an app value there was no moment kept and no usable first second.")
+        if saved.get("stamped_at"):
+            lines.append(f"Moment of the reading: {saved['stamped_at']}.")
+        else:
+            lines.append("No moment was kept ('Reading taken now' was not pressed): the first second of the recording stands in, which is only "
+                         "like for like if the participant did not move between the reading and the start.")
+        lines.append("A hand instrument is read to about a degree and has an error of its own of a few degrees; a difference of that size is "
+                     "not an error of the app.")
+        return "\n".join(lines)
+
+    def edit_reference(self):
+        if self.trial is None:
+            return
+        if ReferenceDialog(self.trial, self).exec():
+            self.update_summary()
+
+    def show_reference_validation(self):
+        """The agreement of the app with the hand instrument over every trial in the recordings folder."""
+        folder = self.dir                                   # the recordings folder (all participants)
+        rows = reference.collect_rows(folder)
+        if not rows:
+            QMessageBox.information(self, "No reference readings", "No trial in " + str(folder) + " has a reference reading yet. Type the "
+                                    "goniometer or inclinometer reading in the Live tab (Reference reading) before recording, or add it in "
+                                    "the Reference tab of a trial.")
+            return
+        ReferenceValidationDialog(folder, rows, self).exec()
 
     def _force_text(self, t0, t1):
         tr = self.trial
