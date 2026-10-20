@@ -10,10 +10,10 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QSplitter, QTabWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QSplitter, QTabWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import overlay, privacy
+from . import overlay, privacy, session_memory
 from .displacement import window_displacements
 from . import analysis
 from .force import SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
@@ -27,6 +27,10 @@ from .engine import TRAIL_MIN_STEP_PX
 from .tracker import WEAK_BELOW
 
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
+CURSOR_COLOUR = "#ffd43b"        # the line that follows the video position: it was black on the black plot background until 0.14.0
+EVENT_GREY = (190, 190, 190)     # MVIC start/end and other markers (was dark grey (90, 90, 90), hard to see on black)
+DEFAULT_TOP_SPLIT = [400, 600]   # video and controls : graphs (the graphs get the larger part)
+DEFAULT_MAIN_SPLIT = [620, 380]  # video and graphs : the number tabs
 
 
 def _f(s):
@@ -369,7 +373,7 @@ class _CalibrationPane(QWidget):
             w.setLabel("left", left)
         self.res.setLabel("bottom", "Mass on the cell (kg)")
         self.text = _TextPane(wrap=True)
-        lay = QVBoxLayout(self)
+        lay = QHBoxLayout(self)          # side by side: this tab now sits in a wide, short strip under the graphs
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.fit, 2)
         lay.addWidget(self.res, 2)
@@ -437,6 +441,7 @@ class ReviewTab(QWidget):
 
         self.video = QLabel()
         self.video.setMinimumSize(480, 270)
+        self.video.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)      # the picture is scaled to the label, not the label to the picture: the dividers can shrink it
         self.video.setAlignment(Qt.AlignCenter)
         self.video.setStyleSheet("background: black;")
 
@@ -452,8 +457,8 @@ class ReviewTab(QWidget):
         self.force_plot.setXLink(self.plot)
         self.force_plot.setVisible(False)
         self.plot.setLabel("bottom", "Time (s)")
-        self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("k", width=2))
-        self.force_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("k", width=2))
+        self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
+        self.force_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
         self.window = pg.LinearRegionItem(brush=(30, 120, 220, 40))
         self.force_window_mirror = pg.LinearRegionItem(brush=(30, 120, 220, 40), movable=False)       # the same window, shown on the force plot
         self.window.sigRegionChanged.connect(self._mirror_window)
@@ -475,7 +480,7 @@ class ReviewTab(QWidget):
         self.calib = _CalibrationPane()
         self.tabs.addTab(self.calib, "Calibration")
         self.tabs.addTab(self.disp, "Dots and pull")
-        self.tabs.setMinimumWidth(420)
+        self.tabs.setMinimumHeight(170)       # the tabs sit in a wide strip under the graphs (0.14.0)
 
         # force settings (shown only for a trial with force)
         self.picture_delay = _NoWheelSpin()
@@ -523,47 +528,91 @@ class ReviewTab(QWidget):
         fb.addStretch(1)
         self.force_box.setVisible(False)
 
+        # Graph-first layout (0.14.0; until then the graphs were a strip along the bottom and the number tabs sat top right):
+        # video and its play controls top left, the graphs top right (the larger part), the number tabs in a wide strip below.
+        # What acts on the analysis window or the force curve sits under the graphs it belongs to; the file buttons are in the top bar.
+        # Both dividers can be dragged; where they are is remembered (attach_memory).
         top = QHBoxLayout()
         top.addWidget(btn_open)
         top.addWidget(self.title, 1)
+        top.addWidget(btn_export)
+        top.addWidget(btn_video)
         top.addWidget(btn_session)
         ctrl = QHBoxLayout()
         ctrl.addWidget(self.btn_play)
         ctrl.addWidget(self.slider, 1)
         ctrl.addWidget(self.chk_trails)
-        ctrl.addWidget(btn_export)
-        ctrl.addWidget(btn_video)
         erow = QHBoxLayout()
         erow.addWidget(QLabel("Markers:"))
         erow.addWidget(self.event_combo, 1)
         erow.addWidget(self.btn_hold)
         erow.addWidget(self.btn_force_win)
+        hint = QLabel("Blue band on the plots = analysis window (drag its edges on the upper plot). The numbers use it.")
+        hint.setWordWrap(True)
         left = QVBoxLayout()
         left.addWidget(self.video, 1)
         left.addLayout(ctrl)
-        left.addLayout(erow)
-        left.addWidget(self.force_box)
-        left.addWidget(QLabel("Blue band on the plots = analysis window (drag its edges on the upper plot). The numbers use it."))
-        upper = QWidget()
-        uh = QHBoxLayout(upper)
-        uh.setContentsMargins(0, 0, 0, 0)
-        uh.addLayout(left, 3)
-        uh.addWidget(self.tabs, 2)
+        left_w = QWidget()
+        left.setContentsMargins(0, 0, 6, 0)
+        left_w.setLayout(left)
         plots = QWidget()
         pl = QVBoxLayout(plots)
-        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setContentsMargins(6, 0, 0, 0)
         pl.addWidget(self.plot, 3)
         pl.addWidget(self.force_plot, 2)
+        pl.addLayout(erow)
+        pl.addWidget(self.force_box)
+        pl.addWidget(hint)
+        self.top_splitter = QSplitter(Qt.Horizontal)
+        self.top_splitter.addWidget(left_w)
+        self.top_splitter.addWidget(plots)
+        self.top_splitter.setStretchFactor(0, 2)
+        self.top_splitter.setStretchFactor(1, 3)
+        self.top_splitter.setChildrenCollapsible(False)
+        self.top_splitter.setSizes(DEFAULT_TOP_SPLIT)
         self.splitter = QSplitter(Qt.Vertical)
-        self.splitter.addWidget(upper)
-        self.splitter.addWidget(plots)
+        self.splitter.addWidget(self.top_splitter)
+        self.splitter.addWidget(self.tabs)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setSizes(DEFAULT_MAIN_SPLIT)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addWidget(self.splitter, 1)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance)
+        self._memory_path = None
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.setInterval(800)             # saved a moment after the last drag
+        self._layout_timer.timeout.connect(self._save_layout)
+        for sp in (self.top_splitter, self.splitter):
+            sp.splitterMoved.connect(lambda *_: self._layout_timer.start())
+
+    # ------------------------------------------------------------- remembered layout
+    def layout_state(self):
+        """The two divider positions: {'top': [video, graphs], 'main': [top row, number tabs]}."""
+        return {"top": self.top_splitter.sizes(), "main": self.splitter.sizes()}
+
+    def apply_layout_state(self, state):
+        """Put remembered divider positions back. Anything that does not fit is ignored."""
+        try:
+            for sp, key in ((self.top_splitter, "top"), (self.splitter, "main")):
+                sizes = [int(x) for x in state[key]]
+                if len(sizes) == 2 and all(s > 0 for s in sizes):
+                    sp.setSizes(sizes)
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    def attach_memory(self, path):
+        """Remember the divider positions between launches: an own top-level part ('review_ui') of settings.json."""
+        self._memory_path = Path(path)
+        self.apply_layout_state(session_memory.read_all(path).get("review_ui") or {})
+
+    def _save_layout(self):
+        if self._memory_path is not None:
+            session_memory.write_part(self._memory_path, review_ui=self.layout_state())
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -607,11 +656,11 @@ class ReviewTab(QWidget):
         self.event_combo.clear()
         for i, t, lab in tr.events:
             self.event_combo.addItem(f"{lab}  @ {t:.2f} s", i)
-            line = pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen((90, 90, 90), style=Qt.DashLine),
-                                   label=lab, labelOpts={"position": 0.95, "color": (90, 90, 90), "rotateAxis": (1, 0)})
+            line = pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen(EVENT_GREY, style=Qt.DashLine),
+                                   label=lab, labelOpts={"position": 0.95, "color": EVENT_GREY, "rotateAxis": (1, 0)})
             self.plot.addItem(line)
             if tr.has_force():
-                self.force_plot.addItem(pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen((90, 90, 90), style=Qt.DashLine)))
+                self.force_plot.addItem(pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen(EVENT_GREY, style=Qt.DashLine)))
         self.btn_hold.setEnabled(tr.hold_window() is not None)
         self.btn_force_win.setEnabled(tr.has_force())
         self.force_smooth.setEnabled(tr.has_force())

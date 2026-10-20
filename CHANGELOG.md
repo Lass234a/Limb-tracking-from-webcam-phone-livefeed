@@ -3,6 +3,16 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.14.0 - 2026-10-20
+
+### Review tab: a position line you can see, and the graphs first
+- **Why:** in Review the line that shows where the video is on the graphs was black on the plots' black background, so it could not be seen; and the graphs, which are what Review is for, were a strip along the bottom while the number tabs took the top right.
+- **The position line is yellow** (it was black) on both graphs, and the dashed marker lines (MVIC start/end, numbered markers) and their labels are light grey (they were dark grey on black).
+- **New layout:** video and play controls top left, the angle graph over the force graph top right (the larger share), the number tabs in a wide strip below. Both dividers can be dragged and are remembered (`settings.json`, own key `review_ui`; the rest of that file is kept). To make room the controls that act on the graphs moved under them (Markers list, the two *Window = ...* buttons, the Force box with smoothing, picture delay, zero and *Recalculate newtons*) and the three export buttons are in the top bar. The Calibration tab lays out side by side to fit the strip. The video label no longer sets its own minimum size from the picture, so the divider can make the picture smaller.
+- **Changes no measured number.** Nothing in tracking, angles, force, markers, recordings or the export files changed.
+- **Not tested:** on your screen at your window size; the layout was looked at in a real window at 1500 x 900 (synthetic trial, simulated force), and the tests run offscreen.
+- Tests: new `tests/test_review_layout.py` (14). Version 0.14.0.
+
 ## 0.13.0 - 2026-10-19
 
 ### Review of the first real session (P11, 15 Oct, 11 trials) and what was changed because of it

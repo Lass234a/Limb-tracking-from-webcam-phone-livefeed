@@ -2566,6 +2566,7 @@ class MainWindow(QWidget):
         tabs.addTab(self.review, "Review")
         lay = QVBoxLayout(self)
         lay.addWidget(tabs)
+        self.review.attach_memory(self.settings_path)           # the Review tab's divider positions (own part of settings.json)
         self.live.attach_memory(self.settings_path)             # restores the set-up of the last session (see session_memory.py); last, so that
                                                                 # the tab knows which window it is in
 
