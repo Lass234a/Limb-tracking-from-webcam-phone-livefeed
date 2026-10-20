@@ -50,6 +50,33 @@ def leg_points(hip_flex=0.0, knee_flex=0.0, ankle_df=0.0, pelvic_tilt=0.0, facin
     return pts
 
 
+def frontal_points(abduction_deg=0.0, tested_leg="right", roll_deg=0.0, pelvic_width_mm=250.0, thigh_mm=400.0, px_per_mm=1.0,
+                   centre=(640.0, 150.0)):
+    """Dot positions (pixels) of a person facing the camera (hip abduction / adduction tests, 0.15.0).
+
+    Returns the tested ASIS ('asis'), the other ASIS ('asis_opposite') and the centre of the patella ('patella'). The thigh is turned about
+    the hip joint centre (the point geometry.hip_centre_frontal gives for these two ASIS) by `abduction_deg`, + = abduction (the knee moves
+    away from the other leg), - = adduction, measured from the pelvis' own 'down' (square to the line between the ASIS). So the angle about
+    the hip centre is exactly `abduction_deg`.
+    tested_leg: 'right' = the tested ASIS is on the picture's left (the person faces the camera), 'left' = on the right.
+    roll_deg: the whole picture rolled (a tilted camera or a tilted pelvis); angles do not change.
+    px_per_mm: the picture's scale at the pelvis; centre: the midpoint of the two ASIS.
+    """
+    from .geometry import HARRINGTON_DOWN, HARRINGTON_SIDEWAYS
+    out = -1.0 if tested_leg == "right" else 1.0                    # picture direction of "towards the tested side"
+    u = _rot((out, 0.0), roll_deg)
+    v = _rot((0.0, 1.0), roll_deg)
+    m = np.array(centre, float)
+    half = 0.5 * pelvic_width_mm * px_per_mm
+    tested, other = m + half * u, m - half * u
+    side = (HARRINGTON_SIDEWAYS[0] * pelvic_width_mm + HARRINGTON_SIDEWAYS[1]) * px_per_mm
+    down = (HARRINGTON_DOWN[0] * pelvic_width_mm + HARRINGTON_DOWN[1]) * px_per_mm
+    hjc = m + side * u + down * v
+    a = math.radians(abduction_deg)
+    patella = hjc + thigh_mm * px_per_mm * (math.sin(a) * u + math.cos(a) * v)
+    return {"asis": tested, "asis_opposite": other, "patella": patella}
+
+
 def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, seed=0, distractors=True,
            dot_gain=1.0, hide=(), patch=None):
     """`patch`: half the side (pixels) of a square 'tape patch' drawn behind every dot, in the opposite shade to the dot
@@ -61,8 +88,10 @@ def render(points, size=(1280, 720), kind="white", dot_radius=7.0, noise=3.0, se
     limb_col = (95, 110, 140) if kind == "white" else (120, 140, 175)
     names = list(points)
     for a, b in [("iliac_crest", "trochanter"), ("trochanter", "epicondyle"), ("fibular_head", "malleolus"),
-                 ("epicondyle", "fibular_head"), ("mt5_base", "mt5_head"), ("malleolus", "mt5_base")]:
-        cv2.line(img, tuple(np.int32(points[a])), tuple(np.int32(points[b])), limb_col, 26, cv2.LINE_AA)
+                 ("epicondyle", "fibular_head"), ("mt5_base", "mt5_head"), ("malleolus", "mt5_base"),
+                 ("asis_opposite", "asis"), ("asis", "patella")]:             # (the last two: a frontal picture, see frontal_points)
+        if a in points and b in points:
+            cv2.line(img, tuple(np.int32(points[a])), tuple(np.int32(points[b])), limb_col, 26, cv2.LINE_AA)
     if distractors:  # something bright and something dark that is NOT a dot
         cv2.rectangle(img, (w - 260, h - 140), (w - 90, h - 80), (240, 240, 240), -1)
         cv2.rectangle(img, (60, h - 140), (230, h - 80), (20, 20, 20), -1)

@@ -43,7 +43,7 @@ def test_protocol_loads_with_goniometer_landmarks():
     assert TESTS["hip_extension_k90"].primary.name == "hip"
     assert TESTS["ankle_dorsiflexion"].primary.name == "ankle"
     assert set(TESTS) == {"knee_extension", "knee_flexion", "hip_extension_k0", "hip_extension_k90", "hip_flexion",
-                          "ankle_plantarflexion", "ankle_dorsiflexion", "belt_squat"}
+                          "ankle_plantarflexion", "ankle_dorsiflexion", "hip_abduction", "hip_adduction", "belt_squat"}
 
 
 @pytest.mark.parametrize("kind", ["white", "black"])

@@ -58,6 +58,22 @@ CASES = [
      d["tests"]["knee_extension"].pop("primary"), "more than one main joint"),
     ("neighbour target on an unknown angle", lambda d: d["tests"]["knee_extension"].update(neighbour_targets={"hipp": 90}), "neighbour_targets"),
     ("neighbour target on the main joint", lambda d: d["tests"]["knee_extension"].update(neighbour_targets={"knee": 90}), "main joint"),
+    # computed points and the view of a test (0.15.0)
+    ("unknown kind of computed point", lambda d: d["derived_points"]["hip_centre"].update(kind="hip_center_frontal"),
+     'derived_points.hip_centre.kind: "hip_center_frontal" is not a kind of computed point'),
+    ("computed point from an unknown dot", lambda d: d["derived_points"]["hip_centre"].update(tested_asis="asiss"), 'unknown dot "asiss"'),
+    ("computed point from the same dot twice", lambda d: d["derived_points"]["hip_centre"].update(other_asis="asis"), "the dots must be different"),
+    ("computed point named like a dot", lambda d: d["derived_points"].update(asis=dict(d["derived_points"]["hip_centre"])), "already the name of a dot"),
+    ("computed point with an unknown field", lambda d: d["derived_points"]["hip_centre"].update(extra=1), 'unknown field "extra"'),
+    ("computed point is not an object", lambda d: d["derived_points"].update(hip_centre="asis"), "derived_points.hip_centre: must be an object"),
+    ("derived_points is not an object", lambda d: d.update(derived_points=[]), "derived_points: must be an object"),
+    ("computed point listed as a dot to mark", lambda d: d["tests"]["hip_abduction"].update(dots=["asis", "hip_centre"]),
+     '"hip_centre" is a computed point, not a dot to mark'),
+    ("arm ends at an unknown computed point", lambda d: d["angle_library"]["abd_hip_centre"].update(
+        vectors=[["asis", "asis_opposite"], ["hip_centre_x", "patella"]]), 'unknown dot "hip_centre_x"'),
+    ("judged as text", lambda d: d["angle_library"]["abd_hip_centre"].update(judged="no"), "angle_library.abd_hip_centre.judged"),
+    ("unknown view", lambda d: d["tests"]["hip_abduction"].update(view="sideways"), "tests.hip_abduction.view"),
+    ("misspelt view", lambda d: d["tests"]["hip_abduction"].update(view="frontl"), 'did you mean "frontal"?'),
 ]
 
 
@@ -79,3 +95,28 @@ def test_the_message_suggests_the_right_spelling_and_lists_every_problem(tmp_pat
         load_protocol(path)
     text = str(e.value)
     assert "3 problem(s)" in text and 'did you mean "knee"?' in text and 'did you mean "targets"?' in text and 'did you mean "forward"?' in text
+
+
+def test_a_computed_point_counts_as_the_dots_it_is_made_of():
+    tests = load_protocol(ROOT / "protocol.json")
+    t = tests["hip_abduction"]
+    angles = {a.name: a for a in t.angles}
+    assert angles["abd_hip_centre"].needs == ["asis", "asis_opposite", "patella"] == angles["abd_hip_centre"].dots
+    assert angles["abd_goniometer"].needs is None                          # only dots in its arms
+    assert t.derived == {"hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite"}}
+    assert t.dots == ["asis", "asis_opposite", "patella"] and "hip_centre" not in t.all_dots     # the hip centre is never clicked
+    assert t.view == "frontal" and tests["knee_extension"].view == "sagittal" and tests["knee_extension"].derived == {}
+    assert tests["hip_abduction"].all_dots == tests["hip_adduction"].all_dots      # the same dots: switching between them keeps them marked
+
+
+def test_old_protocol_files_without_computed_points_still_load(tmp_path):
+    d = copy.deepcopy(GOOD)
+    d.pop("derived_points")
+    for k in ("hip_abduction", "hip_adduction"):
+        d["tests"].pop(k)
+    for k in ("abd_goniometer", "add_goniometer", "abd_hip_centre", "add_hip_centre"):
+        d["angle_library"].pop(k)
+    assert validate_protocol(d) == []
+    path = tmp_path / "protocol.json"
+    path.write_text(json.dumps(d), encoding="utf-8")
+    assert all(t.view == "sagittal" and t.derived == {} for t in load_protocol(path).values())

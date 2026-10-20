@@ -93,7 +93,7 @@ class _VideoThread:
 
 class TrialRecorder:
     def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False,
-                 save_overlay=True, crop=None, masks=(), with_force=False):
+                 save_overlay=True, crop=None, masks=(), with_force=False, derived_names=()):
         # `frame_size` is the size of the picture the program works on. With a privacy crop the saved videos are smaller
         # (crop width x height); masks are blacked out in the saved copies only (limbtrack/privacy.py).
         self.full_size = (int(frame_size[0]), int(frame_size[1]))
@@ -127,6 +127,9 @@ class TrialRecorder:
         head = ["frame", "t_s", "clock_s", "locked"]
         for d in self.dot_names:
             head += [f"{d}_x", f"{d}_y", f"{d}_lost", f"{d}_q"]
+        self.derived_names = list(derived_names)         # computed points (the hip centre of a frontal test): position only, no _lost / _q
+        for d in self.derived_names:
+            head += [f"{d}_x", f"{d}_y"]                 # blank when a needed dot is lost or there is no ruler scale
         for a in self.angle_names:
             head += [f"{a}_deg", f"{a}_ref", f"{a}_dev", f"{a}_ok"]
         head += ["all_ok", "event", "scale_px_per_cm"]
@@ -184,7 +187,7 @@ class TrialRecorder:
         self._ffh.flush()
 
     def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None,
-              force_n=None, force_v=None):
+              force_n=None, force_v=None, derived=None):
         if (frame.shape[1], frame.shape[0]) != self.full_size or overlay.shape[:2] != frame.shape[:2]:
             raise FrameSizeChanged(f"The picture size changed from {self.full_size[0]}x{self.full_size[1]} to "
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
@@ -216,6 +219,9 @@ class TrialRecorder:
                 row += ["", "", 1, round(st.quality, 2)]
             else:
                 row += [round(st.x, 2), round(st.y, 2), 0, round(st.quality, 2)]
+        for d in self.derived_names:
+            p = (derived or {}).get(d)
+            row += ["", ""] if p is None else [round(p[0], 2), round(p[1], 2)]
         by_name = {a.name: a for a in angles}
         oks = []
         for n in self.angle_names:

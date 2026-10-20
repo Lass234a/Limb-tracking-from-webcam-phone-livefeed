@@ -120,6 +120,81 @@ def evaluate_angle(defn, xy, facing_right=True):
     return AngleGeometry(value, tuple(xy[f]) if f in xy else (0.0, 0.0), unit(v1), unit(v2))
 
 
+# ---------------------------------------------------------------------------
+# Computed points: points that are calculated from marked dots instead of being clicked (0.15.0).
+#
+# "hip_centre_frontal": the hip joint centre in a picture taken from the front, from the two ASIS dots and the picture's scale.
+# There is no bone point to palpate at the hip joint (it is deep), so it is estimated from the pelvis with the regression of
+#   Harrington ME, Zavatsky AB, Lawson SEM, Yuan Z, Theologis TN. Prediction of the hip joint centre in adults, children, and
+#   patients with cerebral palsy based on magnetic resonance imaging. J Biomech 2007;40(3):595-602 (PubMed 16584737, DOI 10.1016/j.jbiomech.2006.02.003).
+# Equation set 1, right hip, millimetres, origin at the midpoint of the two ASIS, PW = the distance between the two ASIS:
+#   medio-lateral (towards the side of the hip)  =  0.33 * PW + 7.3
+#   supero-inferior (downwards)                  =  0.30 * PW + 10.9
+#   (antero-posterior = -0.24 * PD - 9.9 with PD the pelvic depth: it is out of the plane of a frontal picture and is not used.)
+# The left hip is the mirror image; here "towards the side of the hip" is the direction from the other ASIS to the tested ASIS,
+# so the same code serves either leg.
+# VERIFICATION STATUS (2026-10-20): the constants were taken from a secondary source (a biomechanics wiki, via a search summary) and
+# the coordinate origin from a validation paper that uses the same system (PMC5121588); the original table was NOT read. Two
+# consistency checks: the medio-lateral term at PW = 250 mm is 89.8 mm, and a cadaver study puts the hip centre 14 % of the pelvic
+# width medial to each ASIS, i.e. 0.5 * 250 - 0.14 * 250 = 90 mm from the midpoint (Seidel et al., J Biomech 1995;28:995, PubMed 7673267).
+# Check the constants against the original paper before the numbers are reported. Reported mean errors of these equations in one
+# validation (PMC5121588): about 5.9 mm medio-lateral and 5.5 mm supero-inferior; soft tissue over the ASIS adds to that.
+# ---------------------------------------------------------------------------
+HARRINGTON_SIDEWAYS = (0.33, 7.3)     # mm = a * PW + b
+HARRINGTON_DOWN = (0.30, 10.9)        # mm = a * PW + b
+
+DERIVED_KINDS = {"hip_centre_frontal": ("tested_asis", "other_asis")}     # kind -> the keys of its definition that name tracked dots
+
+
+def pelvic_width_mm(tested_xy, other_xy, px_per_mm):
+    """The distance between the two ASIS in millimetres, or None when it cannot be told."""
+    if not (px_per_mm and px_per_mm > 0 and math.isfinite(px_per_mm)):
+        return None
+    d = np.asarray(tested_xy, float) - np.asarray(other_xy, float)
+    pw_px = float(np.hypot(*d))
+    return pw_px / px_per_mm if pw_px > 1e-9 else None
+
+
+def hip_centre_frontal(tested_xy, other_xy, px_per_mm):
+    """The hip joint centre of the tested side in a frontal picture, as an image position (x, y), or None.
+
+    `tested_xy`, `other_xy`: the ASIS on the tested side and on the other side (pixels). `px_per_mm`: the picture's scale at the
+    pelvis (from the ruler). The pelvis axes are taken from the two ASIS themselves: "sideways" runs along the line from the other
+    ASIS to the tested ASIS, "down" is square to it on the side of the picture's bottom, so a tilted camera or a tilted pelvis
+    does not change the result in the pelvis' own frame. See the note above for the equation and its status."""
+    pw = pelvic_width_mm(tested_xy, other_xy, px_per_mm)
+    if pw is None:
+        return None
+    t, o = np.asarray(tested_xy, float), np.asarray(other_xy, float)
+    u = (t - o) / float(np.hypot(*(t - o)))
+    v = np.array([-u[1], u[0]])
+    if v[1] < 0:
+        v = -v
+    side_mm = HARRINGTON_SIDEWAYS[0] * pw + HARRINGTON_SIDEWAYS[1]
+    down_mm = HARRINGTON_DOWN[0] * pw + HARRINGTON_DOWN[1]
+    c = (t + o) / 2.0 + (side_mm * u + down_mm * v) * px_per_mm
+    return float(c[0]), float(c[1])
+
+
+def derived_input_dots(spec):
+    """The tracked dots a computed point is made from (empty for an unknown kind)."""
+    keys = DERIVED_KINDS.get(spec.get("kind"), ())
+    return [spec[k] for k in keys if k in spec]
+
+
+def compute_derived(derived, xy, px_per_mm):
+    """name -> (x, y) of every computed point of `derived` (name -> definition) whose dots are all in `xy` and whose scale is known."""
+    out = {}
+    for name, spec in derived.items():
+        if spec.get("kind") == "hip_centre_frontal":
+            a, b = xy.get(spec["tested_asis"]), xy.get(spec["other_asis"])
+            if a is not None and b is not None:
+                p = hip_centre_frontal(a, b, px_per_mm)
+                if p is not None:
+                    out[name] = p
+    return out
+
+
 # PARKED-GHOST: def anchored_ghost(snapshot, live_xy, anchor=None):
     # PARKED-GHOST: """Positions of the locked pose ("ghost"), optionally shifted so the `anchor` dot sits on its live position.
 

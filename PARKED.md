@@ -5,8 +5,9 @@ Decided on 2026-10-01 after reviewing FEATURES.md. "Parked" means: no further wo
 | Item | Status in the code | Why parked |
 |---|---|---|
 | Pelvic tilt as a neighbour angle | Already built and active in every test; left exactly as it is | Not part of the first pilot's essential angles. Also assumes a level camera, which is not checked yet |
-| Frontal view (hip abduction/adduction) | Not built | Needs the frontal camera and different landmarks; the webcam proof of concept is sagittal only |
-| Two cameras (frontal + sagittal) | Not built | Webcam is a proof of concept; two cameras also need synchronising |
+| ~~Frontal view (hip abduction/adduction)~~ | **Built in 0.15.0** with one camera moved to the front: three dots (tested ASIS, other ASIS, patella centre), the goniometer angle of Tabel 3 and the angle about a computed hip centre, live and in the CSV. Never tried on a person | (was: needs the frontal camera and different landmarks) |
+| Two cameras (frontal + sagittal) at once | Not built | Two cameras also need synchronising, and the frontal tests do not need the sagittal view (the participant stands against a wall) |
+| Torque in the frontal tests | Not built | The moment arm needs the hip centre and the line of pull seen from the front; to be decided with AnyBody (the strap and anchor dots are not offered in the frontal tests) |
 | Lens calibration | Not built | Not needed until cameras with noticeable distortion (phones, wide lenses) are in use; needs a checkerboard session |
 | Camera alignment aid (plumb line, tilt check) | Not built | Useful once the real camera position is fixed; no real setup yet |
 | Phones as cameras (Android, iPhone, mixed) | **Built 2026-10 as far as can be without a phone**: phone-as-webcam apps (Iriun, DroidCam, Camo) appear as named cameras, a stream-address box, a camera check and set-up checklist. Not tried on a real phone | Needs a phone and an app to test (see `FEATURES.md` H11) |

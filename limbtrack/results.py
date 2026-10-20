@@ -34,4 +34,5 @@ class FrameResult:
     dots: dict = field(default_factory=dict)   # name -> DotState
     header: list = field(default_factory=list)  # text lines drawn at the top of the picture
     pull: dict = None                          # angle of pull / moment arm this frame (strap and anchor dots), see pull.py
+    derived: dict = field(default_factory=dict)  # computed points (name -> (x, y)), e.g. the hip centre of a frontal test (geometry.compute_derived)
     # PARKED-GHOST: ghost: dict = None                         # locked pose (name -> (x, y)) if one is being shown

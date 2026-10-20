@@ -1,5 +1,6 @@
 """Draws dots, limb lines and angle read-outs onto a video frame."""
 import math
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -13,6 +14,7 @@ COLOURS = {  # BGR
     INFO: (235, 235, 235),
 }
 DOT_OK, DOT_WEAK = (0, 215, 255), (0, 140, 255)   # yellow / orange
+DERIVED_COLOUR = (255, 255, 0)                    # BGR cyan: a computed point (the hip centre of a frontal test), unlike a sticker
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 PROMPT_PREFIX = "click dot: "                         # header line that asks for the next dot (engine.py writes it), drawn in yellow
 
@@ -133,12 +135,13 @@ def _draw_break_ghost(img, ghost, segments, s, thick):
     return cv2.addWeighted(layer, 0.85, img, 0.15, 0)
 
 
-def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, scale=None, ghost=None, ghost_segments=()):
+def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, scale=None, ghost=None, ghost_segments=(), derived=None):
 # PARKED-GHOST: # with the ghost: def draw(frame, dots, angles, header_lines=(), recording=False, ghost=None, ghost_segments=(), trails=None)
     """Return a copy of `frame` with the overlay. `dots`: name -> object with x, y, lost.
 
     `trails`: dot name -> list of segments of (x, y), drawn as thin paths (or None).
     `ghost`: dot name -> (x, y, diameter) of where the dots were before a break (drawn under everything else), or None.
+    `derived`: computed points (name -> (x, y)), e.g. the hip centre of a frontal test: drawn as a diamond, and an angle's limb line may end there.
     """
     img = frame.copy()
     if img.ndim == 2:
@@ -158,10 +161,13 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
     if a is not None and b is not None and not a.lost and not b.lost:
         cv2.line(img, (int(a.x), int(a.y)), (int(b.x), int(b.y)), ROPE_COLOUR, max(1, int(round(2 * s))), cv2.LINE_AA)
 
+    ends = dict(dots)
+    for n, (dx, dy) in (derived or {}).items():
+        ends[n] = SimpleNamespace(x=dx, y=dy, lost=False)
     for a in angles:
         col = COLOURS[a.status]
         for p, q in a.segments:
-            dp, dq = dots.get(p), dots.get(q)
+            dp, dq = ends.get(p), ends.get(q)
             if dp is not None and dq is not None:
                 cv2.line(img, (int(dp.x), int(dp.y)), (int(dq.x), int(dq.y)), col, thick, cv2.LINE_AA)
         if a.status == LOST or a.fulcrum is None:
@@ -184,6 +190,10 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
         else:
             cv2.circle(img, c, r, col, thick, cv2.LINE_AA)
         _text(img, name, (c[0] - r * 2, c[1] - r - 6 * s), 0.5 * s, col, 1)
+    for name, (dx, dy) in (derived or {}).items():       # computed, not clicked: a diamond, so it is not taken for a sticker
+        c = (int(dx), int(dy))
+        cv2.drawMarker(img, c, DERIVED_COLOUR, cv2.MARKER_DIAMOND, max(int(18 * s), 8), thick, cv2.LINE_AA)
+        _text(img, f"{name} (computed)", (c[0] + 12 * s, c[1] - 10 * s), 0.5 * s, DERIVED_COLOUR, 1)
 
     rows = []                                # (text, scale, colour, thickness, advance to the next line)
     for line in header_lines:

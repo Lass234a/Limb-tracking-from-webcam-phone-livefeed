@@ -66,6 +66,16 @@ treat the angles as positioning data and **do not give them to AnyBody as measur
 - **Strap dot**: a dot on the buckle, behind the sock or under a fold is not seen. Put a bright sticker (white on the blue strap), at least 2 cm, on the flat part of the strap that faces the camera, a few cm from the buckle, and check in the picture that it stays visible while the strap tightens. The anchor dot was steady (0.3 px) in the first test; the strap dot was lost in 161 of 169 pictures because it was not visible.
 - Check the time alignment once: record a short push, press **S** (MVIC start) as the force begins, and compare the marker time with the force onset in Review (they should agree within about 0.2 s, the reaction time; the program's own alignment is a few milliseconds).
 
+## 1a. Frontal view: hip abduction and adduction (0.15.0, never tried on a person)
+
+- **Camera in front of the participant**, level, at hip height, square to the frontal plane, 2 to 3 m away, the whole pelvis and the thighs in the picture. Move the same camera from the side for these four positions (0 and 20 deg abduction, 0 and 20 deg adduction); there is no second camera.
+- **Posture:** standing against a wall, heel, buttocks and back touching, knee straight. That is how hip flexion 0 and the straight knee are controlled; they are **not measured** in these tests. Tick the *Against a wall: heel, buttocks, back touching* box; the tick is saved with the trial. Choose the **tested leg** (the right leg is on the left of the picture when the participant faces the camera).
+- **Dots (three, at least 2 cm):** the **ASIS of the tested leg**, the **ASIS of the other side**, the **centre of the patella of the tested leg**. Click them in that order. The same examiner palpates both ASIS. Wrong-way-round ASIS dots are caught before Lock (they would turn abduction into adduction).
+- **Ruler:** needed. The hip centre is estimated in millimetres from the distance between the two ASIS, so the ruler must be in the picture **at the distance of the pelvis** (held beside the hip at the height of the ASIS), square to the camera. Without the ruler the angle about the hip centre stays blank (the goniometer angle is still there).
+- **Optional tape or calipers:** measure the distance between the two ASIS once and type it in *ASIS to ASIS, tape*. The program compares it with the distance in the picture and warns at more than 8 % difference (ruler at the wrong distance, pelvis turned towards the camera, or an ASIS dot misplaced). It changes no angle.
+- **Two angles are shown and saved.** The *goniometer angle* is Tabel 3 as written and is what is judged against 0 / 20 deg. The *angle about the hip centre* uses the computed hip centre (Harrington et al. 2007) and is what the thigh really rotates about. **They do not share a zero** (about 5 deg apart at the goniometer's 0 in an average pelvis, about 8 deg at 20 deg). Which one belongs in the AnyBody model, and where AnyBody puts zero hip abduction, is to be agreed with AnyBody Technology.
+- **What is not known:** the constants of the hip-centre equation were typed from a secondary source and the original table was not checked; a validation reports mean errors of about 6 mm in the two directions used, and soft tissue over the ASIS adds to that; pelvis rotation about the vertical axis shortens the distance between the ASIS; the ASIS dot has never been tried on a person in a frontal picture; the angles have not been compared with a goniometer or inclinometer.
+
 ## 2. During each trial
 1. Click the next position in the session plan (or choose the test and target by hand). The required neighbour joint angle (for example hip 90) is shown green/red from
    the start.
@@ -116,7 +126,7 @@ only at the ruler's distance; the three-point knee differs a few degrees from th
 epicondyle-malleolus line).
 
 ## 5. Not done / not covered
-- Frontal view (hip abduction/adduction), two cameras, lens calibration, camera tilt aid: see `PARKED.md`. Force is built but not yet tried on the real load cell (`FEATURES.md` H13).
+- Two cameras at once, lens calibration, camera tilt aid: see `PARKED.md`. The frontal view for hip abduction/adduction is built (0.15.0, section 1a) but has never been tried on a person and has no reference comparison yet. Force is built but not yet tried on the real load cell (`FEATURES.md` H13).
 - Which number goes to AnyBody (plateau mean or the angle at peak force), and the conversion of skin-dot angles to the
   model's joint-angle conventions, are decisions for you and the AnyBody side (the AnyBody ankle sign is opposite to this
   app's convention).

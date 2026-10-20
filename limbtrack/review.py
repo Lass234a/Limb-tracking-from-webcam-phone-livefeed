@@ -65,6 +65,8 @@ class Trial:
         self.angle_defs = [AngleDef(**a) for a in self.meta["angles"]]
         self.facing_right = self.meta.get("facing", "right") == "right"
         self.dot_names = [k[:-5] for k in self.rows[0] if k.endswith("_lost")]
+        # computed points (the hip centre of a frontal test, 0.15.0): positions in the CSV, none in trials recorded before
+        self.derived_names = [n for n in ((self.meta.get("derived_points") or {}).get("definitions") or {}) if f"{n}_x" in self.rows[0]]
         self.deg = {a.name: np.array([_f(r[f"{a.name}_deg"]) for r in self.rows]) for a in self.angle_defs}
         self.ref = {a.name: np.array([_f(r[f"{a.name}_ref"]) for r in self.rows]) for a in self.angle_defs}
         self.dev = {a.name: np.array([_f(r[f"{a.name}_dev"]) for r in self.rows]) for a in self.angle_defs}
@@ -153,10 +155,16 @@ class Trial:
         dots = {n: SimpleNamespace(x=_f(r[f"{n}_x"]), y=_f(r[f"{n}_y"]), lost=r[f"{n}_lost"] == "1",
                                    weak=r[f"{n}_lost"] != "1" and _f(r.get(f"{n}_q")) < WEAK_BELOW)
                 for n in self.dot_names if r[f"{n}_x"] != ""}
+        derived = {}
+        for n in self.derived_names:
+            x, y = _f(r[f"{n}_x"]), _f(r[f"{n}_y"])
+            if not (math.isnan(x) or math.isnan(y)):
+                derived[n] = (x, y)
         angles = []
         for a in self.angle_defs:
             n = a.name
             xy = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
+            xy.update(derived)
             res = measure(a, xy, self.facing_right)     # geometry for drawing; numbers come from the CSV
             res.value, res.deviation = self.deg[n][i], self.dev[n][i]
             res.reference = None if math.isnan(self.ref[n][i]) else self.ref[n][i]
@@ -168,7 +176,7 @@ class Trial:
         # PARKED-GHOST: if self.ghost and r["locked"] == "1":
             # PARKED-GHOST: live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
             # PARKED-GHOST: ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
-        return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None, scale=self.scale_overlay())
+        return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None, scale=self.scale_overlay(), derived=derived)
         # PARKED-GHOST: # with the ghost: overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs), trails=...)
 
     def apply_calibration(self, cal, note):

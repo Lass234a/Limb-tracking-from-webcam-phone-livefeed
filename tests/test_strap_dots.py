@@ -38,8 +38,10 @@ def engine(tmp_path, with_strap=True):
     return eng, p
 
 
-def test_the_protocol_offers_the_two_optional_dots_in_every_test():
-    for t in TESTS.values():
+def test_the_protocol_offers_the_two_optional_dots_in_every_sagittal_test():
+    # (the frontal hip abduction/adduction tests have none: the pull geometry and the torque are sagittal, see protocol.json)
+    assert all(t.optional_dots == [] for t in TESTS.values() if t.view == "frontal")
+    for t in (t for t in TESTS.values() if t.view == "sagittal"):
         assert t.optional_dots == ["strap", "anchor"]
         assert t.all_dots == t.dots + ["strap", "anchor"]
         assert "strap" not in t.dots and "anchor" not in t.dots               # not part of any angle

@@ -20,7 +20,8 @@ from dataclasses import asdict, replace
 
 from . import overlay
 from .angles import measure, segment_pairs
-from .geometry import KNEE_FACING_MIN_DEG, foot_handedness, view_handedness
+from .geometry import (HARRINGTON_DOWN, HARRINGTON_SIDEWAYS, KNEE_FACING_MIN_DEG, compute_derived, foot_handedness, pelvic_width_mm,
+                       view_handedness)
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
@@ -33,11 +34,12 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.14.0"
+SOFTWARE_VERSION = "0.15.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
+PELVIC_WIDTH_TAPE_WARN_PCT = 8.0   # frontal tests: warn when the ASIS-to-ASIS distance in the picture (ruler scale) and the typed tape measure differ by more
 
 
 class _FrozenWhileRecording:
@@ -62,7 +64,7 @@ class _FrozenWhileRecording:
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
-                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues"]
+                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues", "view", "tested_leg", "tape_pelvic_width_mm"]
 
 
 class Engine:
@@ -81,6 +83,9 @@ class Engine:
     auto_mvic_seconds = _FrozenWhileRecording("the length of the automatic MVIC")
     audio_cues = _FrozenWhileRecording("the sound cues")
     cue_push_every_s = _FrozenWhileRecording("the interval of the motivating ticks")
+    tested_leg = _FrozenWhileRecording("which leg is tested")
+    tape_pelvic_width_mm = _FrozenWhileRecording("the measured pelvic width")
+    wall_posture = _FrozenWhileRecording("the wall posture tick")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -133,6 +138,10 @@ class Engine:
         self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
+        self.tested_leg = "right"    # frontal tests: which leg is tested (the participant faces the camera: the right leg is on the picture's left)
+        self.tape_pelvic_width_mm = None   # frontal tests: ASIS-to-ASIS distance measured with a tape or calipers (a cross-check of the ruler scale), or None
+        self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
+        self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
         self._refs = {}
         self._last_gray = None
         self._last_states = {}
@@ -575,8 +584,72 @@ class Engine:
             f = self._filters[name] = MovingAverage(SMOOTHING_WINDOW_S)
         return f(raw, t)
 
+    # ------------------------------------------------- computed points (frontal tests)
+    def _derived_points(self, xy):
+        """The computed points of this test (the hip centre of a frontal test) for the dots of this picture: {} when the test has none,
+        a dot is lost, or there is no ruler scale (the hip centre is estimated in millimetres, so it needs the scale)."""
+        if not self.test.derived:
+            return {}
+        px_cm = self.scale.live_px_per_cm()
+        return compute_derived(self.test.derived, xy, px_cm / 10.0 if px_cm else None)
+
+    def _asis_pair(self):
+        for spec in self.test.derived.values():
+            if spec.get("kind") == "hip_centre_frontal":
+                return spec["tested_asis"], spec["other_asis"]
+        return None
+
+    def pelvic_width_in_picture_mm(self):
+        """The distance between the two ASIS in the latest picture in millimetres (ruler scale), or None."""
+        pair, px_cm = self._asis_pair(), self.scale.live_px_per_cm()
+        if pair is None or not px_cm:
+            return None
+        a, b = self._last_states.get(pair[0]), self._last_states.get(pair[1])
+        if a is None or b is None or a.lost or b.lost:
+            return None
+        return pelvic_width_mm((a.x, a.y), (b.x, b.y), px_cm / 10.0)
+
+    def pelvic_width_difference_pct(self):
+        """How much the picture's ASIS-to-ASIS distance differs from the typed tape measure, in percent of the tape measure, or None."""
+        w, tape = self.pelvic_width_in_picture_mm(), self.tape_pelvic_width_mm
+        return 100.0 * (w - tape) / tape if w is not None and tape else None
+
+    def _hip_centre_header(self):
+        """Picture header lines about the computed hip centre: it needs the ruler, and the ruler is checked against a typed tape measure."""
+        if self.scale.live_px_per_cm() is None:
+            return ["HIP CENTRE needs the ruler scale: mark both ruler dots (the angles about the hip centre stay blank without it)"]
+        pct = self.pelvic_width_difference_pct()
+        if pct is not None and abs(pct) > PELVIC_WIDTH_TAPE_WARN_PCT:
+            return [f"CHECK SCALE: the ASIS-to-ASIS distance is {self.pelvic_width_in_picture_mm():.0f} mm in the picture (ruler scale) but "
+                    f"{self.tape_pelvic_width_mm:.0f} mm by tape ({pct:+.0f} %): ruler not at the pelvis' distance, pelvis turned, or an ASIS dot misplaced?"]
+        return []
+
+    def _derived_meta(self):
+        if not self.test.derived:
+            return None
+        return {"definitions": copy.deepcopy(self.test.derived),
+                "hip_centre_frontal": {
+                    "equation": "Harrington et al. 2007 (J Biomech 40:595-602), equation set 1, right hip, millimetres, origin at the midpoint of the two ASIS",
+                    "sideways_towards_tested_side_mm": f"{HARRINGTON_SIDEWAYS[0]} * PW + {HARRINGTON_SIDEWAYS[1]}",
+                    "down_mm": f"{HARRINGTON_DOWN[0]} * PW + {HARRINGTON_DOWN[1]}",
+                    "PW": "the distance between the two ASIS in millimetres (picture pixels / ruler scale)",
+                    "status": "constants taken from a secondary source; the original table was not checked (2026-10-20)"},
+                "columns": "<name>_x and <name>_y in data.csv, picture pixels of the full picture; blank when a needed dot is lost or there is no ruler scale"}
+
+    def _hip_centre_scale_meta(self):
+        if not self.test.derived:
+            return None
+        px_cm, w, pct = self.scale.px_per_cm, self.pelvic_width_in_picture_mm(), self.pelvic_width_difference_pct()
+        return {"source": "ruler", "px_per_cm": round(px_cm, 4) if px_cm else None,
+                "pelvic_width_in_last_picture_mm": round(w, 1) if w is not None else None,
+                "pelvic_width_tape_mm": self.tape_pelvic_width_mm,
+                "difference_pct": round(pct, 1) if pct is not None else None, "warned_above_pct": PELVIC_WIDTH_TAPE_WARN_PCT}
+
     def _compute_angles(self, states, t=None):
         xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
+        self._last_derived = self._derived_points(xy)
+        if self._last_derived:
+            xy = {**xy, **self._last_derived}              # an arm may end at a computed point as well as at a dot
         out = []
         for a in self.active_angles:
             r = measure(a, xy, self.facing_right)       # r.value is the raw angle here
@@ -590,6 +663,8 @@ class Engine:
                 self._ref_last[a.name] = self._reference_value(a.name, r.raw_value, t)
                 if a.primary:
                     r.reference, r.tolerance = self.target, self.tolerance
+                elif not a.judged:
+                    pass                                            # shown and recorded only (the hip-centre angle of a frontal test)
                 elif a.name in self.test.neighbour_targets:        # required neighbour angle (Tabel 2): judged from the start
                     r.reference, r.tolerance = float(self.test.neighbour_targets[a.name]), self.neighbour_tolerance
                 elif self.locked and a.name in self._refs:
@@ -851,12 +926,42 @@ class Engine:
                 ds = math.hypot(xy[b1][0] - xy[b2][0], xy[b1][1] - xy[b2][1])
                 if ds > 1e-6 and dl < ratio * ds:
                     out.append(text)
+        if self.test.view == "frontal":
+            out += self._frontal_marking_problems(xy)
+        return out
+
+    def _frontal_marking_problems(self, xy):
+        """Plausibility of the three frontal dots (tested ASIS, other ASIS, patella centre). A swapped ASIS pair would turn abduction into
+        adduction without any other sign of it, so these block Lock like the sagittal label checks do."""
+        t, o, p = (np.array(xy[n], float) if n in xy else None for n in ("asis", "asis_opposite", "patella"))
+        out = []
+        if t is None or o is None:
+            return out
+        width = float(np.hypot(*(t - o)))
+        if width < 1e-6:
+            return out
+        u = (t - o) / width
+        v = np.array([-u[1], u[0]])
+        if v[1] < 0:
+            v = -v
+        left_expected = (self.tested_leg == "right") != bool(self.mirror)       # facing the camera, the right leg is on the picture's left
+        if (t[0] < o[0]) != left_expected:
+            out.append(f"with the {self.tested_leg} leg tested and the participant facing the camera, the tested ASIS should be on the "
+                       f"{'left' if left_expected else 'right'} of the other ASIS in the picture (ASIS dots swapped, or the wrong 'Tested leg'?)")
+        if p is not None:
+            if float(np.dot(p - t, v)) <= 0:
+                out.append("the patella centre should be below the ASIS, towards the feet (wrong dot clicked?)")
+            elif float(np.hypot(*(p - t))) < width:
+                out.append("the thigh (ASIS to patella centre) should be longer than the distance between the two ASIS (patella and ASIS mixed up?)")
         return out
 
     FACING_MISMATCH_FRAMES = 5
 
     def _check_facing(self, states):
         """Compare the side of the body the dots show with the 'Participant faces' setting (audit ANG-04)."""
+        if self.test.view == "frontal":                       # the angles of a frontal test do not depend on which way the picture faces
+            self._facing_bad_frames, self.facing_detected = 0, None
+            return
         xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
         h = view_handedness(xy)
         self.facing_detected = h
@@ -1120,6 +1225,8 @@ class Engine:
                 head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
             for problem in self.scale.problems():
                 head.append("SCALE: " + problem)
+            if self.test.derived:
+                head.extend(self._hip_centre_header())
             lost = [n for n, st in states.items() if st.lost]
             if lost:
                 head.append("DOT LOST: " + ", ".join(self.test.dot_title(n) for n in lost))
@@ -1164,7 +1271,7 @@ class Engine:
                 self._update_trails(states)
             img = overlay.draw(frame, states, angles, head, self.rec is not None,
                                trails=self._trails if self.trails_enabled else None, scale=self.scale.overlay_info(),
-                               ghost=self._pause_ghost, ghost_segments=segment_pairs(self.active_angles))
+                               ghost=self._pause_ghost, ghost_segments=segment_pairs(self.active_angles), derived=self._last_derived)
             # PARKED-GHOST: # (with the ghost: overlay.draw(frame, states, angles, head, self.rec is not None, ghost,
             # PARKED-GHOST: #                               segment_pairs(self.active_angles), trails=...))
             if self.rec is not None:
@@ -1173,11 +1280,11 @@ class Engine:
                 try:
                     force_v, force_n = self._take_force(t)
                     self.rec.write(frame, img, self.rec.frames, t, self.locked, states, angles, event or "", live_scale, pull,
-                                   source_frame, force_n=force_n, force_v=force_v)
+                                   source_frame, force_n=force_n, force_v=force_v, derived=self._last_derived)
                 except FrameSizeChanged as e:           # (normally caught earlier; kept as a safety net)
                     self.last_stop_reason = f"{e} The recording was stopped and saved up to this point."
                     self.stop_trial(self.last_stop_reason)
-            res = FrameResult(self.frame_index, t, img, angles, states, head, pull)
+            res = FrameResult(self.frame_index, t, img, angles, states, head, pull, derived=dict(self._last_derived))
             # PARKED-GHOST: # with the ghost: FrameResult(self.frame_index, t, img, angles, states, head, ghost)
             self.frame_index += 1
             return res
@@ -1215,7 +1322,8 @@ class Engine:
                 self.recordings_dir, participant or "unnamed", self.test.key,
                 self.target if self.primary_angle else None,
                 self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active,
-                save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks, with_force=self.force is not None)
+                save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks, with_force=self.force is not None,
+                derived_names=list(self.test.derived))
             self._marker_n = 0
             self._pending_event = None
             self._mvic_end_t = None
@@ -1315,6 +1423,14 @@ class Engine:
             "camera_setup_checklist": dict(self.camera_setup),
             "camera_check": self.camera_check,
             "facing_detected": {1: "right", -1: "left"}.get(self.facing_detected),   # what the marked dots show; should equal facing
+            "view": self.test.view,
+            "facing_not_used": ("frontal view: these angles do not depend on which way the picture faces" if self.test.view == "frontal" else None),
+            "tested_leg": self.tested_leg if self.test.view == "frontal" else None,
+            "tape_pelvic_width_mm": self.tape_pelvic_width_mm if self.test.view == "frontal" else None,
+            "sagittal_posture": ({"controlled_by": "standing against a wall: heel, buttocks and back touching", "measured": False,
+                                  "operator_ticked": bool(self.wall_posture)} if self.test.view == "frontal" else None),
+            "derived_points": self._derived_meta(),
+            "hip_centre_scale": self._hip_centre_scale_meta(),
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {
                 "enabled": self.smoothing,

@@ -36,7 +36,24 @@ def test_positions_and_required_neighbour_angles_match_the_table(key):
 
 
 def test_the_sagittal_rows_make_15_of_the_19_positions():
-    assert sum(len(t) for t, _ in TABLE2.values()) == 15      # + 4 hip abduction/adduction positions (frontal, parked)
+    assert sum(len(t) for t, _ in TABLE2.values()) == 15      # + 4 hip abduction/adduction positions (frontal view, since 0.15.0)
+
+
+# Tabel 2, frontal rows: hip ABD and ADD at 0 and 20 deg, hip flexion 0 (not measured in the frontal view: the participant stands against a wall)
+FRONTAL = {"hip_abduction": [0, 20], "hip_adduction": [0, 20]}
+
+
+@pytest.mark.parametrize("key", FRONTAL)
+def test_the_frontal_rows_are_there_with_their_positions_and_no_neighbour_requirement(key):
+    t = TESTS[key]
+    assert t.view == "frontal" and t.targets == FRONTAL[key] and t.neighbour_targets == {}
+    assert t.optional_dots == []                                 # no strap or anchor in the frontal tests (no torque from the front yet)
+
+
+def test_all_19_positions_of_the_protocol_are_in_the_plan():
+    positions = sum(len(t.targets) for k, t in TESTS.items() if k in TABLE2 or k in FRONTAL)
+    assert positions == 19
+    assert sorted(k for k, t in TESTS.items() if t.view == "frontal") == sorted(FRONTAL)
 
 
 def make(tmp_path, test, **leg):

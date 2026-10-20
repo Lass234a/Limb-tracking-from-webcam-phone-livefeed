@@ -3,8 +3,11 @@
   "tolerance_deg": 3.0,
   "neighbour_tolerance_deg": 5.0,
 
-  "dot_order": ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"],
+  "dot_order": ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head", "asis", "asis_opposite", "patella"],
   "dot_labels": {
+    "asis": "ASIS on the tested side (bony point at the front of the hip bone)",
+    "asis_opposite": "ASIS on the other side",
+    "patella": "centre of the patella (tested leg)",
     "iliac_crest": "iliac crest (side of pelvis, halfway between ASIS and PSIS)",
     "trochanter": "greater trochanter",
     "epicondyle": "lateral femoral epicondyle",
@@ -17,6 +20,13 @@
   },
   "_optional_dots_note": "Extra dots that are tracked and recorded but not part of any angle. They start switched off; tick them in Landmarks to use them. Per test you can override with \"optional_dots\".",
   "optional_dots": ["strap", "anchor"],
+
+  "_derived_points_note": "Computed points are never clicked: they are calculated from marked dots in every picture and can be used as the end of an arm. 'hip_centre_frontal' estimates the hip joint centre of the tested side in a picture taken from the front, from the two ASIS and the ruler scale (Harrington et al. 2007, equation set 1; see limbtrack/geometry.py for the equation and its status).",
+  "derived_points": {
+    "hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite"}
+  },
+
+  "_frontal_angles_note": "Frontal view (camera in front of the participant). The four frontal angles in angle_library are unsigned interior angles between the arm towards the other ASIS and the thigh; 90 deg = the thigh square to the line between the ASIS = neutral, so the shown value is angle - 90 for abduction (the knee moves away from the other leg) and 90 - angle for adduction. Independent of which leg and of mirroring. 'goniometer' = Tabel 3 as written (fulcrum the ASIS, thigh towards the patella centre); 'hip_centre' = the same thigh line drawn from the estimated hip joint centre, which is what rotates when the leg moves; it is shown and saved but never judged green/red ('judged': false). The two do not share a zero.",
 
   "angle_library": {
     "hip": {
@@ -34,11 +44,32 @@
       "label": "Ankle dorsiflex (+)",
       "vectors": [["malleolus", "fibular_head"], ["mt5_base", "mt5_head"]],
       "sign": -1, "offset": 90, "fulcrum": "malleolus"
+    },
+
+    "abd_goniometer": {
+      "label": "Hip abd (goniometer)",
+      "vectors": [["asis", "asis_opposite"], ["asis", "patella"]],
+      "signed": false, "sign": 1, "offset": -90, "fulcrum": "asis"
+    },
+    "add_goniometer": {
+      "label": "Hip add (goniometer)",
+      "vectors": [["asis", "asis_opposite"], ["asis", "patella"]],
+      "signed": false, "sign": -1, "offset": 90, "fulcrum": "asis"
+    },
+    "abd_hip_centre": {
+      "label": "Hip abd (hip centre)",
+      "vectors": [["asis", "asis_opposite"], ["hip_centre", "patella"]],
+      "signed": false, "sign": 1, "offset": -90, "fulcrum": "hip_centre", "judged": false
+    },
+    "add_hip_centre": {
+      "label": "Hip add (hip centre)",
+      "vectors": [["asis", "asis_opposite"], ["hip_centre", "patella"]],
+      "signed": false, "sign": -1, "offset": 90, "fulcrum": "hip_centre", "judged": false
     }
   },
 
   "tests": {
-    "_note_tests": "Sagittal tests from Tabel 2 of the protocol draft 2026-09-28 (19 positions in all, 4 of them hip abduction/adduction in the frontal plane, which this app does not do). 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative).",
+    "_note_tests": "Tests from Tabel 2 of the protocol draft 2026-09-28 (19 positions in all). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is controlled by standing against a wall and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative).",
     "knee_extension": {
       "label": "Knee extension, hip 90 (MVIC)",
       "primary": "knee",
@@ -87,6 +118,22 @@
       "targets": [0, -20],
       "neighbour_targets": {"knee": 0},
       "angles": ["ankle", "knee", "hip"]
+    },
+    "hip_abduction": {
+      "label": "Hip abduction, knee straight, camera in front (MVIC)",
+      "view": "frontal",
+      "primary": "abd_goniometer",
+      "targets": [0, 20],
+      "optional_dots": [],
+      "angles": ["abd_goniometer", "abd_hip_centre"]
+    },
+    "hip_adduction": {
+      "label": "Hip adduction, knee straight, camera in front (MVIC)",
+      "view": "frontal",
+      "primary": "add_goniometer",
+      "targets": [0, 20],
+      "optional_dots": [],
+      "angles": ["add_goniometer", "add_hip_centre"]
     },
     "belt_squat": {
       "label": "Belt squat (MVIC)",

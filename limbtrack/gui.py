@@ -377,7 +377,7 @@ class LiveTab(QWidget):
         self.worker = None
         self._rec_started = None
         self._say_until = 0.0
-        self._combo_index = {"test": 0, "kind": 0, "facing": 0}     # last accepted choice, restored if the engine refuses a change
+        self._combo_index = {"test": 0, "kind": 0, "facing": 0, "leg": 0}     # last accepted choice, restored if the engine refuses a change
         self._marker_counts = {"start": 0, "end": 0, "other": 0}
         self._marker_msg = ("", 0.0)
         self._memory_path = None             # settings.json, once the window has attached it (see attach_memory)
@@ -490,6 +490,24 @@ class LiveTab(QWidget):
         self.facing_combo.addItem("Right side of the image", True)
         self.facing_combo.addItem("Left side of the image", False)
         self.facing_combo.currentIndexChanged.connect(self.on_facing_changed)
+        # frontal tests (hip abduction/adduction, camera in front of the participant): these replace 'Participant faces'
+        self.leg_combo = NoWheelComboBox()
+        self.leg_combo.addItem("Right leg (left of the picture)", "right")
+        self.leg_combo.addItem("Left leg (right of the picture)", "left")
+        self.leg_combo.setToolTip("Which leg is tested. Facing the camera, the right leg is on the left of the picture (the other way round when the "
+                                  "image is mirrored). Used to check that the two ASIS dots were not swapped, which would turn abduction into "
+                                  "adduction.")
+        self.leg_combo.currentIndexChanged.connect(self.on_leg_changed)
+        self.tape_spin = self._spin(0.0, 500.0, 1.0, " mm")
+        self.tape_spin.setSpecialValueText("not measured")
+        self.tape_spin.setToolTip("Optional: the distance between the two ASIS measured with a tape or calipers. The program compares it with the "
+                                  "distance in the picture (ruler scale) and warns when they differ by more than 8 %: that would mean the ruler is "
+                                  "not at the pelvis' distance, the pelvis is turned, or an ASIS dot is misplaced. It does not change any angle.")
+        self.tape_spin.valueChanged.connect(lambda v: self._set_setting("tape_pelvic_width_mm", self.tape_spin, v))
+        self.chk_wall = QCheckBox("Against a wall: heel, buttocks, back touching")
+        self.chk_wall.setToolTip("How the sagittal posture (hip flexion 0, straight knee) is controlled in these tests. It is not measured; this "
+                                 "tick is saved with the trial.")
+        self.chk_wall.toggled.connect(self.on_wall_toggled)
         self.chk_smooth = QCheckBox("Smooth the displayed angles (0.2 s average)")
         self.chk_smooth.setToolTip("Only changes what you see. The saved CSV always has the unsmoothed angles.")
         self.chk_smooth.setChecked(True)
@@ -502,7 +520,12 @@ class LiveTab(QWidget):
         f.addRow("Tolerance main joint", self.tol_spin)
         f.addRow("Tolerance other joints", self.ntol_spin)
         f.addRow("Participant faces", self.facing_combo)
+        f.addRow("Tested leg", self.leg_combo)
+        f.addRow("ASIS to ASIS, tape", self.tape_spin)
+        f.addRow(self.chk_wall)
         f.addRow(self.chk_smooth)
+        self.settings_form = f
+        self._update_view_rows()
 
         # --- dot colour: up with the dots, because a wrong colour is the commonest reason for dots that will not mark or are followed badly
         self.kind_note = QLabel()
@@ -1151,6 +1174,7 @@ class LiveTab(QWidget):
             "target": e.target,
             "tolerance": self.tol_spin.value(), "neighbour_tolerance": self.ntol_spin.value(),
             "dot_kind": self.kind_combo.currentData(), "facing_right": bool(self.facing_combo.currentData()),
+            "tested_leg": self.leg_combo.currentData(),
             "mirror": self.chk_mirror.isChecked(), "smoothing": self.chk_smooth.isChecked(),
             "landmarks_disabled": sorted(e.disabled_dots),
             "trails": self.chk_trails.isChecked(), "overlay": self.chk_overlay.isChecked(),
@@ -1191,6 +1215,7 @@ class LiveTab(QWidget):
             part(lambda: self._pick(self.test_combo, s["test"]) if s.get("test") in self.engine.tests else None)
             part(lambda: self._pick(self.kind_combo, s["dot_kind"]))
             part(lambda: self._pick(self.facing_combo, bool(s["facing_right"])))
+            part(lambda: self._pick(self.leg_combo, s["tested_leg"]))
             part(lambda: self.chk_mirror.setChecked(bool(s["mirror"])))
             part(lambda: self.chk_smooth.setChecked(bool(s["smoothing"])))
             part(lambda: self.tol_spin.setValue(float(s["tolerance"])))
@@ -1258,6 +1283,7 @@ class LiveTab(QWidget):
         self._save_timer.setInterval(800)                # saved a moment after the last change, so a hung or killed program has lost nothing
         self._save_timer.timeout.connect(self.save_session)
         for sig in (self.test_combo.currentIndexChanged, self.kind_combo.currentIndexChanged, self.facing_combo.currentIndexChanged,
+                    self.leg_combo.currentIndexChanged,
                     self.target_spin.valueChanged, self.tol_spin.valueChanged, self.ntol_spin.valueChanged, self.chk_mirror.toggled,
                     self.chk_smooth.toggled, self.chk_trails.toggled, self.chk_overlay.toggled, self.chk_cues.toggled,
                     self.cue_push_spin.valueChanged, self.chk_auto_mvic.toggled, self.auto_thr_spin.valueChanged,
@@ -1326,8 +1352,38 @@ class LiveTab(QWidget):
         self.tol_spin.setValue(self.engine.tolerance)
         self.ntol_spin.setValue(self.engine.neighbour_tolerance)
         self.btn_lock.setChecked(False)
+        self._update_view_rows()
         self.rebuild_landmarks()
         self.refresh_plan()
+
+    def _update_view_rows(self):
+        """A frontal test (camera in front of the participant) has no 'Participant faces': it asks which leg is tested, and offers the
+        optional tape measure of the pelvis and the wall tick, instead."""
+        frontal = self.engine.test.view == "frontal"
+        for w, show in ((self.facing_combo, not frontal), (self.leg_combo, frontal), (self.tape_spin, frontal)):
+            w.setVisible(show)
+            label = self.settings_form.labelForField(w)
+            if label is not None:
+                label.setVisible(show)
+        self.chk_wall.setVisible(frontal)
+
+    def on_leg_changed(self):
+        try:
+            self.engine.tested_leg = self.leg_combo.currentData()
+        except RuntimeError as e:
+            self._revert_combo(self.leg_combo, "leg", e)
+            return
+        self._combo_index["leg"] = self.leg_combo.currentIndex()
+        self.refresh_view()
+
+    def on_wall_toggled(self, on):
+        try:
+            self.engine.wall_posture = bool(on)
+        except RuntimeError as e:
+            self.chk_wall.blockSignals(True)
+            self.chk_wall.setChecked(self.engine.wall_posture)
+            self.chk_wall.blockSignals(False)
+            self.say(str(e))
 
     # ------------------------------------------------- landmark selection
     def rebuild_landmarks(self):
@@ -1536,8 +1592,8 @@ class LiveTab(QWidget):
 
     def _set_setting(self, attr, spin, value):
         """Change an engine setting from a spin box; if the engine refuses (recording), put the box back and say why."""
-        if attr == "target" and value <= spin.minimum():
-            value = None                                             # "no target"
+        if attr in ("target", "tape_pelvic_width_mm") and value <= spin.minimum():
+            value = None                                             # "no target" / "not measured"
         try:
             setattr(self.engine, attr, value)
         except RuntimeError as e:
@@ -2486,8 +2542,8 @@ class LiveTab(QWidget):
         self.chk_overlay.setEnabled(not recording)
         for w in (*self.camera_checks.values(), self.camera_model):
             w.setEnabled(not recording)
-        for w in (self.test_combo, self.kind_combo, self.facing_combo, self.target_spin, self.tol_spin, self.ntol_spin,
-                  self.btn_remark, self.btn_lock):
+        for w in (self.test_combo, self.kind_combo, self.facing_combo, self.leg_combo, self.tape_spin, self.chk_wall, self.target_spin,
+                  self.tol_spin, self.ntol_spin, self.btn_remark, self.btn_lock):
             w.setEnabled(not recording)           # nothing that changes the measurement may change during a recording
         main_three_point = bool(self.engine.three_point) and self.engine.three_point_main
         self.suggest.setEnabled(not recording and not main_three_point)
