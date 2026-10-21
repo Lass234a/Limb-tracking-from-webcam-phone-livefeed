@@ -55,12 +55,12 @@ def test_the_saved_form_keeps_every_reading_the_mean_the_instrument_and_the_mome
     r.instrument, r.resolution_deg = "inclinometer", 0.5
     r.set_values("knee", [60.0, 61.0, 62.0])
     r.stamp = {"taken_at": "2026-10-20T12:03:10", "app_deg": {"knee": 59.8123456, "hip": None}}
-    r.position = ("knee_extension", 60.0)
+    r.position = ("knee_extension", 60.0, "P01")
     m = r.to_meta(titles={"knee": "Knee flexion"})
     assert m["readings"]["knee"] == {"values_deg": [60.0, 61.0, 62.0], "mean_deg": 61.0}
     assert m["instrument"] == "inclinometer" and m["resolution_deg"] == 0.5 and m["stamped_at"] == "2026-10-20T12:03:10"
     assert m["app_at_reading_deg"] == {"knee": 59.812, "hip": None} and m["app_basis"] == ref.APP_BASIS_STAMP
-    assert m["entered_for"] == {"test_key": "knee_extension", "target_deg": 60.0} and m["titles"] == {"knee": "Knee flexion"}
+    assert m["entered_for"] == {"test_key": "knee_extension", "target_deg": 60.0, "participant": "P01"} and m["titles"] == {"knee": "Knee flexion"}
     assert "Never a measurement of this program" in m["note"]
     json.dumps(m)                                                             # nothing that cannot be written to meta.json
 
@@ -85,6 +85,17 @@ def test_a_side_file_is_written_whole_and_next_to_the_trial(tmp_path):
     data = ref.read_sidecar(meta_path)
     assert data["readings"] == {"knee": {"values_deg": [59.0, 60.0], "mean_deg": 59.5}} and data["instrument"] == "inclinometer"
     assert meta_path.read_text() == "{}"                                      # the trial's own file is never touched
+
+
+def test_the_side_file_keeps_only_what_differs_from_what_was_saved_with_the_trial(tmp_path):
+    meta_path = tmp_path / "T1_meta.json"
+    meta_path.write_text("{}")
+    saved = meta_with({"knee": [60.0], "hip": [90.0], "ankle": [5.0]})["reference_readings"]
+    ref.write_sidecar(meta_path, "goniometer", 1.0, {"knee": [60.0], "hip": [], "ankle": [6.0], "extra": []}, recorded=saved)
+    assert ref.read_sidecar(meta_path)["readings"] == {"hip": {"values_deg": [], "mean_deg": None},          # removed
+                                                       "ankle": {"values_deg": [6.0], "mean_deg": 6.0}}       # changed; the knee is the same
+    ref.write_sidecar(meta_path, "inclinometer", 1.0, {"knee": [60.0]}, recorded=saved)
+    assert ref.read_sidecar(meta_path)["readings"] == {"knee": {"values_deg": [60.0], "mean_deg": 60.0}}     # another instrument is a change
 
 
 def test_a_missing_or_broken_side_file_is_no_side_file(tmp_path):
@@ -241,7 +252,7 @@ def test_the_moment_of_a_reading_keeps_the_apps_angles_of_that_moment(tmp_path):
     eng = knee_engine(tmp_path)
     app = eng.take_reference_stamp()
     assert app["knee"] == pytest.approx(60.0, abs=0.7) and app["hip"] == pytest.approx(90.0, abs=0.7)
-    assert eng.reference.stamp["taken_at"] and eng.reference.position == ("knee_extension", 60.0)
+    assert eng.reference.stamp["taken_at"] and eng.reference.position == ("knee_extension", 60.0, None)   # no participant code yet
 
 
 def test_typed_readings_are_saved_with_the_trial_and_never_change_an_angle(tmp_path):
@@ -258,7 +269,7 @@ def test_typed_readings_are_saved_with_the_trial_and_never_change_an_angle(tmp_p
     r = meta["reference_readings"]
     assert r["instrument"] == "inclinometer" and r["resolution_deg"] == 0.5
     assert r["readings"]["knee"] == {"values_deg": [61.0, 62.0], "mean_deg": 61.5} and r["readings"]["hip"]["mean_deg"] == 89.0
-    assert r["app_at_reading_deg"]["knee"] == pytest.approx(60.0, abs=0.7) and r["entered_for"] == {"test_key": "knee_extension", "target_deg": 60.0}
+    assert r["app_at_reading_deg"]["knee"] == pytest.approx(60.0, abs=0.7) and r["entered_for"] == {"test_key": "knee_extension", "target_deg": 60.0, "participant": "P01"}
     assert r["titles"]["knee"] == "Knee flexion" and "changed_during_recording" not in meta
 
 
@@ -299,8 +310,8 @@ def test_a_reading_typed_for_another_position_is_never_saved_with_this_trial(tmp
     eng.process(render(PTS, seed=1), 1.0)
     eng.stop_trial()
     r = json.loads(paths["meta.json"].read_text())["reference_readings"]
-    assert "readings" not in r and r["not_used"]["entered_for"] == {"test_key": "knee_extension", "target_deg": 60.0}
-    assert r["not_used"]["this_trial"] == {"test_key": "knee_extension", "target_deg": 70.0}
+    assert "readings" not in r and r["not_used"]["entered_for"] == {"test_key": "knee_extension", "target_deg": 60.0, "participant": None}
+    assert r["not_used"]["this_trial"] == {"test_key": "knee_extension", "target_deg": 70.0, "participant": "P01"}
 
 
 def test_typing_a_new_reading_at_a_new_position_starts_afresh(tmp_path):
@@ -308,7 +319,52 @@ def test_typing_a_new_reading_at_a_new_position_starts_afresh(tmp_path):
     eng.set_reference({"knee": [60.0], "hip": [90.0]})
     eng.target = 70.0
     eng.set_reference({"knee": [70.0]})
-    assert eng.reference.values == {"knee": [70.0]} and eng.reference.position == ("knee_extension", 70.0)
+    assert eng.reference.values == {"knee": [70.0]} and eng.reference.position == ("knee_extension", 70.0, None)
+
+
+def record(eng, participant, t0=1.0):
+    paths = eng.start_trial(participant)
+    for i in range(4):
+        eng.process(render(PTS, seed=i), t0 + i / 30)
+    eng.stop_trial()
+    return json.loads(paths["meta.json"].read_text())
+
+
+def test_readings_belong_to_the_participant_they_were_typed_for(tmp_path):
+    eng = knee_engine(tmp_path)
+    eng.participant_code = "P01"                                              # what the window says
+    eng.take_reference_stamp()
+    eng.set_reference({"knee": [61.0]})
+    assert eng.reference.position == ("knee_extension", 60.0, "P01")
+    first = record(eng, "P01")["reference_readings"]
+    assert first["readings"]["knee"]["values_deg"] == [61.0] and first["entered_for"]["participant"] == "P01"
+    eng.participant_code = "P02"                                              # the next participant, at the same position
+    assert not eng.reference_for_this_position()
+    nxt = record(eng, "P02", t0=2.0)["reference_readings"]
+    assert "readings" not in nxt and nxt["not_used"]["entered_for"]["participant"] == "P01"
+    assert nxt["not_used"]["this_trial"] == {"test_key": "knee_extension", "target_deg": 60.0, "participant": "P02"}
+
+
+def test_the_trials_own_participant_decides_even_if_the_window_says_otherwise(tmp_path):
+    eng = knee_engine(tmp_path)
+    eng.participant_code = "P01"
+    eng.set_reference({"knee": [61.0]})
+    r = record(eng, "P02")["reference_readings"]                              # recorded for P02 (the engine is told so by start_trial)
+    assert "readings" not in r and r["not_used"]["entered_for"]["participant"] == "P01"
+
+
+def test_readings_typed_before_any_code_belong_to_the_first_participant_recorded(tmp_path):
+    eng = knee_engine(tmp_path)
+    eng.set_reference({"knee": [61.0]})                                       # no participant code in the window yet
+    assert eng.reference.position == ("knee_extension", 60.0, None) and eng.reference_for_this_position()
+    first = record(eng, "P01")
+    assert first["reference_readings"]["readings"]["knee"]["values_deg"] == [61.0]
+    assert eng.reference.position == ("knee_extension", 60.0, "P01") and "changed_during_recording" not in first
+    eng.participant_code = "P01"
+    second = record(eng, "P01", t0=2.0)["reference_readings"]                 # the second trial of the position: the same reading
+    assert second["readings"]["knee"]["values_deg"] == [61.0]
+    third = record(eng, "P02", t0=3.0)["reference_readings"]                  # someone else: never
+    assert "readings" not in third
 
 
 def test_only_what_the_test_takes_a_reading_for_is_accepted(tmp_path):
@@ -330,6 +386,40 @@ def test_the_stamp_needs_angles_to_keep_and_no_break(tmp_path):
     eng = knee_engine(tmp_path / "b")
     assert eng.pause() is None
     with pytest.raises(RuntimeError):
+        eng.take_reference_stamp()
+
+
+def test_a_reading_carried_to_the_second_trial_without_a_stamp_is_one_pair(tmp_path):
+    r = ref.ReferenceReadings()
+    r.set_values("knee", [61.0])
+    first = r.typed_at
+    r.set_values("knee", [61.0])                                              # the same numbers sent again: still the same reading
+    assert first and r.typed_at == first
+    eng = knee_engine(tmp_path)
+    eng.participant_code = "P01"
+    eng.set_reference({"knee": [61.0]})                                       # typed once, no 'reading taken now'
+    record(eng, "P01")
+    record(eng, "P01", t0=2.0)                                                # the second trial of the position keeps it
+    assert ref.agreement(ref.collect_rows(tmp_path))["knee"]["n"] == 1
+    eng.set_reference({"knee": [62.0]})                                       # read again: a new reading, a new pair
+    record(eng, "P01", t0=3.0)
+    assert ref.agreement(ref.collect_rows(tmp_path))["knee"]["n"] == 2
+
+
+def test_the_stamp_needs_a_fresh_picture(tmp_path):
+    eng = knee_engine(tmp_path)
+    eng._frame_stamp -= 5.0                                                   # no picture for 5 s: the camera stopped or dropped out
+    with pytest.raises(ValueError, match="No new picture has come in for 5 s"):
+        eng.take_reference_stamp()
+    assert eng.reference.stamp is None
+    eng.process(render(PTS, seed=9), 1.0)                                     # the picture is back
+    assert eng.take_reference_stamp()["knee"] == pytest.approx(60.0, abs=0.7)
+
+
+def test_marking_the_dots_again_forgets_the_angles_kept_for_the_stamp(tmp_path):
+    eng = knee_engine(tmp_path)
+    eng.reset_dots()                                                          # no new picture since: nothing of the old dots may be kept
+    with pytest.raises(ValueError, match="mark the dots first"):
         eng.take_reference_stamp()
 
 

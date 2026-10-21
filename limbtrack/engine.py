@@ -36,11 +36,12 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.17.0"
+SOFTWARE_VERSION = "0.17.1"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
+STAMP_MAX_PICTURE_AGE_S = 1.0      # 'reading taken now' is refused when the latest picture is older than this (its angles are not of this moment)
 PELVIC_WIDTH_TAPE_WARN_PCT = 8.0   # frontal tests: warn when the ASIS-to-ASIS distance in the picture (ruler scale) and the typed tape measure differ by more
 
 
@@ -144,6 +145,7 @@ class Engine:
         self.tape_pelvic_width_mm = None   # frontal tests: ASIS-to-ASIS distance measured with a tape or calipers (a cross-check of the ruler scale), or None
         self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
         self.reference = ReferenceReadings()   # what the operator typed from a goniometer or inclinometer, and the app's angles at that moment (limbtrack/reference.py)
+        self.participant_code = ""   # the participant code in the window (kept up to date by the window): readings belong to one person
         self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
         self._refs = {}
         self._last_gray = None
@@ -202,7 +204,7 @@ class Engine:
                 # Same landmarks: the marked dots stay (the 120 s changeover is not spent re-clicking them); the position is
                 # unlocked because the neighbour angles and their required values belong to the test (audit GUI-06).
                 self._last_angles = []
-                self._filters, self._ref_avg = {}, {}
+                self._filters, self._ref_avg, self._ref_last = {}, {}, {}
                 self._hist.clear()
                 self.unlock_position()
             else:
@@ -224,7 +226,7 @@ class Engine:
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
             self._last_angles = []
-            self._filters, self._ref_avg = {}, {}
+            self._filters, self._ref_avg, self._ref_last = {}, {}, {}
             self._hist.clear()
             self._trails, self._trail_open = {}, {}
             self.locked = False
@@ -366,7 +368,7 @@ class Engine:
 
     def _angles_changed(self):
         self._last_angles = []
-        self._filters, self._ref_avg = {}, {}
+        self._filters, self._ref_avg, self._ref_last = {}, {}, {}
         self._hist.clear()
         self.unlock_position()
 
@@ -409,7 +411,7 @@ class Engine:
             self._trails, self._trail_open = {}, {}          # the set of dots changed: old trails no longer apply
             self._last_states.pop(name, None)
             self._last_angles = []
-            self._filters, self._ref_avg = {}, {}
+            self._filters, self._ref_avg, self._ref_last = {}, {}, {}
             self.unlock_position()
 
     def set_smoothing(self, on):
@@ -553,9 +555,11 @@ class Engine:
             if self.paused or self.facing_mismatch or self.marking_problems():
                 return False
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
-            if not angles or any(a.status == LOST for a in angles) or len(angles) < len(self.active_angles):
+            # an angle that is shown but never judged (the hip-centre angle, blank without the ruler) does not stop the lock
+            if not angles or any(a.status == LOST and a.judged for a in angles) or len(angles) < len(self.active_angles):
                 return False
-            self._refs = {a.name: self._ref_last.get(a.name, a.raw_value) for a in angles if not a.primary}   # unsmoothed, whatever the smoothing switch says
+            self._refs = {a.name: self._ref_last.get(a.name, a.raw_value) for a in angles     # unsmoothed, whatever the smoothing switch says
+                          if not a.primary and a.judged}
             # PARKED-GHOST: self._ghost = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
             # PARKED-GHOST: if self.rec is not None:
                 # PARKED-GHOST: self.rec_info["ghost"] = dict(self._ghost)
@@ -594,13 +598,31 @@ class Engine:
             return [(a.name, a.title) for a in self.all_angles] + list(self.test.reference_extras.items())
 
     def reference_position(self):
-        """Which position the readings belong to: (test key, target)."""
-        return (self.test.key, self.target)
+        """Which position the readings belong to: (test key, target, participant code). The participant is the code in the window
+        (`participant_code`), and while recording the trial's own participant."""
+        who = self.rec_info.get("participant") if self.rec is not None else self.participant_code
+        return (self.test.key, self.target, who or "")
+
+    def _reference_matches(self, position):
+        """Whether readings entered for `position` belong to the present one. Readings typed while the window had no participant code
+        (participant None) belong to whoever is recorded first; from that trial on they are that participant's (start_trial)."""
+        if position is None:
+            return True
+        key, target, who = (tuple(position) + (None,))[:3]
+        here = self.reference_position()
+        return (key, target) == here[:2] and (who is None or who == here[2])
+
+    def _claim_reference(self):
+        """The readings now belong to this position, and to the participant code in the window once there is one."""
+        key, target, who = self.reference_position()
+        old = self.reference.position
+        kept = old[2] if old is not None and len(old) > 2 else None
+        self.reference.position = (key, target, who or kept)
 
     def _drop_readings_of_another_position(self):
         r = self.reference
-        if r.position is not None and tuple(r.position) != self.reference_position():
-            r.clear()                                        # a reading of another posture must never be saved with this trial
+        if not self._reference_matches(r.position):
+            r.clear()                                        # a reading of another posture or person must never be saved with this trial
 
     def set_reference(self, values=None, instrument=None, resolution_deg=None):
         """Keep what the operator typed. `values`: key -> list of readings in degrees (an empty list = not measured). Refused while recording."""
@@ -621,7 +643,7 @@ class Engine:
                 if k not in valid:
                     raise ValueError(f"'{k}' is not something this test takes a reading for")
                 r.set_values(k, v)
-            r.position = self.reference_position()
+            self._claim_reference()
 
     def take_reference_stamp(self):
         """'Reading taken now': keep the app's own angles of this moment (unsmoothed, averaged over 0.2 s), so the typed reading is compared
@@ -633,9 +655,13 @@ class Engine:
             app = {a.name: self._ref_last.get(a.name) for a in self.active_angles}
             if not any(v is not None for v in app.values()):
                 raise ValueError("No angle can be read at the moment: mark the dots first.")
+            age = self.seconds_since_last_frame()
+            if age > STAMP_MAX_PICTURE_AGE_S:                 # the angles held are from before the camera stopped or dropped out
+                raise ValueError(f"No new picture has come in for {age:.0f} s (the camera stopped or dropped out, or the video is paused), "
+                                 "so there is no angle of this moment to keep. Get the picture going again, then press it.")
             self._drop_readings_of_another_position()
             self.reference.stamp = {"taken_at": datetime.now().isoformat(timespec="seconds"), "app_deg": app}
-            self.reference.position = self.reference_position()
+            self._claim_reference()
             return dict(app)
 
     def clear_reference(self):
@@ -644,18 +670,18 @@ class Engine:
             self.reference.clear()
 
     def reference_for_this_position(self):
-        """False when readings are held for another test or target (they will not be saved with the next trial)."""
-        r = self.reference
-        return r.position is None or tuple(r.position) == self.reference_position()
+        """False when readings are held for another test, target or participant (they will not be saved with the next trial)."""
+        return self._reference_matches(self.reference.position)
 
     def _reference_meta(self):
         r = self.reference
         if not r.has_data():
             return None
         if not self.reference_for_this_position():
-            return {"not_used": {"entered_for": {"test_key": r.position[0], "target_deg": r.position[1]},
-                                 "this_trial": {"test_key": self.test.key, "target_deg": self.target}},
-                    "note": "readings were typed for another position and are not saved with this trial"}
+            here = self.reference_position()
+            return {"not_used": {"entered_for": r.entered_for(),
+                                 "this_trial": {"test_key": here[0], "target_deg": here[1], "participant": here[2]}},
+                    "note": "readings were typed for another position or participant and are not saved with this trial"}
         return r.to_meta(titles=dict(self.reference_keys()))
 
     # ------------------------------------------------- computed points (frontal tests)
@@ -1004,10 +1030,19 @@ class Engine:
             out += self._frontal_marking_problems(xy)
         return out
 
+    def _frontal_dots(self):
+        """(tested ASIS, other ASIS, knee) dot names of a frontal test, taken from the protocol rather than fixed names: the ASIS pair from
+        its computed hip centre (or else the main angle's first arm, which runs from the tested ASIS to the other one), the knee dot from
+        the far end of the main angle's second arm. None for a part that cannot be told."""
+        first, second = (list(a) if isinstance(a, (list, tuple)) else None for a in self.test.primary.vectors)
+        pair = self._asis_pair() or (tuple(first) if first else (None, None))
+        knee = second[-1] if second and second[-1] not in pair else None
+        return pair[0], pair[1], knee
+
     def _frontal_marking_problems(self, xy):
         """Plausibility of the three frontal dots (tested ASIS, other ASIS, patella centre). A swapped ASIS pair would turn abduction into
         adduction without any other sign of it, so these block Lock like the sagittal label checks do."""
-        t, o, p = (np.array(xy[n], float) if n in xy else None for n in ("asis", "asis_opposite", "patella"))
+        t, o, p = (np.array(xy[n], float) if n in xy else None for n in self._frontal_dots())
         out = []
         if t is None or o is None:
             return out
@@ -1413,6 +1448,8 @@ class Engine:
             self._arm_auto_mvic()
             self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
+            if self.reference.has_data() and self.reference_for_this_position():
+                self.reference.position = self.reference_position()  # from now on the readings are this participant's (also if typed before a code)
             self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
             self.last_stop_reason = None
             self.rec.write_start_meta(self._meta_start)               # a complete meta.json right away (status 'recording')

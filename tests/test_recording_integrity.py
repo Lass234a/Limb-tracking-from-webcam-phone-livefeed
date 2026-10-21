@@ -52,6 +52,28 @@ def test_csv_rows_reach_the_disk_one_by_one_and_a_complete_meta_exists_from_the_
     assert not list(tmp_path.glob("**/*.tmp"))                               # the atomic write left nothing behind
 
 
+def test_two_trials_started_in_the_same_second_never_write_over_each_other(tmp_path, monkeypatch):
+    """The file name has the time to the second; a second trial of the same position in that second gets '-2', '-3' (0.17.1)."""
+    from datetime import datetime
+    import limbtrack.recorder as recorder
+
+    class Frozen:                                                             # every trial starts at 12:00:00
+        @staticmethod
+        def now():
+            return datetime(2026, 10, 21, 12, 0, 0)
+    monkeypatch.setattr(recorder, "datetime", Frozen)
+    eng = ready_engine(tmp_path)
+    metas = []
+    for k in range(3):
+        paths = eng.start_trial("P01")
+        eng.process(render(PTS, seed=k), 1.0 + k)
+        eng.stop_trial()
+        metas.append(paths["meta.json"])
+    assert [m.name[-len("120000-2_meta.json"):] for m in metas[1:]] == ["120000-2_meta.json", "120000-3_meta.json"]
+    assert metas[0].name.endswith("120000_meta.json") and len(list((tmp_path / "P01").glob("*_meta.json"))) == 3
+    assert all(json.loads(m.read_text())["frames"] == 1 for m in metas)                # each trial kept its own files
+
+
 def test_a_trial_cut_short_can_still_be_opened_in_review(tmp_path):
     eng = ready_engine(tmp_path)
     paths = eng.start_trial("P01")

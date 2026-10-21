@@ -53,6 +53,7 @@ class Trial:
         self.meta_path = meta_path
         self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
         self.reference_side = reference.read_sidecar(meta_path)        # reference readings added or changed later in Review (never in meta.json)
+        self._reference_rows = None                                      # (worked out on first use, see reference_rows)
         folder = meta_path.parent
         self.base = meta_path.name[: -len("_meta.json")]
         self.folder = folder
@@ -122,8 +123,12 @@ class Trial:
 
     # ------------------------------------------------------------------ reference readings (typed from a hand instrument)
     def reference_rows(self):
-        """One row per reading: the typed reference, the app's angle at the same moment, the difference (see limbtrack/reference.py)."""
-        return reference.comparison(self.meta, self.reference_side, self.folder / (self.meta.get("files") or {}).get("data.csv", "data.csv"))
+        """One row per reading: the typed reference, the app's angle at the same moment, the difference (see limbtrack/reference.py).
+        Worked out once (it may read the CSV) and again only after the readings change (reload_reference); do not change the rows."""
+        if self._reference_rows is None:
+            csv_path = self.folder / (self.meta.get("files") or {}).get("data.csv", "data.csv")
+            self._reference_rows = reference.comparison(self.meta, self.reference_side, csv_path)
+        return self._reference_rows
 
     def reference_edit_keys(self):
         """[(key, name)] a reading can be typed for in Review: the trial's angles, then the extras of its test (the typed hip flexion of a frontal trial)."""
@@ -131,6 +136,7 @@ class Trial:
 
     def reload_reference(self):
         self.reference_side = reference.read_sidecar(self.meta_path)
+        self._reference_rows = None
 
     def frame(self, i):
         if i != self._pos + 1:
@@ -483,12 +489,16 @@ class ReferenceDialog(QDialog):
             try:
                 values[key] = reference.parse_values(box.text())
             except reference.ReadingError as e:
-                QMessageBox.warning(self, "Cannot read that", f"{self.windowTitle()}: {e}")
+                QMessageBox.warning(self, "Cannot read that", f"{dict(self.trial.reference_edit_keys()).get(key, key)}: {e}")
                 box.setFocus()
                 return
-        recorded = list(((self.trial.meta.get("reference_readings") or {}).get("readings") or {}))
-        reference.write_sidecar(self.trial.meta_path, self.instrument.currentData(), self.resolution.currentData(), values,
-                                recorded_keys=recorded)
+        try:
+            reference.write_sidecar(self.trial.meta_path, self.instrument.currentData(), self.resolution.currentData(), values,
+                                    recorded=self.trial.meta.get("reference_readings"))
+        except OSError as e:                              # a locked or read-only folder: say so, keep the dialog open with what was typed
+            QMessageBox.warning(self, "Not saved", f"The readings could not be saved next to the trial:\n{e}\n\n"
+                                "Nothing was changed. Check that the recordings folder can be written to, then press Save again.")
+            return
         self.trial.reload_reference()
         self.accept()
 
@@ -541,7 +551,13 @@ class ReferenceValidationDialog(QDialog):
                 self.plot.addLine(y=v, pen=pg.mkPen("#ff922b", width=1.5, style=Qt.DashLine))
 
     def save_table(self):
-        out = reference.write_csv(self.rows, self.folder / "reference_validation.csv")
+        try:
+            out = reference.write_csv(self.rows, self.folder / "reference_validation.csv")
+        except OSError as e:                              # most often: the file is open in Excel, which locks it on Windows
+            QMessageBox.warning(self, "Not saved", f"reference_validation.csv could not be written in {self.folder}:\n{e}\n\n"
+                                "If the file is open in Excel or another program, close it and press Save again. "
+                                "The file on disk is still the earlier one.")
+            return
         QMessageBox.information(self, "Saved", f"Saved {out.name} in {self.folder}: {len(self.rows)} readings.")
 
 
@@ -599,6 +615,8 @@ class ReviewTab(QWidget):
         self.fa_plot.setVisible(False)
         self._fa_cursor = pg.ScatterPlotItem(size=17, symbol="o", pen=pg.mkPen(CURSOR_COLOUR, width=3), brush=pg.mkBrush(0, 0, 0, 0))
         self._fa_path = None
+        self._fa_dirty = True              # the path must be drawn afresh (new trial, smoothing, calibration, picture delay); else only the window part
+        self._fa_window_items, self._fa_brushes = [], []
         self.plot_view = QComboBox()
         self.plot_view.addItem("Graphs against time", "time")
         self.plot_view.addItem("Force against angle", "fa")
@@ -652,7 +670,7 @@ class ReviewTab(QWidget):
         self.picture_delay.setToolTip("How long after the movement a picture is time-stamped (camera, phone and USB delay). The joint angle at the "
                                       "peak force is read from the pictures stamped this long after the force peak. Measure it with a tap on the "
                                       "sensor that shows in the video; 0 = the time stamps are taken as they are.")
-        self.picture_delay.valueChanged.connect(lambda _: self.update_summary())
+        self.picture_delay.valueChanged.connect(self._on_picture_delay)
         self.zero_spin = _NoWheelSpin()
         self.zero_spin.setRange(-10.0, 10.0)
         self.zero_spin.setDecimals(4)
@@ -806,6 +824,7 @@ class ReviewTab(QWidget):
         self.plot.clear()
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)
+        tr.force_smooth_s = float(self.force_smooth.value()) / 1000.0     # before the force is drawn (it was set after, so the strip used the default)
         self._show_force_curve(tr)
         has_f = tr.has_force()
         self.force_box.setVisible(has_f)
@@ -835,7 +854,6 @@ class ReviewTab(QWidget):
         if tr.has_force():
             zero, _ = tr.recorded_zero_v()
             self.zero_spin.setValue(zero)
-        tr.force_smooth_s = float(self.force_smooth.value()) / 1000.0
         self.window.setRegion(tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(tr.rows) - 1)
@@ -864,30 +882,51 @@ class ReviewTab(QWidget):
         pl.clear()
         pl.addItem(self._fa_cursor)
         self._fa_cursor.setData([], [])
+        self._fa_window_items, self._fa_brushes, self._fa_dirty = [], [], False
         self._fa_path = analysis.force_angle_path(tr, self.picture_delay.value()) if tr is not None else None
         path = self._fa_path
         if path is None or not path["ok"].any():
             pl.setTitle("No picture has both an angle and a force.", color="#bbbbbb", size="10pt")
             return
         ok = path["ok"]
-        x, y, t = path["angle"][ok], path["force"][ok], path["t"][ok]
-        t0, t1 = self.window.getRegion()
-        cols = np.array(analysis.time_colours(len(x)))
+        x, y = path["angle"][ok], path["force"][ok]
+        self._fa_brushes = [pg.mkBrush(*(int(v) for v in c)) for c in analysis.time_colours(len(x))]
         pl.setLabel("bottom", f"{path['angle_name']} (deg)")
         pl.setLabel("left", f"Force ({path['unit']})")
         pl.setTitle("purple = start of the trial, yellow = its end;  large dots = the analysis window;  star = peak force",
                     color="#bbbbbb", size="9pt")
         pl.plot(x, y, pen=pg.mkPen((190, 190, 190, 110), width=1))
-        pl.addItem(pg.ScatterPlotItem(x=x, y=y, size=6, pen=None, brush=[pg.mkBrush(*(int(v) for v in c)) for c in cols]))
-        inside = (t >= t0) & (t <= t1)
-        if inside.any():
-            pl.addItem(pg.ScatterPlotItem(x=x[inside], y=y[inside], size=10, pen=pg.mkPen("w", width=1.2),
-                                          brush=[pg.mkBrush(*(int(v) for v in c)) for c in cols[inside]]))
-        fs = tr.force_summary(t0, t1, self.picture_delay.value())
-        if fs is not None and not math.isnan(fs["main_angle_at_peak_deg"]):
-            pl.addItem(pg.ScatterPlotItem(x=[fs["main_angle_at_peak_deg"]], y=[fs["peak"]], size=20, symbol="star",
-                                          pen=pg.mkPen("k", width=1), brush=pg.mkBrush("#ffd43b")))
+        pl.addItem(pg.ScatterPlotItem(x=x, y=y, size=6, pen=None, brush=self._fa_brushes))
+        self._update_force_angle_window()
         self._update_fa_cursor(self.slider.value())
+
+    def _update_force_angle_window(self):
+        """What depends on the analysis window only, so dragging the window does not redraw the whole path: the larger dots of the
+        pictures whose force lies in the window, and the star at the peak force. The window is in force time, like the Force tab:
+        the picture stamped t shows the force of t - picture delay."""
+        pl, path = self.fa_plot, self._fa_path
+        for item in self._fa_window_items:
+            pl.removeItem(item)
+        self._fa_window_items = []
+        if path is None or not path["ok"].any():
+            return
+        ok = path["ok"]
+        x, y, ft = path["angle"][ok], path["force"][ok], path["force_t"][ok]
+        t0, t1 = self.window.getRegion()
+        inside = (ft >= t0) & (ft <= t1)
+        if inside.any():
+            self._fa_window_items.append(pg.ScatterPlotItem(x=x[inside], y=y[inside], size=10, pen=pg.mkPen("w", width=1.2),
+                                                            brush=[b for b, keep in zip(self._fa_brushes, inside) if keep]))
+        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
+        if fs is not None and not math.isnan(fs["main_angle_at_peak_deg"]):
+            self._fa_window_items.append(pg.ScatterPlotItem(x=[fs["main_angle_at_peak_deg"]], y=[fs["peak"]], size=20, symbol="star",
+                                                            pen=pg.mkPen("k", width=1), brush=pg.mkBrush("#ffd43b")))
+        for item in self._fa_window_items:
+            pl.addItem(item)
+
+    def _on_picture_delay(self, _=None):
+        self._fa_dirty = True                             # the force paired with each picture changed: the path is drawn afresh
+        self.update_summary()
 
     def _update_fa_cursor(self, i):
         """The ring on the force-against-angle path that marks the picture shown in the video."""
@@ -901,6 +940,7 @@ class ReviewTab(QWidget):
         """The force in its own strip under the angle plot: every raw sample faint, the smoothed curve (the one the numbers come from) bold."""
         fp = self.force_plot
         fp.clear()
+        self._fa_dirty = True                             # the force changed (new trial, smoothing, calibration): so does the force-angle path
         if not tr.has_force():
             return
         fp.addItem(self.force_cursor)
@@ -1019,7 +1059,10 @@ class ReviewTab(QWidget):
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
         if self.plot_view.currentData() == "fa" and self.trial.has_force():
-            self._update_force_angle()                       # follows the window, the smoothing and the picture delay
+            if self._fa_dirty:
+                self._update_force_angle()                   # the force or the picture delay changed: the whole path
+            else:
+                self._update_force_angle_window()            # only the window moved: its dots and the star
         self.ref_text.setText(self._reference_text())
         self.force_text.setText(self._force_text(t0, t1))
         self._update_calibration(t0, t1)
@@ -1033,9 +1076,10 @@ class ReviewTab(QWidget):
         saved = tr.meta.get("reference_readings") or {}
         lines = ["Reference readings: numbers a person typed from a goniometer or an inclinometer. They are not measured by this program."]
         if saved.get("not_used"):
-            nu = saved["not_used"]
-            lines.append(f"Readings typed for {nu['entered_for']['test_key']} {nu['entered_for']['target_deg']} were NOT saved with this trial "
-                         "(they belong to another position).")
+            was = saved["not_used"].get("entered_for") or {}
+            who = f" (participant {was['participant']})" if was.get("participant") else ""
+            lines.append(f"Readings typed for {was.get('test_key')} {was.get('target_deg')}{who} were NOT saved with this trial "
+                         "(they belong to another position or participant).")
         if not rows:
             lines += ["", "No reading for this trial. Type it in the Live tab (section Reference reading) before recording, or add it here."]
             return "\n".join(lines)

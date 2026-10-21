@@ -143,6 +143,24 @@ def test_without_the_ruler_the_hip_centre_angle_is_blank_and_the_goniometer_angl
     assert any("HIP CENTRE needs the ruler" in h for h in res.header)
 
 
+def test_without_the_ruler_the_position_can_still_be_locked_and_the_pictures_are_ok(tmp_path):
+    """The hip-centre angle is shown and saved but never judged: blank without the ruler, it must not stop Lock or make 'all_ok' 0."""
+    eng, p = engine(tmp_path, "hip_abduction", 5.0, ruler=False)              # the goniometer reads about 0 here
+    eng.target = 0.0
+    run(eng, p)
+    assert eng.lock_position(), eng.lock_problem()
+    paths = eng.start_trial("P01")
+    for i in range(5):
+        eng.process(pic(p, i), 1.0 + i / 30)
+    eng.stop_trial()
+    with open(paths["data.csv"], newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows and all(r["abd_hip_centre_deg"] == "" for r in rows) and all(r["abd_goniometer_ok"] == "1" for r in rows)
+    assert all(r["all_ok"] == "1" for r in rows)
+    meta = json.loads(paths["meta.json"].read_text())
+    assert meta["position_locked"] and "abd_hip_centre" not in meta["locked_references_deg"]
+
+
 def test_a_lost_asis_takes_the_hip_centre_and_both_angles_with_it(tmp_path):
     eng, p = engine(tmp_path, "hip_abduction", 10.0)
     run(eng, p)
@@ -169,6 +187,26 @@ def test_swapped_asis_dots_are_caught_before_they_turn_abduction_into_adduction(
     eng.tested_leg = "right"
     run(eng, p)
     assert eng.marking_problems() == [] and eng.lock_position()
+
+
+def test_the_swapped_asis_check_follows_the_dot_names_of_the_protocol(tmp_path):
+    text = (ROOT / "protocol.json").read_text(encoding="utf-8")
+    text = text.replace('"asis_opposite"', '"asis_l"').replace('"asis"', '"asis_r"').replace('"patella"', '"knee_cap"')
+    (tmp_path / "protocol.json").write_text(text, encoding="utf-8")
+    eng = Engine(load_protocol(tmp_path / "protocol.json"), recordings_dir=tmp_path)
+    eng.set_test("hip_abduction")
+    assert eng._frontal_dots() == ("asis_r", "asis_l", "knee_cap")
+    p = scene(10.0, "right")
+    q = {"asis_r": p["asis"], "asis_l": p["asis_opposite"], "knee_cap": p["patella"]}
+    eng.process(pic(p), 0.0)
+    for n in eng.active_dots:
+        assert eng.mark_dot(n, *(q[n] + 2))
+    eng.tested_leg = "left"                                                   # says the opposite of the picture
+    run(eng, p)
+    assert eng.marking_problems() and "tested ASIS should be on the right" in eng.marking_problems()[0]
+    eng.tested_leg = "right"
+    run(eng, p)
+    assert eng.marking_problems() == []
 
 
 def test_the_mirror_setting_turns_the_expected_side_round(tmp_path):
@@ -297,3 +335,26 @@ def test_the_live_tab_asks_which_leg_instead_of_which_way_the_participant_faces(
         live.test_combo.setCurrentIndex(live.test_combo.findData("hip_adduction"))
         assert win.engine.test.view == "frontal" and not live.leg_combo.isHidden()
         win.close()
+
+
+def test_the_tape_measure_and_the_wall_tick_belong_to_one_participant():
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as d:
+        win = MainWindow(TESTS, d)
+        try:
+            live, eng = win.live, win.engine
+            live.test_combo.setCurrentIndex(live.test_combo.findData("hip_abduction"))
+            live.participant.setText("P01")
+            live.tape_spin.setValue(240.0)
+            live.chk_wall.setChecked(True)
+            live.participant.setText("P01")                                   # the same code again: nothing happens
+            assert eng.tape_pelvic_width_mm == 240.0 and eng.wall_posture
+            live.participant.setText("P02")                                   # the next participant
+            assert eng.tape_pelvic_width_mm is None and not eng.wall_posture
+            assert live.tape_spin.value() == live.tape_spin.minimum() and not live.chk_wall.isChecked()
+            live.participant.setText("")
+            live.tape_spin.setValue(250.0)                                    # measured before the code is typed ...
+            live.participant.setText("P03")                                   # ... stays for the code typed after it
+            assert eng.tape_pelvic_width_mm == 250.0
+        finally:
+            win.close()

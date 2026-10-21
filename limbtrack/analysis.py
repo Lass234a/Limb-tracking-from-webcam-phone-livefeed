@@ -125,7 +125,8 @@ def force_angle_path(tr, picture_delay=0.0):
     picture shows: a picture is stamped `picture_delay` seconds after it was taken, so the force at `t - picture_delay` goes with the picture
     stamped `t` (the same rule as the angle at peak force). The force is the one Review shows (smoothed with the chosen moving average,
     newtons when calibrated, else volts). Nothing is smoothed or invented for the angle. Returns None without force or without an angle;
-    otherwise a dict: t, angle, force (all per picture), ok (both numbers there), unit, angle_name."""
+    otherwise a dict: t, angle, force (all per picture), force_t (the moment of the force each picture is paired with, t - picture_delay:
+    the time the analysis window is in), ok (both numbers there), unit, angle_name."""
     if not tr.has_force():
         return None
     main = next((a for a in tr.angle_defs if a.primary), tr.angle_defs[0] if tr.angle_defs else None)
@@ -135,7 +136,8 @@ def force_angle_path(tr, picture_delay=0.0):
     t = np.asarray(tr.t, float)
     angle = np.asarray(tr.deg[main.name], float)
     force = np.interp(t - picture_delay, tr.force_t, ys, left=np.nan, right=np.nan)           # no force is made up outside what was recorded
-    return {"t": t, "angle": angle, "force": force, "ok": np.isfinite(angle) & np.isfinite(force), "unit": unit, "angle_name": main.title}
+    return {"t": t, "angle": angle, "force": force, "force_t": t - picture_delay, "ok": np.isfinite(angle) & np.isfinite(force), "unit": unit,
+            "angle_name": main.title}
 
 
 def torque_summary(tr, t0, t1, picture_delay=0.0):

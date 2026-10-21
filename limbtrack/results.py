@@ -23,6 +23,7 @@ class AngleResult:
     raw_status: str = INFO
     reference: float = None          # target (main joint) or the value shown when the position was locked (others)
     tolerance: float = None
+    judged: bool = True              # False: shown and saved only (protocol "judged": false); never stops Lock or makes 'all_ok' 0
 
 
 @dataclass

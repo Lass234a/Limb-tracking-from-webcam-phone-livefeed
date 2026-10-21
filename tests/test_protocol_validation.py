@@ -74,6 +74,13 @@ CASES = [
     ("judged as text", lambda d: d["angle_library"]["abd_hip_centre"].update(judged="no"), "angle_library.abd_hip_centre.judged"),
     ("unknown view", lambda d: d["tests"]["hip_abduction"].update(view="sideways"), "tests.hip_abduction.view"),
     ("misspelt view", lambda d: d["tests"]["hip_abduction"].update(view="frontl"), 'did you mean "frontal"?'),
+    # angles that would silently not do what the protocol says (0.17.1)
+    ("signed angle in a frontal test", lambda d: d["angle_library"]["abd_goniometer"].update(signed=True),
+     'tests.hip_abduction.angles: "abd_goniometer" is a signed angle'),
+    ("main joint marked as not judged", lambda d: d["angle_library"]["abd_goniometer"].update(judged=False),
+     '"abd_goniometer" is the main joint, which is always judged'),
+    ("required neighbour angle marked as not judged", lambda d: d["angle_library"]["hip"].update(judged=False),
+     'tests.knee_extension.neighbour_targets: "hip" has "judged": false'),
 ]
 
 

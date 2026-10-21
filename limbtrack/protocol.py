@@ -253,8 +253,15 @@ def validate_protocol(data):
                 if isinstance(item, dict) and item.get("primary") is True:
                     primaries += 1
             names.append(_angle_name(item))
+        defs = {_angle_name(item): (library[item] if isinstance(item, str) else item) for item in items
+                if isinstance(library.get(item) if isinstance(item, str) else item, dict)}      # name -> the angle's definition
         if t.get("view") is not None and t["view"] not in VIEWS:
             errs.append(f'{path}.view: "{t["view"]}" is not a view; use one of {", ".join(VIEWS)}{_near(t["view"], VIEWS)}')
+        if t.get("view") == "frontal":
+            errs += [f'{path}.angles: "{n}" is a signed angle; in a frontal test its sign would follow the hidden "Participant faces" setting. '
+                     'Use "signed": false (an interior angle with "sign" and "offset")' for n, d in defs.items() if d.get("signed") is True]
+        errs += [f'{path}.angles: "{n}" is the main joint, which is always judged; remove "judged": false' for n, d in defs.items()
+                 if d.get("judged") is False and (n == t.get("primary") or d.get("primary") is True)]
         extras = t.get("reference_extras")
         if extras is not None:
             if not (isinstance(extras, dict) and all(isinstance(k, str) and isinstance(v, str) and k and v for k, v in extras.items())):
@@ -293,6 +300,8 @@ def validate_protocol(data):
                         errs.append(f'{path}.neighbour_targets: "{n}" is not one of this test\'s angles{_near(n, [x for x in names if x])}')
                     elif n == primary or (isinstance(library.get(n), dict) and library[n].get("primary") is True):
                         errs.append(f'{path}.neighbour_targets: "{n}" is the main joint; its target is set with "targets"')
+                    elif (defs.get(n) or {}).get("judged") is False:
+                        errs.append(f'{path}.neighbour_targets: "{n}" has "judged": false, so its required angle would never be checked')
                     if not (_num(v) and -360 <= v <= 360):
                         errs.append(f"{path}.neighbour_targets.{n}: must be a number, not {v!r}")
     return errs

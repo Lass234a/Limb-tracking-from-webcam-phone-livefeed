@@ -178,3 +178,38 @@ def test_showing_it_changes_no_number(tmp_path):
     before = (tab.stats.text(), tab.force_text.text(), tab.check_text.toPlainText())
     tab.plot_view.setCurrentIndex(tab.plot_view.findData("fa"))
     assert (tab.stats.text(), tab.force_text.text(), tab.check_text.toPlainText()) == before
+
+
+def test_the_large_dots_are_the_pictures_whose_force_lies_in_the_window(tmp_path):
+    """The window is in force time (as in the Force tab): with a picture delay the picture stamped t shows the force of t - delay."""
+    tab, _ = review_with_ramp(tmp_path)
+    tab.plot_view.setCurrentIndex(tab.plot_view.findData("fa"))
+    tab.picture_delay.setValue(0.5)
+    tab.window.setRegion((5.0, 10.0))
+    ft = tab.trial.t - 0.5
+    inside = (ft >= 5.0) & (ft <= 10.0)
+    x, y = scatters(tab)[1].getData()
+    assert len(y) == inside.sum() and y == pytest.approx(10.0 * ft[inside], abs=1e-6)          # forces 50 to 100: the window's own force
+    assert min(y) >= 50.0 - 1e-6 and max(y) <= 100.0 + 1e-6
+
+
+def test_dragging_the_window_redraws_only_its_dots_and_the_star(tmp_path):
+    tab, _ = review_with_ramp(tmp_path)
+    tab.plot_view.setCurrentIndex(tab.plot_view.findData("fa"))
+    path_dots = scatters(tab)[0]
+    tab.window.setRegion((2.0, 12.0))
+    tab.window.setRegion((3.0, 11.0))
+    assert scatters(tab)[0] is path_dots and len(scatters(tab)) == 3            # the same path; one set of large dots and one star
+    tab.picture_delay.setValue(0.2)                                            # the pairing of force and picture changed: drawn afresh
+    assert scatters(tab)[0] is not path_dots and len(scatters(tab)) == 3
+
+
+def test_a_trial_opened_after_the_smoothing_was_changed_shows_that_smoothing(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    eng, paths = T.recording(tmp_path)
+    tab = ReviewTab(tmp_path)
+    tab.force_smooth.setValue(100.0)                                           # set before any trial is open
+    tab.load(str(paths["meta.json"]))
+    assert tab.trial.force_smooth_s == pytest.approx(0.1)
+    curve = [i for i in tab.force_plot.plotItem.items if isinstance(i, pg.PlotDataItem)][-1]
+    assert curve.yData == pytest.approx(tab.trial.force_signal()[1], nan_ok=True)                 # the strip shows what the numbers use

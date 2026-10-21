@@ -133,6 +133,68 @@ def test_a_reading_saved_with_the_trial_can_be_changed_and_removed_in_review(tmp
     assert json.loads(meta.read_text())["reference_readings"]["readings"]["hip"]["mean_deg"] == 90.0       # what was saved with the trial is still there
 
 
+def two_trials_of_one_position(tmp_path, typed):
+    """Two recorded knee trials of one position that share one typed reading and one 'reading taken now' (one pair, not two)."""
+    eng = Engine(TESTS, recordings_dir=tmp_path)
+    eng.set_test("knee_extension")
+    eng.target = 60.0
+    eng.process(render(PTS, seed=0), 0.0)
+    for n in eng.active_dots:
+        assert eng.mark_dot(n, *(PTS[n] + 2))
+    for i in range(8):
+        eng.process(render(PTS, seed=i), 0.1 + i / 30)
+    eng.participant_code = "P01"
+    eng.take_reference_stamp()
+    eng.set_reference(typed)
+    metas = []
+    for k in range(2):
+        paths = eng.start_trial("P01")
+        for i in range(12):
+            eng.process(render(PTS, seed=i), 1.0 + k + i / 30)
+        eng.stop_trial()
+        metas.append(paths["meta.json"])
+    return metas
+
+
+def test_saving_in_review_without_a_change_leaves_the_recorded_readings_alone(tmp_path, quiet):
+    app = QApplication.instance() or QApplication([])
+    first, _ = two_trials_of_one_position(tmp_path, {"knee": [61.0], "hip": [90.0]})
+    assert reference.agreement(reference.collect_rows(tmp_path))["knee"]["n"] == 1
+    tab = ReviewTab(tmp_path)
+    tab.load(str(first))
+    ReferenceDialog(tab.trial, tab)._save()                                 # opened and saved, nothing changed
+    assert reference.read_sidecar(first)["readings"] == {}
+    assert {r["source"] for r in Trial(first).reference_rows()} == {"recorded with the trial"}
+    stats = reference.agreement(reference.collect_rows(tmp_path))
+    assert stats["knee"]["n"] == 1 and stats["hip"]["n"] == 1             # still one reading of one position, not two
+
+
+def test_adding_a_reading_in_review_puts_only_that_reading_in_the_side_file(tmp_path, quiet):
+    app = QApplication.instance() or QApplication([])
+    first, _ = two_trials_of_one_position(tmp_path, {"knee": [61.0]})
+    tab = ReviewTab(tmp_path)
+    tab.load(str(first))
+    dlg = ReferenceDialog(tab.trial, tab)
+    dlg.boxes["ankle"].setText("4")
+    dlg._save()
+    assert list(reference.read_sidecar(first)["readings"]) == ["ankle"]
+    rows = {r["key"]: r for r in Trial(first).reference_rows()}
+    assert rows["knee"]["source"] == "recorded with the trial" and rows["ankle"]["source"] == "added later in Review"
+    assert reference.agreement(reference.collect_rows(tmp_path))["knee"]["n"] == 1
+
+
+def test_another_instrument_chosen_in_review_changes_every_reading(tmp_path, quiet):
+    app = QApplication.instance() or QApplication([])
+    first, _ = two_trials_of_one_position(tmp_path, {"knee": [61.0]})
+    tab = ReviewTab(tmp_path)
+    tab.load(str(first))
+    dlg = ReferenceDialog(tab.trial, tab)
+    dlg.instrument.setCurrentIndex(dlg.instrument.findData("inclinometer"))
+    dlg._save()
+    row = Trial(first).reference_rows()[0]
+    assert row["source"] == "added later in Review" and row["instrument"] == "inclinometer"
+
+
 def test_a_frontal_trial_offers_the_typed_hip_flexion_and_knee(tmp_path):
     app = QApplication.instance() or QApplication([])
     import numpy as np
@@ -174,6 +236,47 @@ def test_the_agreement_dialog_lists_every_angle_plots_the_pairs_and_saves_the_ta
     dlg.save_table()
     out = tmp_path / "reference_validation.csv"
     assert out.exists() and len(list(csv.DictReader(open(out, newline="")))) == 3 and quiet[-1][0] == "info"
+
+
+def test_a_table_that_cannot_be_written_says_so(tmp_path, quiet, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    knee_trial(tmp_path, typed={"knee": [61.0]})
+    tab = ReviewTab(tmp_path)
+    dlg = ReferenceValidationDialog(tmp_path, reference.collect_rows(tmp_path), tab)
+
+    def locked(rows, path):                                                 # Windows, with the file open in Excel
+        raise PermissionError(13, "Permission denied", str(path))
+    monkeypatch.setattr(reference, "write_csv", locked)
+    dlg.save_table()
+    assert quiet and quiet[-1][0] == "warning" and "open in Excel" in quiet[-1][1] and "Permission denied" in quiet[-1][1]
+
+
+def test_readings_that_cannot_be_saved_say_so_and_the_dialog_stays_open(tmp_path, quiet, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    meta = knee_trial(tmp_path, stamp=False)
+    tab = ReviewTab(tmp_path)
+    tab.load(str(meta))
+    dlg = ReferenceDialog(tab.trial, tab)
+    dlg.boxes["knee"].setText("58")
+
+    def locked(src, dst):
+        raise PermissionError(13, "Permission denied", str(dst))
+    monkeypatch.setattr(reference.os, "replace", locked)
+    dlg._save()
+    assert quiet and quiet[-1][0] == "warning" and "could not be saved" in quiet[-1][1]
+    assert dlg.result() == 0 and dlg.boxes["knee"].text() == "58"                    # not closed, what was typed is still there
+    assert not reference.sidecar_path(meta).exists() and not list(meta.parent.glob("*.tmp"))
+
+
+def test_a_box_that_cannot_be_read_is_named_in_the_message(tmp_path, quiet):
+    app = QApplication.instance() or QApplication([])
+    meta = knee_trial(tmp_path, stamp=False)
+    tab = ReviewTab(tmp_path)
+    tab.load(str(meta))
+    dlg = ReferenceDialog(tab.trial, tab)
+    dlg.boxes["hip"].setText("ninety")
+    dlg._save()
+    assert quiet[-1][1].startswith(tab.trial.reference_edit_keys()[1][1] + ":")
 
 
 def test_the_agreement_report_says_so_when_there_are_no_readings(tmp_path, quiet):

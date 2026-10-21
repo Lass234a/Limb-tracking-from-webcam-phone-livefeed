@@ -379,6 +379,7 @@ class LiveTab(QWidget):
         self._rec_started = None
         self._say_until = 0.0
         self._combo_index = {"test": 0, "kind": 0, "facing": 0, "leg": 0}     # last accepted choice, restored if the engine refuses a change
+        self._pelvis_facts_owner = None      # participant code the tape measure of the pelvis and the wall tick were entered for (None: before a code)
         self._marker_counts = {"start": 0, "end": 0, "other": 0}
         self._marker_msg = ("", 0.0)
         self._memory_path = None             # settings.json, once the window has attached it (see attach_memory)
@@ -943,6 +944,7 @@ class LiveTab(QWidget):
         self.plan.setFixedHeight(min(len(self.plan_rows), 8) * (self.plan.fontMetrics().height() + 4) + 8)     # 8 rows, then scrolls
         self.plan.itemClicked.connect(self.on_plan_clicked)
         self.participant.textChanged.connect(self.refresh_plan)
+        self.participant.textChanged.connect(self._on_participant_text)
         self.target_spin.valueChanged.connect(lambda _: self.refresh_plan())
         plan_box = QGroupBox("Session plan (click the next position)")
         plan_l = QVBoxLayout(plan_box)
@@ -1417,32 +1419,96 @@ class LiveTab(QWidget):
             box.editingFinished.connect(self._reference_edited)
             self.ref_form.addRow(title, box)
             self.ref_fields[key] = box
-        r = self.engine.reference
-        if r.position is None or self.engine.reference_for_this_position():
-            for key, box in self.ref_fields.items():
-                box.setText(reference.format_values(r.values.get(key, [])))
+        self._ref_enabled = None                               # new boxes: switch them on or off at the next update
+        self._fill_reference_boxes()
+        self.update_reference_box()
+
+    def _fill_reference_boxes(self):
+        """Show in the boxes what the engine holds for the position the window is at now (test, target, participant), and nothing when
+        the readings belong to another one: a box must never show a reading that the next edit would save for the wrong position."""
+        e = self.engine
+        r = e.reference
+        mine = e.reference_for_this_position()
+        for key, box in self.ref_fields.items():
+            box.setText(reference.format_values(r.values.get(key, [])) if mine else "")
+            box.setStyleSheet("")
+        if mine:
             for combo, value in ((self.ref_instrument, r.instrument), (self.ref_resolution, r.resolution_deg)):
                 combo.blockSignals(True)
                 combo.setCurrentIndex(max(combo.findData(value), 0))
                 combo.blockSignals(False)
-        self.update_reference_box()
+        self._ref_problem = ""
+        self._ref_box_position = e.reference_position()
 
     def _reference_edited(self, *_):
-        """What was typed (or the instrument) changed: hand it to the engine. A box that cannot be read is marked and keeps the old value."""
+        """What was typed (or the instrument) changed: hand it to the engine. A box that cannot be read is marked and keeps the old value.
+        Nothing is sent when nothing changed (a box that lets go of the focus as a recording starts must not be refused), and never what
+        the boxes show for another position or participant (they are refilled instead)."""
+        e = self.engine
+        if getattr(self, "_ref_box_position", None) != e.reference_position():
+            self._fill_reference_boxes()
+            self.update_reference_box()
+            self.say("The position or the participant changed: the reference boxes now show what belongs to it. Type the reading again.")
+            return
         values, problems = {}, []
         for key, box in self.ref_fields.items():
             try:
                 values[key] = reference.parse_values(box.text())
                 box.setStyleSheet("")
-            except reference.ReadingError as e:
+            except reference.ReadingError as err:
                 box.setStyleSheet("border: 1px solid #dc2626;")
-                problems.append(f"{self.ref_titles.get(key, key)}: {e}")
-        try:
-            self.engine.set_reference(values=values, instrument=self.ref_instrument.currentData(), resolution_deg=self.ref_resolution.currentData())
-        except (RuntimeError, ValueError) as e:
-            self.say(str(e))
+                problems.append(f"{self.ref_titles.get(key, key)}: {err}")
+        r = e.reference
+        held = r.values if e.reference_for_this_position() else {}
+        instrument, resolution = self.ref_instrument.currentData(), self.ref_resolution.currentData()
+        if any(v != held.get(k, []) for k, v in values.items()) or (instrument, resolution) != (r.instrument, r.resolution_deg):
+            try:
+                e.set_reference(values=values, instrument=instrument, resolution_deg=resolution)
+            except (RuntimeError, ValueError) as err:
+                self.say(str(err))
         self._ref_problem = "\n".join(problems)
         self.update_reference_box()
+
+    def _commit_reference_boxes(self):
+        """Before a recording starts: hand what is typed in the boxes to the engine. F5 starts a recording while a box still has the focus,
+        before the box has let go of its text, so a reading shown only in the box would be missing from the trial. Returns a reason not to
+        record, or ''."""
+        self._reference_edited()
+        if self._ref_problem:
+            return ("A reference reading cannot be read, so it would not be saved with this trial:\n" + self._ref_problem
+                    + "\n\nCorrect it, or empty the box (empty = not measured), then record.")
+        return ""
+
+    def _on_participant_text(self, text):
+        """Reference readings belong to one participant: the engine is told the code, and the boxes show only that participant's readings.
+        The tape measure of the pelvis and the wall tick belong to one participant too."""
+        self.engine.participant_code = text.strip()
+        self.update_reference_box()
+        self._clear_pelvis_facts_of_another_participant()
+
+    def _pelvis_facts_entered(self):
+        """The tape measure or the wall tick was set: they belong to the participant code in the window (or, while there is no code
+        yet, to whoever is recorded first)."""
+        e = self.engine
+        given = e.tape_pelvic_width_mm is not None or bool(e.wall_posture)
+        self._pelvis_facts_owner = (e.participant_code or None) if given else None
+
+    def _clear_pelvis_facts_of_another_participant(self):
+        """The tape measure and the wall tick are facts about one person: when the code in the window is no longer the one they were
+        entered for, they are cleared. Not during a recording (the trial keeps what it started with); checked again when it stops."""
+        owner = self._pelvis_facts_owner
+        if owner is None or owner == self.engine.participant_code or self._rec_started is not None:
+            return
+        self.engine.tape_pelvic_width_mm, self.engine.wall_posture = None, False
+        for w in (self.tape_spin, self.chk_wall):
+            w.blockSignals(True)
+        self.tape_spin.setValue(self.tape_spin.minimum())
+        self.chk_wall.setChecked(False)
+        for w in (self.tape_spin, self.chk_wall):
+            w.blockSignals(False)
+        self._pelvis_facts_owner = None
+        if self.engine.test.view == "frontal":
+            self.say(f"Another participant: the tape measure of the pelvis and the wall tick (entered for {owner}) were cleared.", 8.0)
 
     def take_reference_now(self):
         try:
@@ -1475,17 +1541,28 @@ class LiveTab(QWidget):
             recording = getattr(self, "_rec_started", None) is not None
         e = self.engine
         r = e.reference
-        for w in (self.ref_instrument, self.ref_resolution, self.btn_ref_stamp, self.btn_ref_clear, *self.ref_fields.values()):
-            w.setEnabled(not recording)
+        if getattr(self, "_ref_box_position", None) != e.reference_position():
+            self._fill_reference_boxes()                # the target, test or participant changed: the boxes must not show the old readings
+        if getattr(self, "_ref_enabled", None) != (not recording):       # (this runs every 200 ms: touch the widgets only on a change)
+            for w in (self.ref_instrument, self.ref_resolution, self.btn_ref_stamp, self.btn_ref_clear, *self.ref_fields.values()):
+                w.setEnabled(not recording)
+            self._ref_enabled = not recording
         lines, warn, summary = [], False, "none yet"
         if not r.has_data():
             lines.append("No reading yet for this position.")
         elif not e.reference_for_this_position():
-            was = e.tests.get(r.position[0])
-            lines.append(f"These readings were typed for {was.label if was else r.position[0]}"
-                         + ("" if r.position[1] is None else f", {r.position[1]:g} deg")
-                         + " and will NOT be saved with a trial of this position. Clear them, or type new ones.")
-            warn, summary = True, "for another position"
+            key, target, who = (tuple(r.position) + (None,))[:3]
+            here = e.reference_position()
+            if (key, target) == here[:2]:
+                lines.append(f"These readings were typed for participant {who or '(no code)'} and will NOT be saved with a trial of "
+                             f"{here[2] or 'a participant without a code'}. Clear them, or type new ones.")
+                warn, summary = True, "for another participant"
+            else:
+                was = e.tests.get(key)
+                lines.append(f"These readings were typed for {was.label if was else key}"
+                             + ("" if target is None else f", {target:g} deg") + (f" (participant {who})" if who else "")
+                             + " and will NOT be saved with a trial of this position. Clear them, or type new ones.")
+                warn, summary = True, "for another position"
         else:
             if r.stamp:
                 when = datetime.fromisoformat(r.stamp["taken_at"])
@@ -1505,7 +1582,9 @@ class LiveTab(QWidget):
         text = "\n".join(lines)
         if text != self.ref_status.text():
             self.ref_status.setText(text)
-        self.ref_status.setStyleSheet("color: #d97706; font-weight: bold;" if warn else "")
+        style = "color: #d97706; font-weight: bold;" if warn else ""
+        if style != self.ref_status.styleSheet():             # a new style sheet re-styles the label: only when it changes
+            self.ref_status.setStyleSheet(style)
         if hasattr(self, "accordion"):                  # (not yet built while the boxes are first made)
             self.accordion.set_summary("reference", summary)
 
@@ -1537,6 +1616,8 @@ class LiveTab(QWidget):
             self.chk_wall.setChecked(self.engine.wall_posture)
             self.chk_wall.blockSignals(False)
             self.say(str(e))
+            return
+        self._pelvis_facts_entered()
 
     # ------------------------------------------------- landmark selection
     def rebuild_landmarks(self):
@@ -1757,6 +1838,9 @@ class LiveTab(QWidget):
             spin.blockSignals(False)
             self.say(str(e))
             return
+        if attr == "tape_pelvic_width_mm":
+            self._pelvis_facts_entered()
+        self.update_reference_box()                      # the target is part of the position the reference readings belong to
         self.refresh_view()
 
     def _revert_combo(self, combo, key, error):
@@ -2587,6 +2671,12 @@ class LiveTab(QWidget):
                 self.btn_rec.setChecked(False)
                 QMessageBox.warning(self, "Notes", notes_problem + " Remove it: notes must not identify anyone.")
                 return
+            ref_problem = self._commit_reference_boxes()
+            if ref_problem:
+                self.btn_rec.setChecked(False)
+                QMessageBox.warning(self, "Reference reading", ref_problem)
+                self.open_step("reference")
+                return
             if not self.engine.locked:
                 r = QMessageBox.question(self, "Not locked", "The position is not locked, so the other joints are not "
                                          "checked for drift. Record anyway?")
@@ -2610,6 +2700,8 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", str(e))
                 return
             self._rec_started = time.perf_counter()
+            if self._pelvis_facts_owner is None and (self.engine.tape_pelvic_width_mm is not None or self.engine.wall_posture):
+                self._pelvis_facts_owner = self.participant.text().strip()      # entered before a code: from now on this participant's
             self.note("recording started", f"{self.participant.text().strip()} {self.engine.test.key} {self.engine.target if self.engine.target is not None else ''}".strip())
             self.refresh_plan()
             self._marker_counts = {"start": 0, "end": 0, "other": 0}
@@ -2638,6 +2730,7 @@ class LiveTab(QWidget):
                 return
             self.btn_rec.setText("Start recording  (R)")
             self._rec_started = None
+            self._clear_pelvis_facts_of_another_participant()   # the code may have been changed for the next participant during the recording
             self.refresh_plan()
             self.report_beep_problem()
             if not paths:

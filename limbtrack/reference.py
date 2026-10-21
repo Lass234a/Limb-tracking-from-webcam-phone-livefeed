@@ -74,16 +74,28 @@ class ReferenceReadings:
         self.resolution_deg = 1.0
         self.values = {}                  # key -> list of readings (key: an angle name, or an extra such as 'hip_flexion')
         self.stamp = None                 # {'taken_at': iso time, 'app_deg': {angle name: value or None}}
-        self.position = None              # (test key, target) these were entered for
+        self.position = None              # (test key, target, participant code) these were entered for; participant None = typed before a code
+        self.typed_at = None              # when the typed numbers last changed (iso, microseconds): the readings' identity for the agreement
 
     def has_data(self):
         return bool(self.values) or self.stamp is not None
 
+    def entered_for(self):
+        """The position (and participant) the readings were entered for, as it is written into meta.json, or None."""
+        if self.position is None:
+            return None
+        key, target, who = (tuple(self.position) + (None,))[:3]
+        return {"test_key": key, "target_deg": target, "participant": who}
+
     def set_values(self, key, values):
-        if values:
-            self.values[key] = [float(v) for v in values]
+        new = [float(v) for v in values or []]
+        if new == self.values.get(key, []):
+            return                                        # the same numbers: still the same readings (the same pair in the agreement)
+        if new:
+            self.values[key] = new
         else:
             self.values.pop(key, None)
+        self.typed_at = datetime.now().isoformat(timespec="microseconds")
 
     def to_meta(self, titles=None):
         """What goes into meta.json, or None when there is nothing. `titles`: key -> the name shown for it (so Review can label an extra
@@ -96,10 +108,11 @@ class ReferenceReadings:
             "titles": dict(titles or {}),
             "readings": {k: {"values_deg": list(v), "mean_deg": round(statistics.fmean(v), 4)} for k, v in self.values.items()},
             "stamped_at": (self.stamp or {}).get("taken_at"),
+            "typed_at": self.typed_at,
             "app_at_reading_deg": ({k: (None if v is None else round(float(v), 3)) for k, v in self.stamp["app_deg"].items()}
                                    if self.stamp else None),
             "app_basis": APP_BASIS_STAMP if self.stamp else None,
-            "entered_for": ({"test_key": self.position[0], "target_deg": self.position[1]} if self.position else None),
+            "entered_for": self.entered_for(),
             "note": "typed by the operator from a hand instrument; blank = not measured. Never a measurement of this program.",
         }
 
@@ -120,15 +133,23 @@ def read_sidecar(meta_path):
         return {}
 
 
-def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="", recorded_keys=()):
+def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="", recorded=None):
     """Save readings next to the trial (atomically). `values_by_key`: key -> list of readings; an empty list is 'not measured'.
-    `recorded_keys`: the keys that have a reading saved with the trial; an empty list for one of them is written as an explicit
-    'removed in Review', so that the reading saved with the trial no longer counts. Returns the path. The trial's own meta.json is
-    never touched."""
+    `recorded`: what was saved with the trial (meta.json -> reference_readings), or None. Only what differs from it goes into the side
+    file: a reading saved with the trial that is still the same (same numbers, same instrument and resolution) is left out, so it stays
+    'recorded with the trial' and still counts once for the two trials of its position; an empty list for one of them is written as an
+    explicit 'removed in Review', so that the reading saved with the trial no longer counts. Returns the path. The trial's own
+    meta.json is never touched."""
     path = sidecar_path(meta_path)
-    readings = {k: {"values_deg": [float(x) for x in v], "mean_deg": round(statistics.fmean(v), 4)} for k, v in values_by_key.items() if v}
+    saved = recorded or {}
+    saved_readings = saved.get("readings") or {}
+    same_instrument = (instrument, resolution_deg) == (saved.get("instrument"), saved.get("resolution_deg"))
+    readings = {}
     for k, v in values_by_key.items():
-        if not v and k in recorded_keys:
+        was = (saved_readings.get(k) or {}).get("values_deg")
+        if v and not (same_instrument and was and format_values(v) == format_values(was)):
+            readings[k] = {"values_deg": [float(x) for x in v], "mean_deg": round(statistics.fmean(v), 4)}
+        elif not v and k in saved_readings:
             readings[k] = {"values_deg": [], "mean_deg": None}
     data = {
         "instrument": instrument, "resolution_deg": resolution_deg,
@@ -137,8 +158,15 @@ def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="",
         "note": note or "readings added or changed in Review; they win over the ones saved with the trial",
     }
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)                # no half-written file is left behind; the side file is as it was
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -223,12 +251,16 @@ def collect_rows(folder):
             continue
         csv_name = (meta.get("files") or {}).get("data.csv")
         data_csv = meta_path.parent / csv_name if csv_name else None
-        stamp = (meta.get("reference_readings") or {}).get("stamped_at")
+        saved = meta.get("reference_readings") or {}
+        # which typing (and which 'reading taken now') the readings come from; trials before 0.17.1 have no typed_at, and without a
+        # stamp each of them is then a pair of its own, as before
+        stamp, typed = saved.get("stamped_at"), saved.get("typed_at")
+        same = f"{stamp}|{typed}" if (stamp or typed) else meta_path.name
         for r in comparison(meta, sidecar, data_csv):
             r.update(trial=meta_path.name[: -len("_meta.json")], participant=meta.get("participant"), test_key=meta.get("test_key"),
                      target_deg=meta.get("target_deg"),
-                     # two trials of one position share one reading and one stamp: they are ONE pair, not two
-                     pair_id=f"{meta.get('participant')}|{meta.get('test_key')}|{meta.get('target_deg')}|{stamp or meta_path.name}|{r['key']}"
+                     # two trials of one position share one typed reading (and one stamp, if any): they are ONE pair, not two
+                     pair_id=f"{meta.get('participant')}|{meta.get('test_key')}|{meta.get('target_deg')}|{same}|{r['key']}"
                      if r["source"] == "recorded with the trial" else f"{meta_path.name}|{r['key']}")
             rows.append(r)
     return rows

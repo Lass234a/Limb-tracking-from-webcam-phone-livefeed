@@ -107,6 +107,11 @@ class TrialRecorder:
         folder.mkdir(parents=True, exist_ok=True)
         tgt = "" if target is None else f"_{target:g}deg"
         self.base = folder / f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}"
+        n = 2
+        while any(Path(f"{self.base}_{k}").exists() for k in ("meta.json", "data.csv", "raw.mp4")):
+            # a trial of the same position started within the same second (the name has the time to the second): never write over it
+            self.base = folder / f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}-{n}"
+            n += 1
         self.save_overlay = bool(save_overlay)
         names = ("raw.mp4", "overlay.mp4", "data.csv", "meta.json") if self.save_overlay else ("raw.mp4", "data.csv", "meta.json")
         self.with_force = bool(with_force)
@@ -227,7 +232,7 @@ class TrialRecorder:
         for n in self.angle_names:
             a = by_name[n]
             ok = 1 if a.raw_status == OK else 0 if a.raw_status == OUT else ""
-            if a.raw_status in (OUT, LOST):
+            if a.raw_status in (OUT, LOST) and a.judged:    # an angle that is only shown (not judged) never makes the picture 'not ok'
                 oks.append(False)
             row += [_num(a.raw_value), _num(a.reference), _num(a.raw_deviation), ok]       # unsmoothed values
         row.append(0 if oks else 1)
