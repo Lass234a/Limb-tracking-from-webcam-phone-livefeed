@@ -121,13 +121,24 @@ class Trial:
         self.crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
         self.full_size = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
 
+    @property
+    def primary_angle(self):
+        """The main joint's angle definition, or None."""
+        return next((a for a in self.angle_defs if a.primary), None)
+
+    @property
+    def main_angle(self):
+        """The main joint, or else the first angle (what the force is read against), or None."""
+        return self.primary_angle or (self.angle_defs[0] if self.angle_defs else None)
+
     # ------------------------------------------------------------------ reference readings (typed from a hand instrument)
     def reference_rows(self):
         """One row per reading: the typed reference, the app's angle at the same moment, the difference (see limbtrack/reference.py).
         Worked out once (it may read the CSV) and again only after the readings change (reload_reference); do not change the rows."""
         if self._reference_rows is None:
-            csv_path = self.folder / (self.meta.get("files") or {}).get("data.csv", "data.csv")
-            self._reference_rows = reference.comparison(self.meta, self.reference_side, csv_path)
+            early = self.t <= reference.REST_SECONDS
+            first = {a.name: (float(np.nanmean(v)) if np.isfinite(v).any() else None) for a in self.angle_defs for v in [self.deg[a.name][early]]}
+            self._reference_rows = reference.comparison(self.meta, self.reference_side, first_second=first)
         return self._reference_rows
 
     def reference_edit_keys(self):
@@ -272,7 +283,7 @@ class Trial:
         plateau = float(np.nanmean(y[pm])) if pm.any() else math.nan
         rest = float(np.nanmean(y[rm])) if rm.any() else math.nan
         raw = self.force_n if unit == "N" else self.force_v
-        main = next((a for a in self.angle_defs if a.primary), self.angle_defs[0] if self.angle_defs else None)
+        main = self.main_angle
         angle = math.nan
         if main is not None:
             near = np.abs(self.t - (tw[k] + picture_delay)) <= 0.1             # a picture is stamped picture_delay after it was taken
@@ -442,6 +453,26 @@ class _NoWheelSpin(QDoubleSpinBox):
         e.ignore()
 
 
+def fill_reference_choices(instrument_combo, resolution_combo):
+    """The instrument and 'read to' choices of the reference readings (the Live tab and the Review dialog), set to the defaults."""
+    for k, label in reference.INSTRUMENTS.items():
+        instrument_combo.addItem(label, k)
+    for v in reference.RESOLUTIONS_DEG:
+        resolution_combo.addItem(f"{v:g} deg", v)
+    select_reference_choices(instrument_combo, resolution_combo, None, None)
+
+
+def select_reference_choices(instrument_combo, resolution_combo, instrument, resolution_deg):
+    """Show `instrument` and `resolution_deg` in the two boxes (the defaults when missing or unknown), without sending the change
+    signals."""
+    for combo, value, default in ((instrument_combo, instrument, reference.DEFAULT_INSTRUMENT),
+                                  (resolution_combo, resolution_deg, reference.DEFAULT_RESOLUTION_DEG)):
+        i = combo.findData(value) if value is not None else -1
+        combo.blockSignals(True)
+        combo.setCurrentIndex(i if i >= 0 else max(combo.findData(default), 0))
+        combo.blockSignals(False)
+
+
 class ReferenceDialog(QDialog):
     """Type, change or remove the reference readings of one trial. They are saved in a small file next to the trial
     (`<trial>_reference.json`); the trial's own `meta.json` is never rewritten."""
@@ -460,15 +491,10 @@ class ReferenceDialog(QDialog):
         note.setWordWrap(True)
         lay.addWidget(note)
         form = QFormLayout()
-        self.instrument = QComboBox()
-        for k, label in reference.INSTRUMENTS.items():
-            self.instrument.addItem(label, k)
-        self.resolution = QComboBox()
-        for v in reference.RESOLUTIONS_DEG:
-            self.resolution.addItem(f"{v:g} deg", v)
+        self.instrument, self.resolution = QComboBox(), QComboBox()
+        fill_reference_choices(self.instrument, self.resolution)
         current = side if side.get("readings") else saved
-        self.instrument.setCurrentIndex(max(self.instrument.findData(current.get("instrument") or "goniometer"), 0))
-        self.resolution.setCurrentIndex(max(self.resolution.findData(current.get("resolution_deg") or 1.0), 0))
+        select_reference_choices(self.instrument, self.resolution, current.get("instrument"), current.get("resolution_deg"))
         form.addRow("Instrument", self.instrument)
         form.addRow("Read to", self.resolution)
         self.boxes = {}
@@ -616,7 +642,14 @@ class ReviewTab(QWidget):
         self._fa_cursor = pg.ScatterPlotItem(size=17, symbol="o", pen=pg.mkPen(CURSOR_COLOUR, width=3), brush=pg.mkBrush(0, 0, 0, 0))
         self._fa_path = None
         self._fa_dirty = True              # the path must be drawn afresh (new trial, smoothing, calibration, picture delay); else only the window part
-        self._fa_window_items, self._fa_brushes = [], []
+        self._fa_cursor_shown = False
+        # Made once and kept: the window's larger dots and the star only get new data when the window moves (a new plot item per mouse
+        # move was slow), and the dots take their colour from one palette of 64 brushes (one brush per picture defeats pyqtgraph's
+        # symbol cache: about 100 ms for a 30 s trial at 60 pictures per second).
+        self._fa_dots = pg.ScatterPlotItem(size=10, pen=pg.mkPen("w", width=1.2))
+        self._fa_star = pg.ScatterPlotItem(size=20, symbol="star", pen=pg.mkPen("k", width=1), brush=pg.mkBrush("#ffd43b"))
+        self._fa_palette = np.array([pg.mkBrush(*c) for c in analysis.time_colours(64)], dtype=object)
+        self._fa_brushes = self._fa_palette[:0]
         self.plot_view = QComboBox()
         self.plot_view.addItem("Graphs against time", "time")
         self.plot_view.addItem("Force against angle", "fa")
@@ -828,7 +861,7 @@ class ReviewTab(QWidget):
         self._show_force_curve(tr)
         has_f = tr.has_force()
         self.force_box.setVisible(has_f)
-        self._apply_plot_view()
+        self._apply_plot_view(draw=False)
         self.plot.setLabel("bottom", "" if has_f else "Time (s)")         # the time axis label is under the lower plot when there are two
         for k, a in enumerate(tr.angle_defs):
             self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
@@ -863,18 +896,23 @@ class ReviewTab(QWidget):
         self.update_summary()
 
     # ------------------------------------------------------------ playback
-    def _apply_plot_view(self):
-        """Time graphs (angles over the force) or force against angle. The second needs force; a trial without force always shows the first."""
+    def _apply_plot_view(self, draw=True):
+        """Time graphs (angles over the force) or force against angle. The second needs force; a trial without force always shows the first.
+        `draw` False: only which plots are shown (on loading a trial, the last update_summary draws it once, with the trial's window)."""
         has_f = self.trial is not None and self.trial.has_force()
         self.plot_view.setEnabled(has_f)
         fa = has_f and self.plot_view.currentData() == "fa"
         self.plot.setVisible(not fa)
         self.force_plot.setVisible(has_f and not fa)
         self.fa_plot.setVisible(fa)
-        if fa:
-            self._update_force_angle()
+        if fa and draw:
+            if self._fa_dirty or self._fa_path is None:
+                self._update_force_angle()
+            else:
+                self._update_force_angle_window()
+                self._update_fa_cursor(self.slider.value())
 
-    def _update_force_angle(self):
+    def _update_force_angle(self, fs=None):
         """Draw the force-against-angle path: a thin line through every picture, a dot per picture coloured by time (purple to yellow), larger
         dots inside the analysis window, a star at the peak force (with the angle read at the peak, as in the Force tab), and a ring that
         follows the video. The force is paired with the picture that shows the same moment (the picture delay box)."""
@@ -882,7 +920,7 @@ class ReviewTab(QWidget):
         pl.clear()
         pl.addItem(self._fa_cursor)
         self._fa_cursor.setData([], [])
-        self._fa_window_items, self._fa_brushes, self._fa_dirty = [], [], False
+        self._fa_cursor_shown, self._fa_dirty = False, False
         self._fa_path = analysis.force_angle_path(tr, self.picture_delay.value()) if tr is not None else None
         path = self._fa_path
         if path is None or not path["ok"].any():
@@ -890,39 +928,36 @@ class ReviewTab(QWidget):
             return
         ok = path["ok"]
         x, y = path["angle"][ok], path["force"][ok]
-        self._fa_brushes = [pg.mkBrush(*(int(v) for v in c)) for c in analysis.time_colours(len(x))]
+        self._fa_brushes = self._fa_palette[np.rint(np.linspace(0, len(self._fa_palette) - 1, len(x))).astype(int)]     # purple to yellow
         pl.setLabel("bottom", f"{path['angle_name']} (deg)")
         pl.setLabel("left", f"Force ({path['unit']})")
         pl.setTitle("purple = start of the trial, yellow = its end;  large dots = the analysis window;  star = peak force",
                     color="#bbbbbb", size="9pt")
         pl.plot(x, y, pen=pg.mkPen((190, 190, 190, 110), width=1))
-        pl.addItem(pg.ScatterPlotItem(x=x, y=y, size=6, pen=None, brush=self._fa_brushes))
-        self._update_force_angle_window()
+        pl.addItem(pg.ScatterPlotItem(x=x, y=y, size=6, pen=None, brush=list(self._fa_brushes)))
+        pl.addItem(self._fa_dots)
+        pl.addItem(self._fa_star)
+        self._update_force_angle_window(fs)
         self._update_fa_cursor(self.slider.value())
 
-    def _update_force_angle_window(self):
+    def _update_force_angle_window(self, fs=None):
         """What depends on the analysis window only, so dragging the window does not redraw the whole path: the larger dots of the
-        pictures whose force lies in the window, and the star at the peak force. The window is in force time, like the Force tab:
-        the picture stamped t shows the force of t - picture delay."""
-        pl, path = self.fa_plot, self._fa_path
-        for item in self._fa_window_items:
-            pl.removeItem(item)
-        self._fa_window_items = []
+        pictures whose force lies in the window, and the star at the peak force (`fs`: the window's force summary, if already made).
+        The window is in force time, like the Force tab: the picture stamped t shows the force of t - picture delay."""
+        path = self._fa_path
         if path is None or not path["ok"].any():
             return
         ok = path["ok"]
-        x, y, ft = path["angle"][ok], path["force"][ok], path["force_t"][ok]
         t0, t1 = self.window.getRegion()
+        ft = path["force_t"][ok]
         inside = (ft >= t0) & (ft <= t1)
-        if inside.any():
-            self._fa_window_items.append(pg.ScatterPlotItem(x=x[inside], y=y[inside], size=10, pen=pg.mkPen("w", width=1.2),
-                                                            brush=[b for b, keep in zip(self._fa_brushes, inside) if keep]))
-        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
+        self._fa_dots.setData(x=path["angle"][ok][inside], y=path["force"][ok][inside], brush=list(self._fa_brushes[inside]))
+        if fs is None:
+            fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
         if fs is not None and not math.isnan(fs["main_angle_at_peak_deg"]):
-            self._fa_window_items.append(pg.ScatterPlotItem(x=[fs["main_angle_at_peak_deg"]], y=[fs["peak"]], size=20, symbol="star",
-                                                            pen=pg.mkPen("k", width=1), brush=pg.mkBrush("#ffd43b")))
-        for item in self._fa_window_items:
-            pl.addItem(item)
+            self._fa_star.setData(x=[fs["main_angle_at_peak_deg"]], y=[fs["peak"]])
+        else:
+            self._fa_star.setData(x=[], y=[])
 
     def _on_picture_delay(self, _=None):
         self._fa_dirty = True                             # the force paired with each picture changed: the path is drawn afresh
@@ -932,9 +967,12 @@ class ReviewTab(QWidget):
         """The ring on the force-against-angle path that marks the picture shown in the video."""
         path = self._fa_path
         if path is None or self.plot_view.currentData() != "fa" or not 0 <= i < len(path["t"]) or not path["ok"][i]:
-            self._fa_cursor.setData([], [])
+            if self._fa_cursor_shown:                     # (show_frame calls this for every picture: nothing to do when already empty)
+                self._fa_cursor.setData([], [])
+                self._fa_cursor_shown = False
             return
         self._fa_cursor.setData([float(path["angle"][i])], [float(path["force"][i])])
+        self._fa_cursor_shown = True
 
     def _show_force_curve(self, tr):
         """The force in its own strip under the angle plot: every raw sample faint, the smoothed curve (the one the numbers come from) bold."""
@@ -1058,14 +1096,17 @@ class ReviewTab(QWidget):
         if not self.trial.hold_window():
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
+        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())      # (None without force) for the three users below
         if self.plot_view.currentData() == "fa" and self.trial.has_force():
             if self._fa_dirty:
-                self._update_force_angle()                   # the force or the picture delay changed: the whole path
+                self._update_force_angle(fs)                 # the force or the picture delay changed: the whole path
             else:
-                self._update_force_angle_window()            # only the window moved: its dots and the star
-        self.ref_text.setText(self._reference_text())
-        self.force_text.setText(self._force_text(t0, t1))
-        self._update_calibration(t0, t1)
+                self._update_force_angle_window(fs)          # only the window moved: its dots and the star
+        ref = self._reference_text()
+        if ref != self.ref_text.text():                      # it does not follow the window: re-set (and scrolled to the top) only on a change
+            self.ref_text.setText(ref)
+        self.force_text.setText(self._force_text(t0, t1, fs))
+        self._update_calibration(t0, t1, fs)
         self.disp.setText(self._displacement_text(t0, t1))
         self.check_text.setHtml(self._check_html(t0, t1))
 
@@ -1121,11 +1162,11 @@ class ReviewTab(QWidget):
             return
         ReferenceValidationDialog(folder, rows, self).exec()
 
-    def _force_text(self, t0, t1):
+    def _force_text(self, t0, t1, fs=None):
         tr = self.trial
         if not tr.has_force():
             return "No force was recorded in this trial."
-        fs = tr.force_summary(t0, t1, self.picture_delay.value())
+        fs = fs if fs is not None else tr.force_summary(t0, t1, self.picture_delay.value())
         if fs is None:
             return "Force was recorded but there are no samples in this window."
         u = fs["unit"]
@@ -1165,13 +1206,13 @@ class ReviewTab(QWidget):
                       "  (check shielding and grounding; a smoothing window that is a multiple of 20 ms removes it)"]
         return "\n".join(lines)
 
-    def _update_calibration(self, t0, t1):
+    def _update_calibration(self, t0, t1, fs=None):
         """The Calibration tab: the regression behind this trial's newtons (or the active one when the trial has none), and its precision."""
         tr = self.trial
         if tr is None or not tr.has_force():
             self.calib.show_regression(None, ["No force was recorded in this trial."])
             return
-        fs = tr.force_summary(t0, t1, self.picture_delay.value())
+        fs = fs if fs is not None else tr.force_summary(t0, t1, self.picture_delay.value())
         c = tr.force_cal or {}
         reg = tr.regression
         lines = []

@@ -9,7 +9,7 @@ def measure(defn, xy, facing_right=True):
     If a needed dot is missing the result has status LOST and a NaN value.
     """
     r = AngleResult(defn.name, defn.title, defn.primary)
-    r.judged = bool(getattr(defn, "judged", True)) or bool(defn.primary)      # the main joint is always judged
+    r.judged = defn.judged                  # (the main joint is always judged: protocol.json refuses "judged": false on it)
     g = evaluate_angle(defn, xy, facing_right)
     if g is None:
         r.status = LOST

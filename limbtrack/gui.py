@@ -28,7 +28,7 @@ from .force import HUM_NOTE_V, ForceCalibration, ForceError, NiDaqForce, Simulat
 from .recorder import count_trials
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
-from .review import ReviewTab
+from .review import ReviewTab, fill_reference_choices, select_reference_choices
 
 BIG = "font-size: 15pt; font-weight: bold;"
 NOTE = "font-size: 11pt; font-weight: bold;"
@@ -379,7 +379,8 @@ class LiveTab(QWidget):
         self._rec_started = None
         self._say_until = 0.0
         self._combo_index = {"test": 0, "kind": 0, "facing": 0, "leg": 0}     # last accepted choice, restored if the engine refuses a change
-        self._pelvis_facts_owner = None      # participant code the tape measure of the pelvis and the wall tick were entered for (None: before a code)
+        self._ref_box_position = None        # (test, target, participant) the reference boxes were filled for (see _fill_reference_boxes)
+        self._ref_enabled = None             # whether the reference widgets are switched on (None: not yet set)
         self._marker_counts = {"start": 0, "end": 0, "other": 0}
         self._marker_msg = ("", 0.0)
         self._memory_path = None             # settings.json, once the window has attached it (see attach_memory)
@@ -767,14 +768,9 @@ class LiveTab(QWidget):
         self.update_privacy_label()
 
         # --- reference reading: what a goniometer or an inclinometer said, typed in next to the app's own angle (0.16.0)
-        self.ref_instrument = NoWheelComboBox()
-        for k, label in reference.INSTRUMENTS.items():
-            self.ref_instrument.addItem(label, k)
+        self.ref_instrument, self.ref_resolution = NoWheelComboBox(), NoWheelComboBox()
+        fill_reference_choices(self.ref_instrument, self.ref_resolution)
         self.ref_instrument.setToolTip("What the readings were taken with. Saved with the trial.")
-        self.ref_resolution = NoWheelComboBox()
-        for v in reference.RESOLUTIONS_DEG:
-            self.ref_resolution.addItem(f"{v:g} deg", v)
-        self.ref_resolution.setCurrentIndex(self.ref_resolution.findData(1.0))
         self.ref_resolution.setToolTip("What the instrument can be read to (a goniometer: about 1 deg, a digital inclinometer: 0.1 deg).")
         self.ref_instrument.currentIndexChanged.connect(self._reference_edited)
         self.ref_resolution.currentIndexChanged.connect(self._reference_edited)
@@ -946,6 +942,7 @@ class LiveTab(QWidget):
         self.participant.textChanged.connect(self.refresh_plan)
         self.participant.textChanged.connect(self._on_participant_text)
         self.target_spin.valueChanged.connect(lambda _: self.refresh_plan())
+        self.target_spin.valueChanged.connect(lambda _: self.update_reference_box())    # the target is part of the readings' position
         plan_box = QGroupBox("Session plan (click the next position)")
         plan_l = QVBoxLayout(plan_box)
         plan_l.addWidget(self.plan)
@@ -1410,8 +1407,9 @@ class LiveTab(QWidget):
         """One box per angle of the test (and per extra the test offers, such as the typed hip flexion of a frontal test)."""
         while self.ref_form.rowCount():
             self.ref_form.removeRow(0)
-        self.ref_fields, self.ref_titles, self._ref_problem = {}, dict(self.engine.reference_keys()), ""
-        for key, title in self.engine.reference_keys():
+        keys = self.engine.reference_keys()
+        self.ref_fields, self.ref_titles = {}, dict(keys)
+        for key, title in keys:
             box = TextField()
             box.setPlaceholderText("e.g. 88 90 89")
             box.setToolTip("Degrees, as the instrument says them. Several readings: separate with a space. Empty = not measured.")
@@ -1433,10 +1431,7 @@ class LiveTab(QWidget):
             box.setText(reference.format_values(r.values.get(key, [])) if mine else "")
             box.setStyleSheet("")
         if mine:
-            for combo, value in ((self.ref_instrument, r.instrument), (self.ref_resolution, r.resolution_deg)):
-                combo.blockSignals(True)
-                combo.setCurrentIndex(max(combo.findData(value), 0))
-                combo.blockSignals(False)
+            select_reference_choices(self.ref_instrument, self.ref_resolution, r.instrument, r.resolution_deg)
         self._ref_problem = ""
         self._ref_box_position = e.reference_position()
 
@@ -1445,7 +1440,7 @@ class LiveTab(QWidget):
         Nothing is sent when nothing changed (a box that lets go of the focus as a recording starts must not be refused), and never what
         the boxes show for another position or participant (they are refilled instead)."""
         e = self.engine
-        if getattr(self, "_ref_box_position", None) != e.reference_position():
+        if self._ref_box_position != e.reference_position():
             self._fill_reference_boxes()
             self.update_reference_box()
             self.say("The position or the participant changed: the reference boxes now show what belongs to it. Type the reading again.")
@@ -1484,30 +1479,22 @@ class LiveTab(QWidget):
         The tape measure of the pelvis and the wall tick belong to one participant too."""
         self.engine.participant_code = text.strip()
         self.update_reference_box()
-        self._clear_pelvis_facts_of_another_participant()
+        self._show_cleared_pelvis_facts()
 
-    def _pelvis_facts_entered(self):
-        """The tape measure or the wall tick was set: they belong to the participant code in the window (or, while there is no code
-        yet, to whoever is recorded first)."""
-        e = self.engine
-        given = e.tape_pelvic_width_mm is not None or bool(e.wall_posture)
-        self._pelvis_facts_owner = (e.participant_code or None) if given else None
-
-    def _clear_pelvis_facts_of_another_participant(self):
-        """The tape measure and the wall tick are facts about one person: when the code in the window is no longer the one they were
-        entered for, they are cleared. Not during a recording (the trial keeps what it started with); checked again when it stops."""
-        owner = self._pelvis_facts_owner
-        if owner is None or owner == self.engine.participant_code or self._rec_started is not None:
+    def _show_cleared_pelvis_facts(self):
+        """The engine clears the tape measure of the pelvis and the wall tick when the participant changes (after a recording, if the
+        code was changed during it): show the cleared boxes, and say so."""
+        owner = self.engine.pelvis_facts_cleared_for
+        if owner is None:
             return
-        self.engine.tape_pelvic_width_mm, self.engine.wall_posture = None, False
+        self.engine.pelvis_facts_cleared_for = None
         for w in (self.tape_spin, self.chk_wall):
             w.blockSignals(True)
         self.tape_spin.setValue(self.tape_spin.minimum())
         self.chk_wall.setChecked(False)
         for w in (self.tape_spin, self.chk_wall):
             w.blockSignals(False)
-        self._pelvis_facts_owner = None
-        if self.engine.test.view == "frontal":
+        if self.engine.test.frontal:
             self.say(f"Another participant: the tape measure of the pelvis and the wall tick (entered for {owner}) were cleared.", 8.0)
 
     def take_reference_now(self):
@@ -1538,24 +1525,23 @@ class LiveTab(QWidget):
     def update_reference_box(self, recording=None):
         """The status under the reference boxes (what is kept, what is typed, whether it belongs to this position) and the section's summary."""
         if recording is None:
-            recording = getattr(self, "_rec_started", None) is not None
+            recording = self._rec_started is not None
         e = self.engine
         r = e.reference
-        if getattr(self, "_ref_box_position", None) != e.reference_position():
+        if self._ref_box_position != e.reference_position():
             self._fill_reference_boxes()                # the target, test or participant changed: the boxes must not show the old readings
-        if getattr(self, "_ref_enabled", None) != (not recording):       # (this runs every 200 ms: touch the widgets only on a change)
+        if self._ref_enabled != (not recording):       # (this runs every 200 ms: touch the widgets only on a change)
             for w in (self.ref_instrument, self.ref_resolution, self.btn_ref_stamp, self.btn_ref_clear, *self.ref_fields.values()):
                 w.setEnabled(not recording)
             self._ref_enabled = not recording
-        lines, warn, summary = [], False, "none yet"
+        lines, warn, summary, mismatch = [], False, "none yet", e.reference_mismatch()
         if not r.has_data():
             lines.append("No reading yet for this position.")
-        elif not e.reference_for_this_position():
-            key, target, who = (tuple(r.position) + (None,))[:3]
-            here = e.reference_position()
-            if (key, target) == here[:2]:
+        elif mismatch:
+            key, target, who = r.position
+            if mismatch == "participant":
                 lines.append(f"These readings were typed for participant {who or '(no code)'} and will NOT be saved with a trial of "
-                             f"{here[2] or 'a participant without a code'}. Clear them, or type new ones.")
+                             f"{e.reference_position()[2] or 'a participant without a code'}. Clear them, or type new ones.")
                 warn, summary = True, "for another participant"
             else:
                 was = e.tests.get(key)
@@ -1591,13 +1577,12 @@ class LiveTab(QWidget):
     def _update_view_rows(self):
         """A frontal test (camera in front of the participant) has no 'Participant faces': it asks which leg is tested, and offers the
         optional tape measure of the pelvis and the wall tick, instead."""
-        frontal = self.engine.test.view == "frontal"
-        for w, show in ((self.facing_combo, not frontal), (self.leg_combo, frontal), (self.tape_spin, frontal)):
+        frontal = self.engine.test.frontal
+        for w, show in ((self.facing_combo, not frontal), (self.leg_combo, frontal), (self.tape_spin, frontal), (self.chk_wall, frontal)):
             w.setVisible(show)
-            label = self.settings_form.labelForField(w)
+            label = self.settings_form.labelForField(w)               # (None for the tick box: it spans the row)
             if label is not None:
                 label.setVisible(show)
-        self.chk_wall.setVisible(frontal)
 
     def on_leg_changed(self):
         try:
@@ -1612,12 +1597,7 @@ class LiveTab(QWidget):
         try:
             self.engine.wall_posture = bool(on)
         except RuntimeError as e:
-            self.chk_wall.blockSignals(True)
-            self.chk_wall.setChecked(self.engine.wall_posture)
-            self.chk_wall.blockSignals(False)
-            self.say(str(e))
-            return
-        self._pelvis_facts_entered()
+            self._revert_check(self.chk_wall, self.engine.wall_posture, e)
 
     # ------------------------------------------------- landmark selection
     def rebuild_landmarks(self):
@@ -1803,10 +1783,7 @@ class LiveTab(QWidget):
         try:
             self.engine.save_overlay = bool(on)
         except RuntimeError as e:
-            self.chk_overlay.blockSignals(True)
-            self.chk_overlay.setChecked(self.engine.save_overlay)
-            self.chk_overlay.blockSignals(False)
-            self.say(str(e))
+            self._revert_check(self.chk_overlay, self.engine.save_overlay, e)
 
     def on_mirror_toggled(self, on):
         self.engine.mirror = bool(on)
@@ -1827,8 +1804,8 @@ class LiveTab(QWidget):
 
     def _set_setting(self, attr, spin, value):
         """Change an engine setting from a spin box; if the engine refuses (recording), put the box back and say why."""
-        if attr in ("target", "tape_pelvic_width_mm") and value <= spin.minimum():
-            value = None                                             # "no target" / "not measured"
+        if spin.specialValueText() and value <= spin.minimum():
+            value = None                                             # the box's lowest value: "no target" / "not measured"
         try:
             setattr(self.engine, attr, value)
         except RuntimeError as e:
@@ -1838,10 +1815,14 @@ class LiveTab(QWidget):
             spin.blockSignals(False)
             self.say(str(e))
             return
-        if attr == "tape_pelvic_width_mm":
-            self._pelvis_facts_entered()
-        self.update_reference_box()                      # the target is part of the position the reference readings belong to
         self.refresh_view()
+
+    def _revert_check(self, chk, value, error):
+        """Put a tick box back to what the engine kept (it refused the change, for example while recording) and say why."""
+        chk.blockSignals(True)
+        chk.setChecked(bool(value))
+        chk.blockSignals(False)
+        self.say(str(error))
 
     def _revert_combo(self, combo, key, error):
         combo.blockSignals(True)
@@ -2623,20 +2604,14 @@ class LiveTab(QWidget):
         try:
             self.engine.audio_cues = bool(on)
         except RuntimeError as e:
-            self.chk_cues.blockSignals(True)
-            self.chk_cues.setChecked(bool(self.engine.audio_cues))
-            self.chk_cues.blockSignals(False)
-            self.say(str(e))
+            self._revert_check(self.chk_cues, self.engine.audio_cues, e)
         self.cue_push_spin.setEnabled(bool(self.engine.audio_cues))
 
     def on_auto_mvic_toggled(self, on):
         try:
             self.engine.auto_mvic = bool(on)
         except RuntimeError as e:
-            self.chk_auto_mvic.blockSignals(True)
-            self.chk_auto_mvic.setChecked(bool(self.engine.auto_mvic))
-            self.chk_auto_mvic.blockSignals(False)
-            self.say(str(e))
+            self._revert_check(self.chk_auto_mvic, self.engine.auto_mvic, e)
 
     def toggle_record(self, checked=None, force_stop=False):
         if self.btn_rec.isChecked() and not force_stop:
@@ -2700,8 +2675,6 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", str(e))
                 return
             self._rec_started = time.perf_counter()
-            if self._pelvis_facts_owner is None and (self.engine.tape_pelvic_width_mm is not None or self.engine.wall_posture):
-                self._pelvis_facts_owner = self.participant.text().strip()      # entered before a code: from now on this participant's
             self.note("recording started", f"{self.participant.text().strip()} {self.engine.test.key} {self.engine.target if self.engine.target is not None else ''}".strip())
             self.refresh_plan()
             self._marker_counts = {"start": 0, "end": 0, "other": 0}
@@ -2730,7 +2703,6 @@ class LiveTab(QWidget):
                 return
             self.btn_rec.setText("Start recording  (R)")
             self._rec_started = None
-            self._clear_pelvis_facts_of_another_participant()   # the code may have been changed for the next participant during the recording
             self.refresh_plan()
             self.report_beep_problem()
             if not paths:
@@ -2777,6 +2749,7 @@ class LiveTab(QWidget):
         recording = self._rec_started is not None
         self.update_force_box()
         self.update_reference_box(recording)
+        self._show_cleared_pelvis_facts()            # (the engine clears them when a recording ends with another participant code)
         self.plan.setEnabled(not recording)
         for w in (self.btn_crop, self.btn_mask, self.btn_priv_clear, self.btn_folder):
             w.setEnabled(not recording)

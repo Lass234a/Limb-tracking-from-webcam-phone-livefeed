@@ -22,8 +22,11 @@ import statistics
 from datetime import datetime
 from pathlib import Path
 
+from .session_memory import read_all as _read_json_dict
+
 INSTRUMENTS = {"goniometer": "Goniometer", "inclinometer": "Digital inclinometer", "other": "Other instrument"}
 RESOLUTIONS_DEG = (0.1, 0.5, 1.0, 2.0, 5.0)          # what the instrument can be read to
+DEFAULT_INSTRUMENT, DEFAULT_RESOLUTION_DEG = "goniometer", 1.0
 VALUE_RANGE_DEG = (-180.0, 360.0)
 MAX_READINGS = 5                                     # readings of one angle in one posture (repeat readings are averaged)
 APP_BASIS_STAMP = "the app's unsmoothed angle, averaged over the 0.2 s before 'reading taken now'"
@@ -70,8 +73,8 @@ class ReferenceReadings:
         self.clear()
 
     def clear(self):
-        self.instrument = "goniometer"
-        self.resolution_deg = 1.0
+        self.instrument = DEFAULT_INSTRUMENT
+        self.resolution_deg = DEFAULT_RESOLUTION_DEG
         self.values = {}                  # key -> list of readings (key: an angle name, or an extra such as 'hip_flexion')
         self.stamp = None                 # {'taken_at': iso time, 'app_deg': {angle name: value or None}}
         self.position = None              # (test key, target, participant code) these were entered for; participant None = typed before a code
@@ -84,8 +87,25 @@ class ReferenceReadings:
         """The position (and participant) the readings were entered for, as it is written into meta.json, or None."""
         if self.position is None:
             return None
-        key, target, who = (tuple(self.position) + (None,))[:3]
+        key, target, who = self.position
         return {"test_key": key, "target_deg": target, "participant": who}
+
+    def mismatch(self, here):
+        """Why these readings do not belong to `here` (test key, target, participant code): None when they do (or there are none),
+        'participant' when only the participant differs, 'position' otherwise. Readings typed while there was no participant code
+        (participant None) belong to whoever is recorded first."""
+        if self.position is None:
+            return None
+        key, target, who = self.position
+        if (key, target) != tuple(here[:2]):
+            return "position"
+        return None if who is None or who == here[2] else "participant"
+
+    def claim(self, here, bind=False):
+        """The readings now belong to `here`. They take its participant code once there is one (an earlier code is kept), and with
+        `bind` (a recording starts) whatever it is: from then on they are that participant's only."""
+        kept = self.position[2] if self.position is not None else None
+        self.position = (here[0], here[1], here[2] if bind else (here[2] or kept))
 
     def set_values(self, key, values):
         new = [float(v) for v in values or []]
@@ -106,7 +126,7 @@ class ReferenceReadings:
             "instrument": self.instrument,
             "resolution_deg": self.resolution_deg,
             "titles": dict(titles or {}),
-            "readings": {k: {"values_deg": list(v), "mean_deg": round(statistics.fmean(v), 4)} for k, v in self.values.items()},
+            "readings": {k: _reading(v) for k, v in self.values.items()},
             "stamped_at": (self.stamp or {}).get("taken_at"),
             "typed_at": self.typed_at,
             "app_at_reading_deg": ({k: (None if v is None else round(float(v), 3)) for k, v in self.stamp["app_deg"].items()}
@@ -115,6 +135,11 @@ class ReferenceReadings:
             "entered_for": self.entered_for(),
             "note": "typed by the operator from a hand instrument; blank = not measured. Never a measurement of this program.",
         }
+
+
+def _reading(values):
+    """One key's readings as they are saved: every value and the mean."""
+    return {"values_deg": [float(x) for x in values], "mean_deg": round(statistics.fmean(values), 4)}
 
 
 # ---------------------------------------------------------------------------------------------------------------- the side file
@@ -126,11 +151,7 @@ def sidecar_path(meta_path):
 
 def read_sidecar(meta_path):
     """The readings added or changed later in Review, or {} (none, or unreadable)."""
-    try:
-        data = json.loads(sidecar_path(meta_path).read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return _read_json_dict(sidecar_path(meta_path))
 
 
 def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="", recorded=None):
@@ -148,7 +169,7 @@ def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="",
     for k, v in values_by_key.items():
         was = (saved_readings.get(k) or {}).get("values_deg")
         if v and not (same_instrument and was and format_values(v) == format_values(was)):
-            readings[k] = {"values_deg": [float(x) for x in v], "mean_deg": round(statistics.fmean(v), 4)}
+            readings[k] = _reading(v)
         elif not v and k in saved_readings:
             readings[k] = {"values_deg": [], "mean_deg": None}
     data = {
@@ -207,11 +228,12 @@ def first_second_means(data_csv, names, seconds=REST_SECONDS):
     return {n: (statistics.fmean(v) if v else None) for n, v in sums.items()}
 
 
-def comparison(meta, sidecar=None, data_csv=None):
+def comparison(meta, sidecar=None, data_csv=None, first_second=None):
     """One row per reading of a trial: the typed reference, the app's angle at the same moment, and the difference (app - reference).
 
-    The app's angle is the one stamped at 'reading taken now' when there is one; otherwise, if `data_csv` is given, the first second of
-    the recording. Rows for an extra such as the typed hip flexion of a frontal trial have no app angle."""
+    The app's angle is the one stamped at 'reading taken now' when there is one; otherwise the first second of the recording:
+    `first_second` (angle name -> mean or None) when the caller already has the trial's angles (Review), else read from `data_csv`.
+    Rows for an extra such as the typed hip flexion of a frontal trial have no app angle."""
     titles = {a["name"]: a.get("label") or a["name"] for a in meta.get("angles", [])}
     saved = meta.get("reference_readings") or {}
     extras = {**(meta.get("reference_extras") or {}), **(saved.get("titles") or {})}       # names of readings that are not angles
@@ -224,8 +246,9 @@ def comparison(meta, sidecar=None, data_csv=None):
         if key in titles:
             if stamped.get(key) is not None:
                 app, basis = stamped[key], APP_BASIS_STAMP
-            elif data_csv is not None:
-                fallback = fallback if fallback is not None else first_second_means(data_csv, list(titles))
+            elif first_second is not None or data_csv is not None:
+                if fallback is None:
+                    fallback = first_second if first_second is not None else first_second_means(data_csv, list(titles))
                 app, basis = fallback.get(key), (APP_BASIS_FIRST_SECOND if fallback.get(key) is not None else None)
         mean = r.get("mean_deg")
         rows.append({
@@ -323,6 +346,8 @@ COLUMNS = ["trial", "participant", "test_key", "target_deg", "angle", "reference
 
 def write_csv(rows, path):
     """All reference rows of a folder as a table (one row per reading). Returns the path."""
+    def f(v, nd=3):
+        return "" if v is None else round(v, nd) if isinstance(v, float) else v
     firsts = set()
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -330,9 +355,6 @@ def write_csv(rows, path):
         for r in rows:
             dup = r["pair_id"] in firsts
             firsts.add(r["pair_id"])
-
-            def f(v, nd=3):
-                return "" if v is None else round(v, nd) if isinstance(v, float) else v
             w.writerow([r["trial"], r["participant"], r["test_key"], f(r["target_deg"]), r["title"], f(r["reference_deg"]), r["n_readings"],
                         r["instrument"], f(r["resolution_deg"]), r["source"], f(r["app_deg"]), r["app_basis"] or "",
                         f(r["difference_deg"]), 1 if dup else 0])

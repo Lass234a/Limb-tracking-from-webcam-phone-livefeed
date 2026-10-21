@@ -162,18 +162,32 @@ def hip_centre_frontal(tested_xy, other_xy, px_per_mm):
     pelvis (from the ruler). The pelvis axes are taken from the two ASIS themselves: "sideways" runs along the line from the other
     ASIS to the tested ASIS, "down" is square to it on the side of the picture's bottom, so a tilted camera or a tilted pelvis
     does not change the result in the pelvis' own frame. See the note above for the equation and its status."""
-    pw = pelvic_width_mm(tested_xy, other_xy, px_per_mm)
-    if pw is None:
+    axes = pelvis_axes(tested_xy, other_xy)
+    if axes is None or not (px_per_mm and px_per_mm > 0 and math.isfinite(px_per_mm)):
         return None
-    t, o = np.asarray(tested_xy, float), np.asarray(other_xy, float)
-    u = (t - o) / float(np.hypot(*(t - o)))
-    v = np.array([-u[1], u[0]])
-    if v[1] < 0:
-        v = -v
+    u, v, width_px = axes
+    pw = width_px / px_per_mm
     side_mm = HARRINGTON_SIDEWAYS[0] * pw + HARRINGTON_SIDEWAYS[1]
     down_mm = HARRINGTON_DOWN[0] * pw + HARRINGTON_DOWN[1]
-    c = (t + o) / 2.0 + (side_mm * u + down_mm * v) * px_per_mm
+    c = (np.asarray(tested_xy, float) + np.asarray(other_xy, float)) / 2.0 + (side_mm * u + down_mm * v) * px_per_mm
     return float(c[0]), float(c[1])
+
+
+def pelvis_axes(tested_xy, other_xy):
+    """The pelvis' own frame in a frontal picture, from the two ASIS: (u, v, width_px). u = the unit vector from the other ASIS to
+    the tested one ("sideways", towards the tested side), v = square to it on the side of the picture's bottom ("down"), width_px =
+    the distance between the two ASIS in pixels. None when the two are at the same place. Used by the hip centre and by the
+    engine's check that the frontal dots were not swapped, so the two always agree on which way is down."""
+    t, o = np.asarray(tested_xy, float), np.asarray(other_xy, float)
+    width = float(np.hypot(*(t - o)))
+    if width <= 1e-9:
+        return None
+    u = (t - o) / width
+    v = np.array([-u[1], u[0]])
+    return u, (v if v[1] >= 0 else -v), width
+
+
+_DERIVED_COMPUTE = {"hip_centre_frontal": hip_centre_frontal}    # kind -> f(the positions of its input dots, in DERIVED_KINDS order, px_per_mm)
 
 
 def derived_input_dots(spec):
@@ -186,12 +200,12 @@ def compute_derived(derived, xy, px_per_mm):
     """name -> (x, y) of every computed point of `derived` (name -> definition) whose dots are all in `xy` and whose scale is known."""
     out = {}
     for name, spec in derived.items():
-        if spec.get("kind") == "hip_centre_frontal":
-            a, b = xy.get(spec["tested_asis"]), xy.get(spec["other_asis"])
-            if a is not None and b is not None:
-                p = hip_centre_frontal(a, b, px_per_mm)
-                if p is not None:
-                    out[name] = p
+        compute = _DERIVED_COMPUTE.get(spec.get("kind"))
+        points = [xy.get(n) for n in derived_input_dots(spec)]      # the same dots that are clicked for it (AngleDef.needs)
+        if compute is not None and points and all(q is not None for q in points):
+            p = compute(*points, px_per_mm)
+            if p is not None:
+                out[name] = p
     return out
 
 

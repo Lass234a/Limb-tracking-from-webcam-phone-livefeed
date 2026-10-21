@@ -51,6 +51,11 @@ class TestDef:
     reference_extras: dict = field(default_factory=dict)   # readings the operator may type that are not one of the angles (key -> name), e.g. the hip flexion of a frontal test
 
     @property
+    def frontal(self):
+        """The camera is in front of the participant (hip abduction / adduction): no 'Participant faces', a tested leg instead."""
+        return self.view == "frontal"
+
+    @property
     def all_dots(self):
         """The angle landmarks followed by the optional dots."""
         return list(self.dots) + [d for d in self.optional_dots if d not in self.dots]
@@ -241,8 +246,11 @@ def validate_protocol(data):
         if not isinstance(items, list) or not items:
             errs.append(f"{path}.angles: needs at least one angle")
             items = []
-        names, primaries = [], 0
+        names, primaries, defs = [], 0, {}          # defs: angle name -> its definition (for the checks below)
         for i, item in enumerate(items):
+            d = library.get(item) if isinstance(item, str) else item
+            if isinstance(d, dict):
+                defs[_angle_name(item)] = d
             if isinstance(item, str):
                 if item not in library:
                     errs.append(f'{path}.angles[{i}]: "{item}" is not in angle_library{_near(item, library)}')
@@ -253,8 +261,7 @@ def validate_protocol(data):
                 if isinstance(item, dict) and item.get("primary") is True:
                     primaries += 1
             names.append(_angle_name(item))
-        defs = {_angle_name(item): (library[item] if isinstance(item, str) else item) for item in items
-                if isinstance(library.get(item) if isinstance(item, str) else item, dict)}      # name -> the angle's definition
+        named = [n for n in names if n]
         if t.get("view") is not None and t["view"] not in VIEWS:
             errs.append(f'{path}.view: "{t["view"]}" is not a view; use one of {", ".join(VIEWS)}{_near(t["view"], VIEWS)}')
         if t.get("view") == "frontal":
@@ -269,10 +276,10 @@ def validate_protocol(data):
                             '{"hip_flexion": "Hip flexion (inclinometer)"}')
             else:
                 errs += [f'{path}.reference_extras: "{k}" is also the name of an angle of this test; use another key'
-                         for k in extras if k in [n for n in names if n]]
+                         for k in extras if k in named]
         primary = t.get("primary")
         if primary is not None and primary not in names:
-            errs.append(f'{path}.primary: "{primary}" is not one of this test\'s angles {[n for n in names if n]}{_near(primary, [n for n in names if n])}')
+            errs.append(f'{path}.primary: "{primary}" is not one of this test\'s angles {named}{_near(primary, named)}')
         if primaries > 1 or (primaries == 1 and primary is not None and primary in names
                              and not (isinstance(library.get(primary), dict) and library[primary].get("primary") is True)):
             errs.append(f"{path}: more than one main joint (primary) is defined")
@@ -297,7 +304,7 @@ def validate_protocol(data):
             else:
                 for n, v in nt.items():
                     if n not in names:
-                        errs.append(f'{path}.neighbour_targets: "{n}" is not one of this test\'s angles{_near(n, [x for x in names if x])}')
+                        errs.append(f'{path}.neighbour_targets: "{n}" is not one of this test\'s angles{_near(n, named)}')
                     elif n == primary or (isinstance(library.get(n), dict) and library[n].get("primary") is True):
                         errs.append(f'{path}.neighbour_targets: "{n}" is the main joint; its target is set with "targets"')
                     elif (defs.get(n) or {}).get("judged") is False:

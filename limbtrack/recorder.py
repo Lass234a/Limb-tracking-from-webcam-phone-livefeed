@@ -106,12 +106,11 @@ class TrialRecorder:
         folder = Path(root) / _safe(participant)
         folder.mkdir(parents=True, exist_ok=True)
         tgt = "" if target is None else f"_{target:g}deg"
-        self.base = folder / f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}"
-        n = 2
+        stem = f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}"
+        self.base, n = folder / stem, 2
         while any(Path(f"{self.base}_{k}").exists() for k in ("meta.json", "data.csv", "raw.mp4")):
             # a trial of the same position started within the same second (the name has the time to the second): never write over it
-            self.base = folder / f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}-{n}"
-            n += 1
+            self.base, n = folder / f"{stem}-{n}", n + 1
         self.save_overlay = bool(save_overlay)
         names = ("raw.mp4", "overlay.mp4", "data.csv", "meta.json") if self.save_overlay else ("raw.mp4", "data.csv", "meta.json")
         self.with_force = bool(with_force)

@@ -15,6 +15,8 @@ from limbtrack.gui import MainWindow  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.synthetic import leg_points, render  # noqa: E402
 
+from tests.test_pause import RunningCamera  # noqa: E402  (stands in for a running camera)
+
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
 PTS = leg_points(hip_flex=90, knee_flex=60, ankle_df=5)
@@ -152,22 +154,6 @@ def test_readings_typed_before_the_code_go_with_the_code_typed_after(win):
     live.ref_fields["knee"].editingFinished.emit()
     live.participant.setText("P01")
     assert live.ref_fields["knee"].text() == "61" and win.engine.reference_for_this_position()
-
-
-class RunningCamera:
-    """Stands in for a running camera so the window thinks a live source is open (as in test_pause.py)."""
-    is_file = False
-    paused = False
-    at_end = False
-
-    def stop(self):
-        pass
-
-    def wait(self, ms=0):
-        return True
-
-    def isRunning(self):
-        return True
 
 
 @pytest.fixture

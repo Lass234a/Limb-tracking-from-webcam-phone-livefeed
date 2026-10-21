@@ -337,6 +337,21 @@ def test_the_live_tab_asks_which_leg_instead_of_which_way_the_participant_faces(
         win.close()
 
 
+def test_the_engine_clears_the_tape_measure_and_the_wall_tick_for_another_participant(tmp_path):
+    eng, p = engine(tmp_path, "hip_abduction", 10.0)
+    eng.participant_code = "P01"
+    eng.tape_pelvic_width_mm, eng.wall_posture = 240.0, True
+    eng.participant_code = "P01"                                              # the same code again: nothing happens
+    assert eng.tape_pelvic_width_mm == 240.0 and eng.pelvis_facts_cleared_for is None
+    run(eng, p)
+    eng.start_trial("P01")
+    eng.participant_code = "P02"                                              # typed for the next participant during the recording
+    assert eng.tape_pelvic_width_mm == 240.0 and eng.wall_posture             # the trial keeps what it started with ...
+    eng.process(pic(p, 1), 1.0)
+    eng.stop_trial()
+    assert eng.tape_pelvic_width_mm is None and not eng.wall_posture and eng.pelvis_facts_cleared_for == "P01"   # ... cleared when it stops
+
+
 def test_the_tape_measure_and_the_wall_tick_belong_to_one_participant():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as d:

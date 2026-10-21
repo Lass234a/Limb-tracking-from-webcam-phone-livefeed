@@ -21,8 +21,8 @@ from dataclasses import asdict, replace
 
 from . import overlay
 from .angles import measure, segment_pairs
-from .geometry import (HARRINGTON_DOWN, HARRINGTON_SIDEWAYS, KNEE_FACING_MIN_DEG, compute_derived, foot_handedness, pelvic_width_mm,
-                       view_handedness)
+from .geometry import (HARRINGTON_DOWN, HARRINGTON_SIDEWAYS, KNEE_FACING_MIN_DEG, compute_derived, derived_input_dots, foot_handedness,
+                       pelvic_width_mm, pelvis_axes, view_handedness)
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
@@ -36,7 +36,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.17.1"
+SOFTWARE_VERSION = "0.17.2"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -63,6 +63,15 @@ class _FrozenWhileRecording:
         setattr(obj, self.name, value)
 
 
+class _PelvisFact(_FrozenWhileRecording):
+    """A frontal-test fact about one person (the tape measure of the pelvis, the wall tick). It belongs to the participant code it
+    was entered for and is cleared when the code changes to someone else (Engine.participant_code)."""
+
+    def __set__(self, obj, value):
+        super().__set__(obj, value)
+        obj._pelvis_facts_entered()
+
+
 # Settings copied at the start of a recording; meta.json reports these start values (see Engine.stop_trial).
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
@@ -87,8 +96,8 @@ class Engine:
     audio_cues = _FrozenWhileRecording("the sound cues")
     cue_push_every_s = _FrozenWhileRecording("the interval of the motivating ticks")
     tested_leg = _FrozenWhileRecording("which leg is tested")
-    tape_pelvic_width_mm = _FrozenWhileRecording("the measured pelvic width")
-    wall_posture = _FrozenWhileRecording("the wall posture tick")
+    tape_pelvic_width_mm = _PelvisFact("the measured pelvic width")
+    wall_posture = _PelvisFact("the wall posture tick")
 
     def __init__(self, tests, recordings_dir="recordings"):
         self.tests = tests
@@ -142,10 +151,12 @@ class Engine:
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self.tested_leg = "right"    # frontal tests: which leg is tested (the participant faces the camera: the right leg is on the picture's left)
+        self._participant_code = ""  # the participant code in the window (see the participant_code property)
+        self._pelvis_owner = None    # participant code the tape measure and the wall tick were entered for (None: before a code)
+        self.pelvis_facts_cleared_for = None   # set when they were cleared for another participant: whose they were (the window says so)
         self.tape_pelvic_width_mm = None   # frontal tests: ASIS-to-ASIS distance measured with a tape or calipers (a cross-check of the ruler scale), or None
         self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
         self.reference = ReferenceReadings()   # what the operator typed from a goniometer or inclinometer, and the app's angles at that moment (limbtrack/reference.py)
-        self.participant_code = ""   # the participant code in the window (kept up to date by the window): readings belong to one person
         self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
         self._refs = {}
         self._last_gray = None
@@ -203,10 +214,7 @@ class Engine:
             if old is not None and list(old.all_dots) == list(self.test.all_dots):
                 # Same landmarks: the marked dots stay (the 120 s changeover is not spent re-clicking them); the position is
                 # unlocked because the neighbour angles and their required values belong to the test (audit GUI-06).
-                self._last_angles = []
-                self._filters, self._ref_avg, self._ref_last = {}, {}, {}
-                self._hist.clear()
-                self.unlock_position()
+                self._angles_changed()
             else:
                 self._reset_dots_core()
 
@@ -225,8 +233,7 @@ class Engine:
             self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
-            self._last_angles = []
-            self._filters, self._ref_avg, self._ref_last = {}, {}, {}
+            self._forget_angle_averages()
             self._hist.clear()
             self._trails, self._trail_open = {}, {}
             self.locked = False
@@ -367,10 +374,15 @@ class Engine:
             self._angles_changed()
 
     def _angles_changed(self):
-        self._last_angles = []
-        self._filters, self._ref_avg, self._ref_last = {}, {}, {}
+        self._forget_angle_averages()
         self._hist.clear()
         self.unlock_position()
+
+    def _forget_angle_averages(self):
+        """Forget what is kept per angle from earlier pictures (the display smoothing, the 0.2 s reference average, the angles kept for
+        'reading taken now'): after a change of test, dots or landmarks they belong to other angles."""
+        self._last_angles = []
+        self._filters, self._ref_avg, self._ref_last = {}, {}, {}
 
     def lock_problem(self):
         """Plain-English reason why the position cannot be locked right now."""
@@ -410,8 +422,7 @@ class Engine:
             self.trackers.set_enabled(name, on)
             self._trails, self._trail_open = {}, {}          # the set of dots changed: old trails no longer apply
             self._last_states.pop(name, None)
-            self._last_angles = []
-            self._filters, self._ref_avg, self._ref_last = {}, {}, {}
+            self._forget_angle_averages()
             self.unlock_position()
 
     def set_smoothing(self, on):
@@ -603,26 +614,41 @@ class Engine:
         who = self.rec_info.get("participant") if self.rec is not None else self.participant_code
         return (self.test.key, self.target, who or "")
 
-    def _reference_matches(self, position):
-        """Whether readings entered for `position` belong to the present one. Readings typed while the window had no participant code
-        (participant None) belong to whoever is recorded first; from that trial on they are that participant's (start_trial)."""
-        if position is None:
-            return True
-        key, target, who = (tuple(position) + (None,))[:3]
-        here = self.reference_position()
-        return (key, target) == here[:2] and (who is None or who == here[2])
+    @property
+    def participant_code(self):
+        """The participant code in the window (kept up to date by the window). Reference readings, the tape measure of the pelvis
+        and the wall tick belong to one person."""
+        return self._participant_code
+
+    @participant_code.setter
+    def participant_code(self, code):
+        self._participant_code = code or ""
+        self._clear_pelvis_facts_of_another_participant()
+
+    def _pelvis_facts_entered(self):
+        given = getattr(self, "_tape_pelvic_width_mm", None) is not None or bool(getattr(self, "_wall_posture", False))   # (both set in __init__)
+        self._pelvis_owner = (self._participant_code or None) if given else None
+
+    def _clear_pelvis_facts_of_another_participant(self):
+        """When the participant code is no longer the one the tape measure and the wall tick were entered for, they are cleared and
+        `pelvis_facts_cleared_for` says whose they were. Not during a recording (the trial keeps what it started with): checked
+        again when it stops."""
+        owner = self._pelvis_owner
+        if owner is None or owner == self._participant_code or self.rec is not None:
+            return
+        self.tape_pelvic_width_mm, self.wall_posture = None, False
+        self.pelvis_facts_cleared_for = owner
+
+    def reference_mismatch(self):
+        """None when the readings held belong to the present test, target and participant; else 'position' or 'participant'."""
+        return self.reference.mismatch(self.reference_position())
 
     def _claim_reference(self):
-        """The readings now belong to this position, and to the participant code in the window once there is one."""
-        key, target, who = self.reference_position()
-        old = self.reference.position
-        kept = old[2] if old is not None and len(old) > 2 else None
-        self.reference.position = (key, target, who or kept)
+        self.reference.claim(self.reference_position())
 
     def _drop_readings_of_another_position(self):
-        r = self.reference
-        if not self._reference_matches(r.position):
-            r.clear()                                        # a reading of another posture or person must never be saved with this trial
+        if self.reference_mismatch():
+            self.reference.clear()                           # a reading of another posture or person must never be saved with this trial
 
     def set_reference(self, values=None, instrument=None, resolution_deg=None):
         """Keep what the operator typed. `values`: key -> list of readings in degrees (an empty list = not measured). Refused while recording."""
@@ -671,7 +697,7 @@ class Engine:
 
     def reference_for_this_position(self):
         """False when readings are held for another test, target or participant (they will not be saved with the next trial)."""
-        return self._reference_matches(self.reference.position)
+        return self.reference_mismatch() is None
 
     def _reference_meta(self):
         r = self.reference
@@ -694,10 +720,9 @@ class Engine:
         return compute_derived(self.test.derived, xy, px_cm / 10.0 if px_cm else None)
 
     def _asis_pair(self):
-        for spec in self.test.derived.values():
-            if spec.get("kind") == "hip_centre_frontal":
-                return spec["tested_asis"], spec["other_asis"]
-        return None
+        """(tested ASIS, other ASIS) of the test's computed hip centre, or None when the test has none."""
+        spec = next((d for d in self.test.derived.values() if d.get("kind") == "hip_centre_frontal"), None)
+        return tuple(derived_input_dots(spec)) if spec else None
 
     def pelvic_width_in_picture_mm(self):
         """The distance between the two ASIS in the latest picture in millimetres (ruler scale), or None."""
@@ -709,18 +734,20 @@ class Engine:
             return None
         return pelvic_width_mm((a.x, a.y), (b.x, b.y), px_cm / 10.0)
 
-    def pelvic_width_difference_pct(self):
-        """How much the picture's ASIS-to-ASIS distance differs from the typed tape measure, in percent of the tape measure, or None."""
-        w, tape = self.pelvic_width_in_picture_mm(), self.tape_pelvic_width_mm
+    def pelvic_width_difference_pct(self, width_mm=None):
+        """How much the picture's ASIS-to-ASIS distance (`width_mm`, else that of the latest picture) differs from the typed tape
+        measure, in percent of the tape measure, or None."""
+        w, tape = (self.pelvic_width_in_picture_mm() if width_mm is None else width_mm), self.tape_pelvic_width_mm
         return 100.0 * (w - tape) / tape if w is not None and tape else None
 
     def _hip_centre_header(self):
         """Picture header lines about the computed hip centre: it needs the ruler, and the ruler is checked against a typed tape measure."""
         if self.scale.live_px_per_cm() is None:
             return ["HIP CENTRE needs the ruler scale: mark both ruler dots (the angles about the hip centre stay blank without it)"]
-        pct = self.pelvic_width_difference_pct()
+        w = self.pelvic_width_in_picture_mm()
+        pct = self.pelvic_width_difference_pct(w)
         if pct is not None and abs(pct) > PELVIC_WIDTH_TAPE_WARN_PCT:
-            return [f"CHECK SCALE: the ASIS-to-ASIS distance is {self.pelvic_width_in_picture_mm():.0f} mm in the picture (ruler scale) but "
+            return [f"CHECK SCALE: the ASIS-to-ASIS distance is {w:.0f} mm in the picture (ruler scale) but "
                     f"{self.tape_pelvic_width_mm:.0f} mm by tape ({pct:+.0f} %): ruler not at the pelvis' distance, pelvis turned, or an ASIS dot misplaced?"]
         return []
 
@@ -737,9 +764,10 @@ class Engine:
                 "columns": "<name>_x and <name>_y in data.csv, picture pixels of the full picture; blank when a needed dot is lost or there is no ruler scale"}
 
     def _hip_centre_scale_meta(self):
-        if not self.test.derived:
+        if self._asis_pair() is None:
             return None
-        px_cm, w, pct = self.scale.px_per_cm, self.pelvic_width_in_picture_mm(), self.pelvic_width_difference_pct()
+        px_cm, w = self.scale.px_per_cm, self.pelvic_width_in_picture_mm()
+        pct = self.pelvic_width_difference_pct(w)
         return {"source": "ruler", "px_per_cm": round(px_cm, 4) if px_cm else None,
                 "pelvic_width_in_last_picture_mm": round(w, 1) if w is not None else None,
                 "pelvic_width_tape_mm": self.tape_pelvic_width_mm,
@@ -1026,7 +1054,7 @@ class Engine:
                 ds = math.hypot(xy[b1][0] - xy[b2][0], xy[b1][1] - xy[b2][1])
                 if ds > 1e-6 and dl < ratio * ds:
                     out.append(text)
-        if self.test.view == "frontal":
+        if self.test.frontal:
             out += self._frontal_marking_problems(xy)
         return out
 
@@ -1044,15 +1072,10 @@ class Engine:
         adduction without any other sign of it, so these block Lock like the sagittal label checks do."""
         t, o, p = (np.array(xy[n], float) if n in xy else None for n in self._frontal_dots())
         out = []
-        if t is None or o is None:
+        axes = pelvis_axes(t, o) if t is not None and o is not None else None
+        if axes is None:
             return out
-        width = float(np.hypot(*(t - o)))
-        if width < 1e-6:
-            return out
-        u = (t - o) / width
-        v = np.array([-u[1], u[0]])
-        if v[1] < 0:
-            v = -v
+        u, v, width = axes                                  # the same frame the hip centre is computed in
         left_expected = (self.tested_leg == "right") != bool(self.mirror)       # facing the camera, the right leg is on the picture's left
         if (t[0] < o[0]) != left_expected:
             out.append(f"with the {self.tested_leg} leg tested and the participant facing the camera, the tested ASIS should be on the "
@@ -1068,7 +1091,7 @@ class Engine:
 
     def _check_facing(self, states):
         """Compare the side of the body the dots show with the 'Participant faces' setting (audit ANG-04)."""
-        if self.test.view == "frontal":                       # the angles of a frontal test do not depend on which way the picture faces
+        if self.test.frontal:                                 # the angles of a frontal test do not depend on which way the picture faces
             self._facing_bad_frames, self.facing_detected = 0, None
             return
         xy = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
@@ -1334,7 +1357,7 @@ class Engine:
                 head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
             for problem in self.scale.problems():
                 head.append("SCALE: " + problem)
-            if self.test.derived:
+            if self._asis_pair() is not None:
                 head.extend(self._hip_centre_header())
             lost = [n for n, st in states.items() if st.lost]
             if lost:
@@ -1449,7 +1472,9 @@ class Engine:
             self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
             if self.reference.has_data() and self.reference_for_this_position():
-                self.reference.position = self.reference_position()  # from now on the readings are this participant's (also if typed before a code)
+                self.reference.claim(self.reference_position(), bind=True)   # from now on this participant's (also if typed before a code)
+            if self._pelvis_owner is None and (self.tape_pelvic_width_mm is not None or self.wall_posture):
+                self._pelvis_owner = participant or ""             # the tape measure and the wall tick too
             self._meta_start = copy.deepcopy(self._trial_meta())      # snapshot: meta.json reports these start values
             self.last_stop_reason = None
             self.rec.write_start_meta(self._meta_start)               # a complete meta.json right away (status 'recording')
@@ -1498,6 +1523,7 @@ class Engine:
 
     def _trial_meta(self):
         t = self.test
+        frontal = t.frontal
         meta = {
             "software_version": SOFTWARE_VERSION,
             "meta_schema": META_SCHEMA,
@@ -1535,11 +1561,11 @@ class Engine:
             "camera_check": self.camera_check,
             "facing_detected": {1: "right", -1: "left"}.get(self.facing_detected),   # what the marked dots show; should equal facing
             "view": self.test.view,
-            "facing_not_used": ("frontal view: these angles do not depend on which way the picture faces" if self.test.view == "frontal" else None),
-            "tested_leg": self.tested_leg if self.test.view == "frontal" else None,
-            "tape_pelvic_width_mm": self.tape_pelvic_width_mm if self.test.view == "frontal" else None,
+            "facing_not_used": "frontal view: these angles do not depend on which way the picture faces" if frontal else None,
+            "tested_leg": self.tested_leg if frontal else None,
+            "tape_pelvic_width_mm": self.tape_pelvic_width_mm if frontal else None,
             "sagittal_posture": ({"controlled_by": "standing against a wall: heel, buttocks and back touching", "measured": False,
-                                  "operator_ticked": bool(self.wall_posture)} if self.test.view == "frontal" else None),
+                                  "operator_ticked": bool(self.wall_posture)} if frontal else None),
             "derived_points": self._derived_meta(),
             "hip_centre_scale": self._hip_centre_scale_meta(),
             "reference_readings": self._reference_meta(),
@@ -1595,6 +1621,7 @@ class Engine:
                 meta["audio_cue_problem"] = {"error": self._cues.last_error, "times": self._cues.error_count,
                                              "meaning": "a beep could not be played during or before this recording; the participant may not have heard every cue"}
             rec, self.rec = self.rec, None                      # cleared first: a failure while saving must not leave 'recording' on
+            self._clear_pelvis_facts_of_another_participant()   # the code may have been changed for the next participant during the recording
             self._cues.cancel()                                 # no cue after the recording has ended
             self._auto = None
             if self.force is not None:

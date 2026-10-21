@@ -236,15 +236,16 @@ def test_the_table_of_a_folder_is_written_with_the_repeat_marked(tmp_path):
 PTS = leg_points(hip_flex=90, knee_flex=60, ankle_df=5)
 
 
-def knee_engine(tmp_path, frames=8):
+def knee_engine(tmp_path, frames=8, pts=PTS, target=60.0):
+    """A knee_extension engine at `target` with every dot of `pts` marked (also used by test_reference_review.py)."""
     eng = Engine(TESTS, recordings_dir=tmp_path)
     eng.set_test("knee_extension")
-    eng.target = 60.0
-    eng.process(render(PTS, seed=0), 0.0)
+    eng.target = target
+    eng.process(render(pts, seed=0), 0.0)
     for n in eng.active_dots:
-        assert eng.mark_dot(n, *(PTS[n] + 2))
+        assert eng.mark_dot(n, *(pts[n] + 2))
     for i in range(frames):
-        eng.process(render(PTS, seed=i), 0.1 + i / 30)
+        eng.process(render(pts, seed=i), 0.1 + i / 30)
     return eng
 
 

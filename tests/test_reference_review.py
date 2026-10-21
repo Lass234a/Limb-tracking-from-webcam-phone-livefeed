@@ -16,6 +16,8 @@ from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.review import ReferenceDialog, ReferenceValidationDialog, ReviewTab, Trial  # noqa: E402
 from limbtrack.synthetic import frontal_points, leg_points, render  # noqa: E402
 
+from tests import test_reference as R  # noqa: E402  (its knee_engine marks a knee trial)
+
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
 PTS = leg_points(hip_flex=90, knee_flex=60, ankle_df=5)
@@ -24,14 +26,7 @@ PTS = leg_points(hip_flex=90, knee_flex=60, ankle_df=5)
 def knee_trial(tmp_path, typed=None, stamp=True, participant="P01", target=60.0, knee=60.0):
     """A short recorded knee trial; `typed`: the readings typed before recording (key -> list), `stamp`: press 'reading taken now' first."""
     pts = leg_points(hip_flex=90, knee_flex=knee, ankle_df=5)
-    eng = Engine(TESTS, recordings_dir=tmp_path)
-    eng.set_test("knee_extension")
-    eng.target = target
-    eng.process(render(pts, seed=0), 0.0)
-    for n in eng.active_dots:
-        assert eng.mark_dot(n, *(pts[n] + 2))
-    for i in range(8):
-        eng.process(render(pts, seed=i), 0.1 + i / 30)
+    eng = R.knee_engine(tmp_path, pts=pts, target=target)
     if stamp:
         eng.take_reference_stamp()
     if typed:
@@ -135,14 +130,7 @@ def test_a_reading_saved_with_the_trial_can_be_changed_and_removed_in_review(tmp
 
 def two_trials_of_one_position(tmp_path, typed):
     """Two recorded knee trials of one position that share one typed reading and one 'reading taken now' (one pair, not two)."""
-    eng = Engine(TESTS, recordings_dir=tmp_path)
-    eng.set_test("knee_extension")
-    eng.target = 60.0
-    eng.process(render(PTS, seed=0), 0.0)
-    for n in eng.active_dots:
-        assert eng.mark_dot(n, *(PTS[n] + 2))
-    for i in range(8):
-        eng.process(render(PTS, seed=i), 0.1 + i / 30)
+    eng = R.knee_engine(tmp_path, pts=PTS)
     eng.participant_code = "P01"
     eng.take_reference_stamp()
     eng.set_reference(typed)

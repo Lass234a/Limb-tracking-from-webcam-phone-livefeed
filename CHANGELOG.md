@@ -3,6 +3,14 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.17.2 - 2026-10-21
+
+### Code clean-up of 0.14.0-0.17.1 (a /simplify review: reuse, simplification, efficiency, altitude)
+- **One place for each rule:** whether typed readings belong to the position the window is at, and whose they are, is now `ReferenceReadings.mismatch` / `claim` (the engine and the Live tab ask it instead of working it out each); the tape measure of the pelvis and the wall tick belong to a participant in the **engine** (`_PelvisFact`, `Engine.participant_code` is a property), not in the window, so it is tested without a window and also covers a recording whose saving failed; the per-angle averages are forgotten by one `_forget_angle_averages` (it was pasted in four places, which is how `_ref_last` was missed before 0.17.1); the pelvis frame of the frontal tests is `geometry.pelvis_axes` (the hip centre and the swapped-ASIS check used two copies); computed points are worked out from the same input dots that are clicked for them (`compute_derived` reads `DERIVED_KINDS`); `TestDef.frontal`, `Trial.main_angle` / `primary_angle` replace repeated checks; one helper fills and selects the reference instrument boxes in the Live tab and in Review; one helper puts a refused tick box back.
+- **Less work:** the force-against-angle view keeps its window dots and star and only gives them new data when the window is dragged, and colours the path from one palette of 64 brushes (one brush per picture made pyqtgraph draw a symbol per picture: about 100 ms per redraw for a 30 s trial at 60 pictures per second); a view switch or a new trial draws it once; the window's force summary is worked out once per update and shared by the view, the Force tab and the Calibration tab; Review takes the first second of a trial from the trial already open instead of reading data.csv again; the Reference tab is re-set only when its text changes (it no longer jumps back to the top while the window is dragged).
+- **Changes no measured number.** The path of the force-against-angle view is coloured in 64 steps instead of one colour per picture (it looks the same).
+- Tests: `test_frontal_engine.py` +1 (the engine clears the tape measure and the wall tick, also when the code is changed during a recording); the test helpers share `knee_engine` and `RunningCamera` instead of copies. Version 0.17.2.
+
 ## 0.17.1 - 2026-10-21
 
 ### Reference readings: four ways a reading could be saved wrongly or not at all (code review of 0.14.0-0.17.0)

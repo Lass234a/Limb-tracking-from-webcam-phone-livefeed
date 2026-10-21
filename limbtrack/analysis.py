@@ -114,8 +114,9 @@ def time_colours(n):
     if n <= 0:
         return []
     stops = np.array(TIME_COLOUR_STOPS, float)
-    pos = np.linspace(0.0, len(stops) - 1.0, n)
-    return [tuple(int(round(float(np.interp(p, np.arange(len(stops)), stops[:, c])))) for c in range(3)) for p in pos]
+    pos, idx = np.linspace(0.0, len(stops) - 1.0, n), np.arange(len(stops))
+    rgb = np.rint(np.column_stack([np.interp(pos, idx, stops[:, c]) for c in range(3)])).astype(int)     # (round half to even, as round())
+    return [tuple(c) for c in rgb.tolist()]
 
 
 def force_angle_path(tr, picture_delay=0.0):
@@ -129,7 +130,7 @@ def force_angle_path(tr, picture_delay=0.0):
     the time the analysis window is in), ok (both numbers there), unit, angle_name."""
     if not tr.has_force():
         return None
-    main = next((a for a in tr.angle_defs if a.primary), tr.angle_defs[0] if tr.angle_defs else None)
+    main = tr.main_angle
     if main is None:
         return None
     unit, ys, _ = tr.force_signal()
@@ -195,7 +196,7 @@ def trial_checks(tr, t0=None, t1=None):
         add("check", "Dots under the 2 cm minimum: " + ", ".join(small))
     # position during the hold
     w = (t0, t1) if t0 is not None else (tr.force_window() if tr.has_force() else None) or tr.hold_window() or (float(tr.t[0]), float(tr.t[-1]))
-    main = next((a for a in tr.angle_defs if a.primary), None)
+    main = tr.primary_angle
     if main is not None and m.get("target_deg") is not None:
         mask = (tr.t >= w[0]) & (tr.t <= w[1])
         vals = tr.deg[main.name][mask]
@@ -301,8 +302,8 @@ def session_row(tr):
         row.update(torque_peak_nm=tq["peak_nm"], torque_at_peak_force_nm=tq["at_peak_force_nm"], arm_at_peak_force_cm=tq["arm_at_peak_force_cm"],
                    torque_stand_in_pictures=tq["pictures_with_stand_in"])
     row["checks_to_look_at"] = " | ".join(text for lvl, text in trial_checks(tr, *win) if lvl == "check")
-    primary = next((a for a in tr.angle_defs if a.primary), None)        # the typed reference of the main joint, beside the app's angle at the same moment
-    ref = next((r for r in tr.reference_rows() if primary is not None and r["key"] == primary.name), None)
+    primary = tr.primary_angle                       # the typed reference of the main joint, beside the app's angle at the same moment
+    ref = next((r for r in tr.reference_rows() if r["key"] == primary.name), None) if primary is not None else None
     if ref is not None:
         row.update(reference_main_deg=ref["reference_deg"], reference_instrument=ref["instrument"], app_main_at_reading_deg=ref["app_deg"],
                    app_minus_reference_main_deg=ref["difference_deg"], reference_app_basis=ref["app_basis"] or "")
