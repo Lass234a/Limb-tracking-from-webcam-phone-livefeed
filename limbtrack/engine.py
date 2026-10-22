@@ -36,7 +36,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.18.0"
+SOFTWARE_VERSION = "0.18.1"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -508,8 +508,22 @@ class Engine:
             if self.rec is None:
                 self.scale.reset()
 
-    def mark_dot(self, name, x, y):
-        """Operator clicked a dot on the live image. On failure, `mark_problem` says why (None = no dot found there)."""
+    def start_remarking(self):
+        """The operator is marking every dot again while the old dots keep tracking (LiveTab 'Redo all'): the locked position no longer
+        describes the participant, and what was worked out from the old dots (smoothed angles, the facing check) is forgotten, as when
+        the dots are cleared. Nothing is cleared: a dot that is not marked again keeps its tracker."""
+        with self.lock:
+            self._forbid_while_recording("the marked dots")
+            self._facing_bad_frames, self.facing_detected = 0, None
+            self._forget_angle_averages()
+            self._hist.clear()
+            self.unlock_position()
+
+    def mark_dot(self, name, x, y, replacing=()):
+        """Operator clicked a dot on the live image. On failure, `mark_problem` says why (None = no dot found there).
+
+        `replacing`: dots that are about to be marked again in the same pass; their old trackers do not count as 'a dot another tracker
+        holds' (an old tracker that has slipped onto this sticker must not stop it being marked)."""
         with self.lock:
             self.mark_problem = None
             if self.rec is not None:
@@ -526,7 +540,7 @@ class Engine:
             t = self.trackers.trackers[name]
             # never onto a dot another tracker holds (first marking or re-mark)
             for other, o in self.trackers.trackers.items():
-                if other == name or not o.initialised or other not in self.trackers.enabled or o.lost_frames:
+                if other == name or other in replacing or not o.initialised or other not in self.trackers.enabled or o.lost_frames:
                     continue
                 if (o.x - t.x) ** 2 + (o.y - t.y) ** 2 < (NEIGHBOUR_EXCLUSION_FACTOR * o.diam) ** 2:
                     self.trackers.trackers[name] = old

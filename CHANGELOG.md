@@ -3,6 +3,16 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.18.1 - 2026-10-22
+
+### Redo all marks every dot again without clearing first
+- **Why:** in 0.18.0 *Redo all (D)* forgot every dot and the lock before the first click, so stopping half way (or a wrong key) lost all the dots, and the dots that were still fine were lost for nothing.
+- **Now:** *Redo all (D)* / D / F4 asks for the dots one after the other (*Mark again (3 of 7): click the ... dot*) and **the old dots keep tracking until each is replaced**. Pressing it again (*Stop (D)*) ends the pass with nothing changed. The dot asked for is blue, the ones still to do have a dashed edge. A dot's own button skips the dot asked for (*Skip* in the Dots section) or takes another dot next. **The lock is released at the first dot that has really been marked again**, not before; a pass that is stopped or only skips leaves it. A recording, a break, a stopped camera, another test, *Clear all dots and start again*, a new dot colour or mirroring ends the pass.
+- **Engine:** `Engine.start_remarking()` (unlock, forget the smoothed angles / reference averages / live-trace history / facing check; clears no dot) and `Engine.mark_dot(name, x, y, replacing=())`: the old trackers of the dots still to do in the pass do not count as "a dot another tracker holds" (an old tracker that slipped onto a moved sticker must not stop it being marked; tested: without it a realistic move cannot be re-marked in one pass). A click on a dot that is already marked again is still refused; two dots on one sticker are still caught by CHECK LABELS before Lock.
+- *Clear all dots and start again* (Dots section) is unchanged and is the way to forget every dot first.
+- **Changes no measured number.** No tracker, angle, recording, CSV or Review code was touched; a dot marked again is a new starting point for that tracker, as with any re-mark.
+- Tests: `test_mark_again.py` (20 new; a mutation check: with `replacing` switched off three of them fail), three tests of `test_pinned_bar.py` changed to the new behaviour. Looked at in a real window with synthetic dots (blue / dashed / solid buttons, *Stop (D)*); not with a person.
+
 ## 0.18.0 - 2026-10-22
 
 ### Position and dots always in view, with keys (from the first real testing: re-applying the dots and changing position took too many steps)

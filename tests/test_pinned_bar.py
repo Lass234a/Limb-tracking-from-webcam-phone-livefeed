@@ -257,16 +257,16 @@ def test_the_buttons_are_off_during_a_break_and_without_a_camera(win):
 
 
 # ------------------------------------------------------------------------------------------------ redo all dots
-def test_redo_all_dots_clears_the_dots_and_the_lock_and_the_clicks_mark_them_in_order(win):
+def test_redo_all_starts_a_pass_that_changes_nothing_until_the_first_click(win):
+    """What a pass does dot by dot is in test_mark_again.py; here: the bar's button starts and stops it."""
     live = win.live
     mark_all(win)
     assert win.engine.lock_position()
     live.btn_redo_dots.click()
-    assert not win.engine.locked and set(win.engine.dot_status().values()) - {"off"} == {"unmarked"}
-    assert all(live.chips[n].styleSheet() == DOT_CHIP_STYLE["unmarked"] for n in win.engine.active_dots)
-    first = win.engine.next_dot_to_mark()
-    live.on_click(*(PTS[first] + 2))
-    assert win.engine.dot_status()[first] == "ok"
+    assert live._pass == list(win.engine.active_dots) and live._arm == live._pass[0] and live.btn_redo_dots.text() == "Stop (D)"
+    assert win.engine.locked and set(win.engine.dot_status().values()) - {"off"} == {"ok"}          # nothing changed yet
+    live.btn_redo_dots.click()
+    assert not live._pass and live._arm is None and live.btn_redo_dots.text() == "Redo all (D)" and win.engine.locked
 
 
 # ------------------------------------------------------------------------------------------------ keys
@@ -283,10 +283,9 @@ def test_d_and_f4_redo_the_dots_n_and_b_f3_and_f2_move_the_position(win):
     QApplication.processEvents()
     mark_all(win)
     QTest.keyClick(live, Qt.Key_D)
-    assert set(win.engine.dot_status().values()) - {"off"} == {"unmarked"}
-    mark_all(win)
+    assert live._pass                                                              # D starts it ...
     QTest.keyClick(live, Qt.Key_F4)
-    assert set(win.engine.dot_status().values()) - {"off"} == {"unmarked"}
+    assert not live._pass                                                          # ... F4 is the same key: it stops it
     here = live._plan_current
     QTest.keyClick(live, Qt.Key_N)
     assert live._plan_current == here + 1
@@ -322,10 +321,12 @@ def test_the_letters_are_typed_into_the_notes_box_and_the_f_keys_still_work(win)
     live.notes.setFocus()
     QTest.keyClicks(live.notes, "bad dn 3")                                        # contains b, d, n and a digit
     assert live.notes.text() == "bad dn 3"
-    assert set(win.engine.dot_status().values()) - {"off"} == {"ok"} and live._plan_current == 0 and live._arm is None
+    assert set(win.engine.dot_status().values()) - {"off"} == {"ok"} and live._plan_current == 0 and live._arm is None and not live._pass
     QTest.keyClick(live.notes, Qt.Key_F3)                                          # F-keys work from inside the box
     assert live._plan_current == 1
     QTest.keyClick(live.notes, Qt.Key_F4)
-    assert set(win.engine.dot_status().values()) - {"off"} == {"unmarked"}
+    assert live._pass                                                              # Redo all started
+    QTest.keyClick(live.notes, Qt.Key_F4)
+    assert not live._pass
     assert "F4" in live.key_hint.text() and "F2/F3" in live.key_hint.text()
     win.hide()
