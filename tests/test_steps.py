@@ -370,10 +370,22 @@ def test_the_short_sections_need_no_scrolling(win):
     win.resize(1400, 820)
     win.show()
     QApplication.processEvents()
+    # The pinned bar (0.18.0) keeps its height for good, taken from the sections: the window gets that much more, so the test still says
+    # that the sections themselves fit in the room they had before it.
+    live.quick_bar.setVisible(False)
+    QApplication.processEvents()
+    room = live.side_scroll.viewport().height()
+    live.quick_bar.setVisible(True)
+    QApplication.processEvents()
+    win.resize(1400, 820 + room - live.side_scroll.viewport().height())
+    QApplication.processEvents()
     for key in ("participant", "camera"):
         live.accordion.open(key)
         QApplication.processEvents()
-        assert live.side_scroll.widget().sizeHint().height() <= live.side_scroll.viewport().height() + 40, key    # no real scrolling
+        QApplication.processEvents()
+        # (the scroll range itself: a section that only just fits makes the panel flip between two widths when its scroll bar comes and
+        # goes, and the section's size hint at the narrower width is then taller than what is really needed)
+        assert live.side_scroll.verticalScrollBar().maximum() <= 40, key                                  # no real scrolling
     win.hide()
 
 

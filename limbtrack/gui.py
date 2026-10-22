@@ -16,7 +16,7 @@ from PySide6.QtCore import QRect, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
                                QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
-                               QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
+                               QSizePolicy, QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
 
 from . import privacy, reference, session_memory
 from .session_log import SessionLog
@@ -49,6 +49,15 @@ STEP_HINT = {"participant": "Enter the participant code (P01, ...). Code only, n
              "markers": "Switch the automatic markers and the beeps on, and try them (Test the beeps, Try it without recording).",
              "record": "Press Start recording (R)."}
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
+# The dots as small buttons in the pinned bar: a short name each (the full title is the tooltip) and a style per state.
+DOT_CHIP_NAMES = {"iliac_crest": "Crest", "trochanter": "Troch.", "epicondyle": "Epicond.", "fibular_head": "Fibula", "malleolus": "Malleol.",
+                  "mt5_base": "MT5 base", "mt5_head": "MT5 head", "asis": "ASIS", "asis_opposite": "ASIS 2", "patella": "Patella",
+                  "strap": "Strap", "anchor": "Anchor"}
+DOT_CHIP_COLUMNS = 5
+DOT_CHIP_STYLE = {"ok": "color: #4ade80; border: 1px solid #16a34a; background: rgba(22,163,74,0.12);",
+                  "lost": "color: #fbbf24; border: 1px solid #d97706; background: rgba(217,119,6,0.18); font-weight: bold;",
+                  "unmarked": "color: #9ca3af; border: 1px solid rgba(128,128,128,0.45); background: transparent;",
+                  "armed": "color: #111; border: 2px solid #60a5fa; background: #60a5fa; font-weight: bold;"}
 
 
 def trace_y_range(arrays, centre, half_span):
@@ -547,6 +556,10 @@ class LiveTab(QWidget):
         self.lm_checks, self.lm_status, self.lm_buttons, self.lm_rows = {}, {}, {}, {}
         self.lm_holder = QVBoxLayout()
         self.lm_holder.setSpacing(2)
+        self.chip_grid = QGridLayout()                   # the same dots as small buttons in the pinned bar (built in rebuild_landmarks)
+        self.chip_grid.setSpacing(3)
+        self.chip_grid.setContentsMargins(0, 0, 0, 0)
+        self.chips = {}
         self.lm_info = QLabel()
         self.lm_info.setWordWrap(True)
         lm_hint = QLabel("To redo ONE dot, press its Re-mark button and then click that dot on the video. The other dots stay as they are.")
@@ -619,7 +632,7 @@ class LiveTab(QWidget):
         self.notes = TextField()
         self.notes.setPlaceholderText("No names or health details")
         self.key_hint = QLabel("Typing: the letter keys are off while a text box has focus. Press Enter or Esc to leave it, "
-                               "or use F5 record, F6 MVIC start, F7 MVIC end, F8 marker, F9 lock.")
+                               "or use F5 record, F6 MVIC start, F7 MVIC end, F8 marker, F9 lock, F4 redo dots, F2/F3 position.")
         self.key_hint.setWordWrap(True)
         self.key_hint.setStyleSheet("color: #d97706; font-weight: bold;")
         self.key_hint.setVisible(False)
@@ -930,6 +943,49 @@ class LiveTab(QWidget):
         self.chk_force_skip.setToolTip("Only tells the step list that you have decided. Not remembered: it is asked again every session.")
         fcf.addRow(self.chk_force_skip)
 
+        # --- the pinned bar: the position and the dots, in view whichever section is open (a change of position or a re-marking is
+        # needed all the time during a session, and the sections they live in close each other)
+        self._plan_current = None                        # the row of the session plan the window is at (None: not a plan position)
+        self.pos_combo = NoWheelComboBox()
+        self.pos_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.pos_combo.setMinimumContentsLength(10)
+        self.pos_combo.setPlaceholderText("not a plan position")
+        self.pos_combo.activated.connect(self.go_to_position)
+        self.btn_pos_prev = QPushButton("◀")
+        self.btn_pos_prev.setToolTip("Previous position of the plan  (B or F2)")
+        self.btn_pos_prev.clicked.connect(lambda: self.step_position(-1))
+        self.btn_pos_next = QPushButton("▶")
+        self.btn_pos_next.setToolTip("Next position of the plan  (N or F3)")
+        self.btn_pos_next.clicked.connect(lambda: self.step_position(+1))
+        for b in (self.btn_pos_prev, self.btn_pos_next):
+            b.setFocusPolicy(Qt.NoFocus)                 # (a click must not take the keyboard from the letter keys)
+            b.setFixedWidth(34)
+        self.pos_combo.setFocusPolicy(Qt.NoFocus)
+        self.btn_redo_dots = QPushButton("Redo all (D)")              # the last cell of the dot buttons (rebuild_dot_chips)
+        self.btn_redo_dots.setToolTip("Redo all dots: forgets every marked dot and the lock; then click the dots on the video in the order "
+                                      "asked.\nTo redo only one dot, press its button (or its number key).")
+        self.btn_redo_dots.setFocusPolicy(Qt.NoFocus)
+        self.btn_redo_dots.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.btn_redo_dots.setMinimumWidth(40)
+        self.btn_redo_dots.setStyleSheet("font-weight: bold;")
+        self.btn_redo_dots.clicked.connect(self.remark)
+        quick_bar = QFrame()                                          # (kept low: every pixel of it is taken from the open section)
+        quick_bar.setFrameShape(QFrame.StyledPanel)
+        qb = QVBoxLayout(quick_bar)
+        qb.setContentsMargins(6, 4, 6, 4)
+        qb.setSpacing(3)
+        pos_label = QLabel("Position")
+        pos_label.setStyleSheet("font-weight: bold;")
+        prow = QHBoxLayout()
+        prow.setSpacing(3)
+        prow.addWidget(pos_label)
+        prow.addWidget(self.btn_pos_prev)
+        prow.addWidget(self.pos_combo, 1)
+        prow.addWidget(self.btn_pos_next)
+        qb.addLayout(prow)
+        qb.addLayout(self.chip_grid)
+        self.quick_bar = quick_bar
+
         # --- session plan: every position of the protocol with the trials already saved for this participant
         self.plan = QListWidget()
         self.plan.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -976,6 +1032,7 @@ class LiveTab(QWidget):
         head.addWidget(self.strip)
         head.addWidget(self.instruction)
         head.addLayout(quick)
+        head.addWidget(self.quick_bar)
         self.accordion = Accordion()
         for number, key, title, widgets in (("1", "participant", "Participant", [pc]),
                                             ("2", "camera", "Camera", [src]),
@@ -1038,7 +1095,15 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_M), self, activated=self.btn_mark.click)
         QShortcut(QKeySequence(Qt.Key_Z), self, activated=self.btn_force_zero.click)
         QShortcut(QKeySequence(Qt.Key_G), self, activated=self.btn_ref_stamp.click)
+        QShortcut(QKeySequence(Qt.Key_D), self, activated=self.btn_redo_dots.click)
+        QShortcut(QKeySequence(Qt.Key_N), self, activated=self.btn_pos_next.click)
+        QShortcut(QKeySequence(Qt.Key_B), self, activated=self.btn_pos_prev.click)
+        for number in range(1, 10):                       # 1..9: redo the dot with that number in the pinned bar
+            QShortcut(QKeySequence(Qt.Key_0 + number), self, activated=lambda number=number: self.redo_dot_number(number))
         # The F-keys work even while a text box has focus (letters would be typed into it): audit GUI-13.
+        QShortcut(QKeySequence(Qt.Key_F2), self, activated=self.btn_pos_prev.click)
+        QShortcut(QKeySequence(Qt.Key_F3), self, activated=self.btn_pos_next.click)
+        QShortcut(QKeySequence(Qt.Key_F4), self, activated=self.btn_redo_dots.click)
         QShortcut(QKeySequence(Qt.Key_F5), self, activated=self.btn_rec.click)
         QShortcut(QKeySequence(Qt.Key_F6), self, activated=self.btn_start_mark.click)
         QShortcut(QKeySequence(Qt.Key_F7), self, activated=self.btn_end_mark.click)
@@ -1627,6 +1692,7 @@ class LiveTab(QWidget):
             rl.addWidget(btn)
             self.lm_holder.addWidget(row)
             self.lm_checks[n], self.lm_status[n], self.lm_buttons[n], self.lm_rows[n] = cb, state, btn, row
+        self.rebuild_dot_chips()
         self.update_dot_rows()
         self.rebuild_three_point_choices()
         self.lm_preset.clear()
@@ -1636,6 +1702,29 @@ class LiveTab(QWidget):
         for a in t.angles:
             self.lm_preset.addItem(f"Preset: only {a.title}", list(dict.fromkeys(a.dots)))
         self.update_landmark_info()
+
+    def rebuild_dot_chips(self):
+        """The pinned bar's dot buttons: one per landmark of the current test, numbered (the number key re-marks that dot). Each does what
+        the Mark / Re-mark button in the landmark list does (arm_dot), so there is one way of redoing a dot."""
+        t = self.engine.test
+        for chip in self.chips.values():
+            self.chip_grid.removeWidget(chip)
+            chip.deleteLater()
+        self.chips = {}
+        for i, n in enumerate(t.all_dots):
+            short = DOT_CHIP_NAMES.get(n) or t.dot_title(n).split(" (")[0][:10]
+            chip = QPushButton(f"{i + 1} {short}" if i < 9 else short)
+            chip.setFocusPolicy(Qt.NoFocus)
+            chip.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)          # (never makes the panel wider than the window)
+            chip.setMinimumWidth(40)
+            chip.clicked.connect(lambda _=False, name=n: self.arm_dot(name))
+            self.chip_grid.addWidget(chip, i // DOT_CHIP_COLUMNS, i % DOT_CHIP_COLUMNS)
+            self.chips[n] = chip
+        cells = max(len(t.all_dots), 2 * DOT_CHIP_COLUMNS - 1)          # (Redo all sits in the last cell: bottom right)
+        self.chip_grid.removeWidget(self.btn_redo_dots)
+        self.chip_grid.addWidget(self.btn_redo_dots, cells // DOT_CHIP_COLUMNS, cells % DOT_CHIP_COLUMNS)
+        for c in range(DOT_CHIP_COLUMNS):
+            self.chip_grid.setColumnStretch(c, 1)
 
     DOT_STATE = {"ok": ("marked", "#16a34a"), "lost": ("LOST", "#d97706"), "unmarked": ("not marked", "#9ca3af"), "off": ("not used", "#9ca3af")}
 
@@ -1661,6 +1750,16 @@ class LiveTab(QWidget):
             if btn.isChecked() != armed:
                 btn.setChecked(armed)
             btn.setEnabled(s != "off" and free)
+            chip = self.chips.get(n)
+            if chip is not None:
+                chip.setVisible(s != "off")                     # a dot that is not used has no button
+                style = DOT_CHIP_STYLE["armed" if armed else s if s != "off" else "unmarked"]
+                if chip.styleSheet() != style:
+                    chip.setStyleSheet(style)
+                tip = f"{self.engine.test.dot_title(n)}: {'waiting for your click on the video' if armed else text}"
+                if chip.toolTip() != tip:
+                    chip.setToolTip(tip)
+                chip.setEnabled(s != "off" and free)
 
     def arm_dot(self, name):
         """The button of one landmark: the next click on the picture marks that dot (again) and leaves every other dot alone.
@@ -1675,6 +1774,15 @@ class LiveTab(QWidget):
         self._arm = None if self._arm == name else name
         self.update_dot_rows()
         self.say(f"Click the {self.engine.test.dot_title(name)} dot on the video." if self._arm else "Cancelled: no dot will be changed.", 8.0)
+
+    def redo_dot_number(self, number):
+        """The number key of a dot button in the pinned bar: the same as pressing it (a dot that is not used has no button)."""
+        names = list(self.engine.test.all_dots)
+        if not 1 <= number <= len(names):
+            return
+        chip = self.chips.get(names[number - 1])
+        if chip is not None and chip.isEnabled() and not chip.isHidden():
+            chip.click()
 
     def update_kind_note(self, *_):
         kind = self.kind_combo.currentData()
@@ -2354,10 +2462,12 @@ class LiveTab(QWidget):
         valid = privacy.check_participant_id(pid) is None
         cur_key, cur_tgt = self.engine.test.key, (self.engine.target if self.engine.primary_angle else None)
         current, n_cur = None, 0
+        pinned = []                                       # the same rows for the pinned dropdown: "Knee extension, 70 deg   (1/2)"
         for i, (key, tgt) in enumerate(self.plan_rows):
             n = count_trials(self.recordings_dir, pid, key, tgt) if valid else 0
             mark = "-" if not valid else ("done" if n >= TRIALS_PER_POSITION else f"{n}/{TRIALS_PER_POSITION}")
             text = f"{mark:>5}   {self._plan_text(key, tgt)}"
+            pinned.append(self._plan_text(key, tgt) + (f"   ({mark})" if valid else ""))
             item = self.plan.item(i)
             if item.text() != text:
                 item.setText(text)
@@ -2368,6 +2478,18 @@ class LiveTab(QWidget):
         self.plan.blockSignals(False)
         if current is not None:
             self.plan.scrollToItem(self.plan.item(current))
+        self._plan_current = current
+        pc = self.pos_combo
+        pc.blockSignals(True)                             # (only a pick by the operator, 'activated', goes on to change the position)
+        if pc.count() != len(pinned):
+            pc.clear()
+            pc.addItems(pinned)
+        else:
+            for i, text in enumerate(pinned):
+                if pc.itemText(i) != text:
+                    pc.setItemText(i, text)
+        pc.setCurrentIndex(-1 if current is None else current)
+        pc.blockSignals(False)
         where = self._plan_text(cur_key, cur_tgt)
         if not valid:
             self.trial_label.setText("Enter the participant code (P01, ...) to count trials.")
@@ -2377,19 +2499,41 @@ class LiveTab(QWidget):
             self.trial_label.setText(f"{where}: {n_cur} trials already saved (planned {TRIALS_PER_POSITION}). Another is trial {n_cur + 1}.")
         else:
             self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}\n{where}")
+        pc.setToolTip(self.trial_label.text().split("\n")[0] + "\nPick another position to set the test and the target in one step.")
 
     def on_plan_clicked(self, item):
-        key, tgt = self.plan_rows[self.plan.row(item)]
+        self.go_to_position(self.plan.row(item))
+
+    def go_to_position(self, row):
+        """Set the test and the target of one row of the session plan: from the plan list, the pinned dropdown or the previous/next keys.
+        The marked dots stay when the new test has the same landmarks (the engine decides, see Engine.set_test)."""
+        if not 0 <= row < len(self.plan_rows):
+            return
+        key, tgt = self.plan_rows[row]
+        if self.engine.rec is not None:
+            self.say("Stop recording before changing the position.")
+            self.refresh_plan()
+            return
         idx = self.test_combo.findData(key)
         if idx != self.test_combo.currentIndex():
             self.test_combo.setCurrentIndex(idx)
-            if self.engine.test.key != key:               # the engine refused (recording)
+            if self.engine.test.key != key:               # the engine refused
                 self.refresh_plan()
                 return
         self.target_spin.setValue(float(tgt) if tgt is not None else self.target_spin.minimum())
         self.note("position chosen", f"{key} {tgt if tgt is not None else ''}".strip())
         self.say("Position set. Mark the dots if needed, check the angles, then lock.", 5.0)
         self.refresh_plan()
+
+    def step_position(self, delta):
+        """The previous (-1) or next (+1) row of the session plan. It stops at the ends; from a position that is not in the plan it
+        starts at the first (next) or the last (previous) row."""
+        rows, cur = len(self.plan_rows), self._plan_current
+        row = (0 if delta > 0 else rows - 1) if cur is None else cur + delta
+        if not 0 <= row < rows:
+            self.say("This is the last position of the plan." if delta > 0 else "This is the first position of the plan.", 4.0)
+            return
+        self.go_to_position(row)
 
     # ------------------------------------------------------------ privacy and folder
     folder_changed = Signal(str)
@@ -2764,7 +2908,8 @@ class LiveTab(QWidget):
         for w in (*self.camera_checks.values(), self.camera_model):
             w.setEnabled(not recording)
         for w in (self.test_combo, self.kind_combo, self.facing_combo, self.leg_combo, self.tape_spin, self.chk_wall, self.target_spin,
-                  self.tol_spin, self.ntol_spin, self.btn_remark, self.btn_lock):
+                  self.tol_spin, self.ntol_spin, self.btn_remark, self.btn_lock, self.btn_redo_dots, self.pos_combo, self.btn_pos_prev,
+                  self.btn_pos_next):
             w.setEnabled(not recording)           # nothing that changes the measurement may change during a recording
         main_three_point = bool(self.engine.three_point) and self.engine.three_point_main
         self.suggest.setEnabled(not recording and not main_three_point)

@@ -3,6 +3,17 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.18.0 - 2026-10-22
+
+### Position and dots always in view, with keys (from the first real testing: re-applying the dots and changing position took too many steps)
+- **Why:** every new position, retried measurement or changed posture meant opening the *Dots* section (which closed the *Position* section) and pressing *Clear all dots and start again* or one *Re-mark* button; the position list was in a section that was closed whenever another one was open; there was no key for any of it.
+- **A pinned bar under the Lock / Record / Pause buttons** (outside the sections, never scrolls): the position as a dropdown of the whole session plan with the trial counts (`go_to_position`, the same path as a click on the plan list) and previous / next arrows; one numbered button per landmark (green marked, amber LOST, grey not marked, blue waiting for a click; a dot that is not used has no button), which do what the *Mark / Re-mark* button of the Dots section does, and *Redo all (D)* in the last cell. Switched off while recording; the engine refuses the changes in any case.
+- **The bar costs about 80 px of height** from the sections below it (kept to two rows plus the position line: no caption, the next trial is the dropdown's tooltip). On a 1400x820 window the Camera section now needs 66 px of scrolling and Record 23 px (offscreen fonts); Position and Dots needed 197 and 288 px before and are no longer opened during a session. `test_steps.py::test_the_short_sections_need_no_scrolling` now gives the window the bar's height and measures the scroll range (the old size-hint measure flipped between two panel widths when a section only just fitted): it still says that the sections fit in the room they had before the bar.
+- **Keys:** D (F4) redo all dots, 1-9 redo one dot, N (F3) next position, B (F2) previous position. Letters and digits are typed into a text or number box while it has the focus, the F-keys always work; the orange hint names the new F-keys.
+- `on_plan_clicked` became `go_to_position(row)` (no change in what it does, except that it now says "Stop recording before changing the position." instead of acting when called during a recording).
+- **Changes no measured number.** No tracker, angle, recording, CSV or Review code was touched.
+- Tests: `test_pinned_bar.py` (19 new). Looked at in a real window with synthetic dots at 1400x820 and 1280x720: the bar fits the panel and leaves room for the open section. Not looked at with a person.
+
 ## 0.17.2 - 2026-10-21
 
 ### Code clean-up of 0.14.0-0.17.1 (a /simplify review: reuse, simplification, efficiency, altitude)
