@@ -106,7 +106,7 @@ def test_csv_always_holds_the_unsmoothed_angle(tmp_path):
 def test_screen_verdict_uses_smoothed_value_and_csv_flag_the_raw_one(tmp_path):
     eng = Engine(TESTS, recordings_dir=tmp_path)
     eng.set_test("knee_extension")
-    eng.target = 60.0                                      # tolerance 3
+    eng.target, eng.tolerance = 60.0, 3.0                  # tolerance 3 (the protocol's default is 5 since 0.20.0)
     steady = leg_points(hip_flex=70, knee_flex=60, ankle_df=5)
     eng.process(render(steady, seed=0), 0.0)
     for n in eng.test.dots:

@@ -24,7 +24,7 @@ from .angles import measure, segment_pairs
 from .geometry import (HARRINGTON_DOWN, HARRINGTON_SIDEWAYS, KNEE_FACING_MIN_DEG, compute_derived, derived_input_dots, foot_handedness,
                        pelvic_width_mm, pelvis_axes, view_handedness)
 # PARKED-GHOST: from .geometry import anchored_ghost
-from .protocol import AngleDef
+from .protocol import AngleDef, position_number
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .force import smooth_signal
 from .recorder import FrameSizeChanged, TrialRecorder
@@ -37,13 +37,16 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.19.0"
+SOFTWARE_VERSION = "0.20.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
 STAMP_MAX_PICTURE_AGE_S = 1.0      # 'reading taken now' is refused when the latest picture is older than this (its angles are not of this moment)
 PELVIC_WIDTH_TAPE_WARN_PCT = 8.0   # frontal tests: warn when the ASIS-to-ASIS distance in the picture (ruler scale) and the typed tape measure differ by more
+# frontal tests: how hip flexion 0 and a straight knee are kept (not measured; the operator ticks it). The SOP v0.18 set-up since 0.20.0;
+# until 0.19.0 "standing against a wall: heel, buttocks and back touching"
+SAGITTAL_POSTURE = "standing with the hip against the treatment bench, knee straight"
 RIGID_PAIR_CHANGE = 0.25     # two dots on one bone (protocol rigid_pairs) whose distance changed by more than this fraction since marking: a dot
                              # may have jumped (P20 2026-10-22: +50 % and +290 % at the two ankle jumps; 25 % = 41 deg of turn out of the
                              # picture's plane; over P01-P20 it flags only real jumps). 0.19.0
@@ -104,7 +107,6 @@ class Engine:
     auto_mvic_seconds = _FrozenWhileRecording("the length of the automatic MVIC")
     audio_cues = _FrozenWhileRecording("the sound cues")
     cue_push_every_s = _FrozenWhileRecording("the interval of the motivating ticks")
-    tested_leg = _FrozenWhileRecording("which leg is tested")
     tape_pelvic_width_mm = _PelvisFact("the measured pelvic width")
     wall_posture = _PelvisFact("the wall posture tick")
 
@@ -159,7 +161,8 @@ class Engine:
         self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
-        self.tested_leg = "right"    # frontal tests: which leg is tested (the participant faces the camera: the right leg is on the picture's left)
+        self._legs = {}              # participant code -> the tested leg, 'right' / 'left' (see the tested_leg property; 0.20.0)
+        self._rec_leg = None         # the tested leg of the trial being recorded (taken when it starts)
         self._participant_code = ""  # the participant code in the window (see the participant_code property)
         self._pelvis_owner = None    # participant code the tape measure and the wall tick were entered for (None: before a code)
         self.pelvis_facts_cleared_for = None   # set when they were cleared for another participant: whose they were (the window says so)
@@ -404,6 +407,8 @@ class Engine:
                 return "The program is paused for a break. Press Resume (P) first, then lock the position."
             # Labels first: the side of the body is read from the foot dots, so swapped foot dots also look like the other side.
             bad = self.marking_problems()
+            if self.test.frontal and self.tested_leg is None:
+                return "Choose the tested leg of this participant in the Participant section, then lock (the side of the ASIS dots is checked from it)."
             if bad:
                 return "The dots look mislabelled: " + "; ".join(bad) + ". Use 'Re-mark all dots' and click them in the order asked."
             if self._dots_apart:
@@ -713,6 +718,36 @@ class Engine:
     def participant_code(self, code):
         self._participant_code = code or ""
         self._clear_pelvis_facts_of_another_participant()
+
+    @property
+    def tested_leg(self):
+        """Which leg is tested, 'right' or 'left', or None when it has not been chosen for this participant. Saved in every trial; in
+        the frontal tests it also decides which side the tested ASIS must be on (a swapped pair would turn abduction into adduction).
+        The leg belongs to the participant code (0.20.0): until 0.19.0 it was one setting per computer, carried over to the next
+        participant (P20, 2026-10-22: the other leg in all five dotted frontal trials). While recording: the leg the trial started with."""
+        if self.rec is not None:
+            return self._rec_leg
+        return self._legs.get(self._participant_code)
+
+    @tested_leg.setter
+    def tested_leg(self, leg):
+        self._forbid_while_recording("which leg is tested")
+        if leg not in ("right", "left", None):
+            raise ValueError(f"The tested leg is 'right' or 'left', not {leg!r}.")
+        if leg is None:
+            self._legs.pop(self._participant_code, None)
+        else:
+            self._legs[self._participant_code] = leg
+
+    @property
+    def tested_legs(self):
+        """Participant code -> tested leg, for every code a leg was chosen for (the window remembers it with the participant code)."""
+        return {k: v for k, v in self._legs.items() if k}
+
+    @tested_legs.setter
+    def tested_legs(self, legs):
+        self._forbid_while_recording("which leg is tested")
+        self._legs = {str(k): v for k, v in dict(legs or {}).items() if k and v in ("right", "left")}
 
     def _pelvis_facts_entered(self):
         given = getattr(self, "_tape_pelvic_width_mm", None) is not None or bool(getattr(self, "_wall_posture", False))   # (both set in __init__)
@@ -1162,7 +1197,8 @@ class Engine:
         """code -> text of every label check this test can show (for meta.json)."""
         out = {code: text for code, *_, text, _ in self.LABEL_CHECKS}
         if self.test.frontal:
-            out.update({"asis_side": "the tested ASIS, the other ASIS and the patella do not fit the 'Tested leg' (ASIS dots swapped, or the wrong 'Tested leg'?)",
+            out.update({"leg_not_chosen": "the tested leg was not chosen for this participant, so the side of the ASIS dots could not be checked",
+                        "asis_side": "the tested ASIS, the other ASIS and the patella do not fit the 'Tested leg' (ASIS dots swapped, or the wrong 'Tested leg'?)",
                         "patella_below": "the patella centre should be below the ASIS, towards the feet (wrong dot clicked?)",
                         "thigh_vs_pelvic_width": "the thigh (ASIS to patella centre) should be longer than the distance between the two ASIS"})
         return out
@@ -1194,7 +1230,10 @@ class Engine:
         upright = (abs(float(u[1])) <= math.sin(math.radians(self.UPRIGHT_PELVIS_MAX_DEG))
                    or (thigh is not None and abs(float(thigh[1])) >= abs(float(thigh[0]))))
         left_expected = (self.tested_leg == "right") != bool(self.mirror)       # facing the camera, the right leg is on the picture's left
-        if upright:
+        if self.tested_leg is None:                                             # 0.20.0: no leg chosen for this participant yet
+            out.append(("leg_not_chosen", "choose the tested leg in the Participant section first: without it the program cannot check "
+                                          "that the two ASIS dots are not swapped"))
+        elif upright:
             if (t[0] < o[0]) != left_expected:
                 out.append(("asis_side", f"with the {self.tested_leg} leg tested and the participant facing the camera, the tested ASIS should "
                                          f"be on the {'left' if left_expected else 'right'} of the other ASIS in the picture (ASIS dots "
@@ -1626,14 +1665,15 @@ class Engine:
                 h, w = self._last_gray.shape[:2]
                 frame_size = (w, h)
             self._privacy_hits = {}
+            self._rec_leg = self._legs.get(self._participant_code)   # (before self.rec is set: tested_leg then reads this)
             self._rehearsal = None                            # a try-out of the markers ends where the real thing begins
             self._pause_ghost = None                          # a trial's overlay video must not carry the ghost of a break
+            target = self.target if self.primary_angle else None
             self.rec = TrialRecorder(
-                self.recordings_dir, participant or "unnamed", self.test.key,
-                self.target if self.primary_angle else None,
+                self.recordings_dir, participant or "unnamed", self.test.key, target,
                 self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active,
                 save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks, with_force=self.force is not None,
-                derived_names=list(self.test.derived))
+                derived_names=list(self.test.derived), position=position_number(self.tests, self.test.key, target))
             self._marker_n = 0
             self._pending_event = None
             self._mvic_end_t = None
@@ -1713,6 +1753,10 @@ class Engine:
             "test_key": t.key,
             "test_label": t.label,
             "target_deg": self.target if self.primary_angle else None,
+            # 0.20.0: also in the file names. The position's number in the session plan (the SOP's test order: 1-21; None: not a plan
+            # position) and the trial number at that position (the trials already saved there + 1)
+            "position_number": getattr(self.rec, "position_number", None),
+            "trial_number": getattr(self.rec, "trial_number", None),
             "tolerance_deg": self.tolerance,
             "dots_used": self.active_dots,
             "dots_disabled": sorted(n for n in self.disabled_dots if n not in t.optional_dots),   # landmarks the operator switched off
@@ -1742,9 +1786,9 @@ class Engine:
             "facing_detected": {1: "right", -1: "left"}.get(self.facing_detected),   # what the marked dots show; should equal facing
             "view": self.test.view,
             "facing_not_used": "frontal view: these angles do not depend on which way the picture faces" if frontal else None,
-            "tested_leg": self.tested_leg if frontal else None,
+            "tested_leg": self.tested_leg,              # every test since 0.20.0 (frontal tests only before); None = not chosen
             "tape_pelvic_width_mm": self.tape_pelvic_width_mm if frontal else None,
-            "sagittal_posture": ({"controlled_by": "standing against a wall: heel, buttocks and back touching", "measured": False,
+            "sagittal_posture": ({"controlled_by": SAGITTAL_POSTURE, "measured": False,
                                   "operator_ticked": bool(self.wall_posture)} if frontal else None),
             "derived_points": self._derived_meta(),
             "hip_centre_scale": self._hip_centre_scale_meta(),

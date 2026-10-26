@@ -103,7 +103,7 @@ def test_tracking_a_moving_knee_and_recording(tmp_path):
     truth = [40 + 25 * math.sin(2 * math.pi * i / n) for i in range(n)]
     seq = _seq(n, lambda i: truth[i])
     eng = make_engine(tmp_path)
-    eng.target = 40.0
+    eng.target, eng.tolerance = 40.0, 3.0                  # (the protocol's default is 5 since 0.20.0)
     eng.process(render(seq[0], seed=0), 0.0)
     click_all(eng, seq[0])
     eng.process(render(seq[0], seed=0), 0.0)

@@ -77,8 +77,9 @@ def test_clicking_a_row_sets_test_target_and_the_next_trial_caption(win):
     assert f"trial 2 of {TRIALS_PER_POSITION}" in live.trial_label.text()
     live.on_plan_clicked(live.plan.item(row_of(live, "hip_extension_k90", 0)))
     assert win.engine.test.key == "hip_extension_k90" and win.engine.target == 0
-    live.on_plan_clicked(live.plan.item(row_of(live, "belt_squat", None)))
-    assert win.engine.test.key == "belt_squat" and win.engine.target is None
+    live.on_plan_clicked(live.plan.item(row_of(live, "belt_squat", 60)))     # two belt squat positions since 0.20.0 (90 first)
+    assert win.engine.test.key == "belt_squat" and win.engine.target == 60
+    assert row_of(live, "belt_squat", 90) == row_of(live, "belt_squat", 60) - 1 == len(live.plan_rows) - 2
 
 
 def test_a_typed_target_outside_the_plan_is_not_counted(win):

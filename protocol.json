@@ -1,6 +1,6 @@
 {
   "_note": "EDIT ME. Landmarks and arms follow Tabel 3 (goniometer alignment), sagittal view of the tested side. Target angles come from ChenData/StrengthCurve/plot_proposal.m. An angle is the angle between two 'arms'. An arm is [dotA, dotB] (vector from A to B), {\"perp\": [dotA, dotB]} (perpendicular to A-B, pointing towards the feet), or \"up\" / \"down\" / \"forward\". The hip's pelvis arm runs from the iliac crest dot (halfway between ASIS and PSIS, on the side of the pelvis) down to the greater trochanter: the goniometer's lateral midline of the pelvis. Shown value = sign * angle + offset. 'signed' angles can be negative (extension, posterior tilt); their sign assumes the participant faces RIGHT, and the app mirrors automatically when you choose 'faces left'.",
-  "tolerance_deg": 3.0,
+  "tolerance_deg": 5.0,
   "neighbour_tolerance_deg": 5.0,
 
   "dot_order": ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head", "asis", "asis_opposite", "patella"],
@@ -29,7 +29,7 @@
     "hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite", "knee": "patella"}
   },
 
-  "_frontal_angles_note": "Frontal view (camera in front of the participant). The four frontal angles in angle_library are unsigned interior angles between the arm towards the other ASIS and the thigh; 90 deg = the thigh square to the line between the ASIS = neutral, so the shown value is angle - 90 for abduction (the knee moves away from the other leg) and 90 - angle for adduction. Independent of which leg and of mirroring. 'goniometer' = Tabel 3 as written (fulcrum the ASIS, thigh towards the patella centre); 'hip_centre' = the same thigh line drawn from the estimated hip joint centre, which is what rotates when the leg moves; it is shown and saved but never judged green/red ('judged': false). The two do not share a zero.",
+  "_frontal_angles_note": "Frontal view (camera in front of the participant). The two frontal angles in angle_library are unsigned interior angles between the arm towards the other ASIS and the thigh; 90 deg = the thigh square to the line between the ASIS = neutral, so the shown value is angle - 90: abduction (the knee moves away from the other leg) positive, adduction negative. Independent of which leg and of mirroring. Both frontal tests are judged on this abduction angle since 0.20.0: the adduction MVIC is made at 0 and 20 deg abduction (SOP Figure 12); until 0.19.0 the adduction test had its own adduction-positive angles (add_goniometer, add_hip_centre), which old trials keep in their meta.json. 'goniometer' = Tabel 3 as written (fulcrum the ASIS, thigh towards the patella centre); 'hip_centre' = the same thigh line drawn from the estimated hip joint centre, which is what rotates when the leg moves; it is shown and saved but never judged ('judged': false). The two do not share a zero.",
 
   "angle_library": {
     "hip": {
@@ -54,25 +54,15 @@
       "vectors": [["asis", "asis_opposite"], ["asis", "patella"]],
       "signed": false, "sign": 1, "offset": -90, "fulcrum": "asis"
     },
-    "add_goniometer": {
-      "label": "Hip add (goniometer)",
-      "vectors": [["asis", "asis_opposite"], ["asis", "patella"]],
-      "signed": false, "sign": -1, "offset": 90, "fulcrum": "asis"
-    },
     "abd_hip_centre": {
       "label": "Hip abd (hip centre)",
       "vectors": [["asis", "asis_opposite"], ["hip_centre", "patella"]],
       "signed": false, "sign": 1, "offset": -90, "fulcrum": "hip_centre", "judged": false
-    },
-    "add_hip_centre": {
-      "label": "Hip add (hip centre)",
-      "vectors": [["asis", "asis_opposite"], ["hip_centre", "patella"]],
-      "signed": false, "sign": -1, "offset": 90, "fulcrum": "hip_centre", "judged": false
     }
   },
 
   "tests": {
-    "_note_tests": "Tests from Tabel 2 of the protocol draft 2026-09-28 (19 positions in all). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is controlled by standing against a wall and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative).",
+    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative).",
     "knee_extension": {
       "label": "Knee extension, hip 90 (MVIC)",
       "primary": "knee",
@@ -108,6 +98,25 @@
       "neighbour_targets": {"knee": 90},
       "angles": ["hip", "knee", "ankle"]
     },
+    "hip_abduction": {
+      "label": "Hip abduction, knee straight, camera in front (MVIC)",
+      "view": "frontal",
+      "primary": "abd_goniometer",
+      "targets": [0, 20],
+      "optional_dots": [],
+      "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
+      "angles": ["abd_goniometer", "abd_hip_centre"]
+    },
+    "hip_adduction": {
+      "label": "Hip adduction, knee straight, camera in front, from abduction (MVIC)",
+      "_note": "Adduction MVIC with the leg held at 0 and 20 deg ABDUCTION (SOP Figure 12; decided 2026-10-26): the judged angle is the abduction angle, as in hip_abduction. Until 0.19.0 this test used add_goniometer, where 20 meant 20 deg across the midline.",
+      "view": "frontal",
+      "primary": "abd_goniometer",
+      "targets": [0, 20],
+      "optional_dots": [],
+      "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
+      "angles": ["abd_goniometer", "abd_hip_centre"]
+    },
     "ankle_plantarflexion": {
       "label": "Ankle plantarflexion, knee straight (MVIC)",
       "primary": "ankle",
@@ -122,28 +131,11 @@
       "neighbour_targets": {"knee": 0},
       "angles": ["ankle", "knee", "hip"]
     },
-    "hip_abduction": {
-      "label": "Hip abduction, knee straight, camera in front (MVIC)",
-      "view": "frontal",
-      "primary": "abd_goniometer",
-      "targets": [0, 20],
-      "optional_dots": [],
-      "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
-      "angles": ["abd_goniometer", "abd_hip_centre"]
-    },
-    "hip_adduction": {
-      "label": "Hip adduction, knee straight, camera in front (MVIC)",
-      "view": "frontal",
-      "primary": "add_goniometer",
-      "targets": [0, 20],
-      "optional_dots": [],
-      "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
-      "angles": ["add_goniometer", "add_hip_centre"]
-    },
     "belt_squat": {
       "label": "Belt squat (MVIC)",
+      "_note": "Validation test, after the 19 positions (SOP 11). Knee flexion 90 and 60 deg (0 = straight knee), in this order: SOP 11.4 proposal, accepted 2026-10-26.",
       "primary": "knee",
-      "targets": [],
+      "targets": [90, 60],
       "angles": ["knee", "hip", "ankle"]
     }
   }

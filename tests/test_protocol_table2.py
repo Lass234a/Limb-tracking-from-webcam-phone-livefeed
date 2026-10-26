@@ -116,16 +116,31 @@ def test_the_knee_is_signed_so_hyperextension_reads_negative(tmp_path):
     assert knee.raw_value == pytest.approx(-8.0, abs=0.7) and knee.reference == 0.0 and knee.raw_status == OUT    # K 0 +/- 5: -8 is out
 
 
-# ---- a test without positions (belt squat) is shown but not judged until a target is typed
+def test_the_sop_order_tolerance_and_the_positions_decided_on_2026_10_26():
+    """SOP v0.18: frontal tests before the ankle tests; tested joint +-5 deg; the adduction MVIC at 0 and 20 deg abduction (judged on
+    the abduction angle); the belt squat at knee flexion 90 then 60."""
+    assert list(TESTS) == ["knee_extension", "knee_flexion", "hip_extension_k0", "hip_extension_k90", "hip_flexion", "hip_abduction",
+                           "hip_adduction", "ankle_plantarflexion", "ankle_dorsiflexion", "belt_squat"]
+    assert all(t.tolerance_deg == 5.0 and t.neighbour_tolerance_deg == 5.0 for t in TESTS.values())
+    assert TESTS["hip_adduction"].primary.name == TESTS["hip_abduction"].primary.name == "abd_goniometer"
+    assert TESTS["hip_adduction"].targets == [0, 20]
+    assert TESTS["belt_squat"].targets == [90, 60] and TESTS["belt_squat"].neighbour_targets == {}
+
+
+# ---- a test without positions is shown but not judged until a target is typed (the belt squat had none until 0.20.0)
 def test_a_test_without_positions_has_no_target_and_is_not_judged():
+    import copy
+
     from PySide6.QtWidgets import QApplication
 
     from limbtrack.gui import MainWindow
 
     app = QApplication.instance() or QApplication([])
     import tempfile
+    tests = copy.deepcopy(TESTS)
+    tests["belt_squat"].targets = []
     with tempfile.TemporaryDirectory() as d:
-        win = MainWindow(TESTS, d)
+        win = MainWindow(tests, d)
         live = win.live
         live.test_combo.setCurrentIndex(live.test_combo.findData("belt_squat"))
         assert win.engine.target is None and live.target_spin.text().startswith("no target")

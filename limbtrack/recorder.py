@@ -25,13 +25,40 @@ def _num(v, nd=3):
     return "" if v is None or (isinstance(v, float) and math.isnan(v)) else round(float(v), nd)
 
 
-def count_trials(root, participant, test_key, target):
-    """How many trials of this test and position are already saved for this participant (counted from the files on disk)."""
+_STARTED = re.compile(r"(?:_T(\d+))?_(\d{8}-\d{6})(?:-(\d+))?_meta\.json$")   # "..._T2_20261015-120009-2_meta.json" -> 2, the time, 2
+
+
+def trial_name(participant, test_key, target, position, trial, stamp):
+    """The common start of a trial's file names (0.20.0): <code>_<NN>_<test>[_<target>deg]_T<n>_<date>-<time>, NN = the position's number
+    in the session plan (00: a target that is not a plan position), n = the trial number at that position. Until 0.19.0 the names had
+    neither number: <code>_<test>[_<target>deg]_<date>-<time>; both are read."""
+    tgt = "" if target is None else f"_{target:g}deg"
+    return f"{_safe(participant)}_{int(position or 0):02d}_{_safe(test_key)}{tgt}_T{int(trial)}_{stamp}"
+
+
+def trial_metas(root, participant, test_key, target):
+    """The meta.json files of the trials of this test and position already saved for this participant, oldest first (the file names
+    carry the start time; a second trial started in the same second has -2, -3 after it). Names with and without the position and
+    trial numbers (0.20.0) are both found; the numbers themselves are not used to find them, so a changed plan order does not matter."""
     folder = Path(root) / _safe(participant)
     if not folder.is_dir():
-        return 0
+        return []
     tgt = "" if target is None else f"_{target:g}deg"
-    return len(list(folder.glob(f"{_safe(participant)}_{_safe(test_key)}{tgt}_????????-??????_meta.json")))
+    pid, key = _safe(participant), _safe(test_key)
+    found = set()
+    for stem in (f"{pid}_{key}{tgt}_????????-??????", f"{pid}_??_{key}{tgt}_T*_????????-??????"):
+        for end in ("_meta.json", "-*_meta.json"):
+            found.update(folder.glob(stem + end))
+
+    def started(p):                                    # the time, then (the same second) the trial number, then -2, -3
+        m = _STARTED.search(p.name)
+        return (m.group(2), int(m.group(1) or 0), int(m.group(3) or 0), p.name) if m else ("", 0, 0, p.name)
+    return sorted(found, key=started)
+
+
+def count_trials(root, participant, test_key, target):
+    """How many trials of this test and position are already saved for this participant (counted from the files on disk)."""
+    return len(trial_metas(root, participant, test_key, target))
 
 
 class FrameSizeChanged(RuntimeError):
@@ -93,7 +120,9 @@ class _VideoThread:
 
 class TrialRecorder:
     def __init__(self, root, participant, test_key, target, dot_names, angle_names, fps, frame_size, with_pull=False,
-                 save_overlay=True, crop=None, masks=(), with_force=False, derived_names=()):
+                 save_overlay=True, crop=None, masks=(), with_force=False, derived_names=(), position=None):
+        # `position`: the number of this test and target in the session plan (protocol.position_number), None when it is not a plan
+        # position; it and the trial number (the trials already saved there + 1) go into the file names and meta.json (0.20.0)
         # `frame_size` is the size of the picture the program works on. With a privacy crop the saved videos are smaller
         # (crop width x height); masks are blacked out in the saved copies only (limbtrack/privacy.py).
         self.full_size = (int(frame_size[0]), int(frame_size[1]))
@@ -105,8 +134,9 @@ class TrialRecorder:
         self.started_at = datetime.now().isoformat(timespec="milliseconds")
         folder = Path(root) / _safe(participant)
         folder.mkdir(parents=True, exist_ok=True)
-        tgt = "" if target is None else f"_{target:g}deg"
-        stem = f"{_safe(participant)}_{_safe(test_key)}{tgt}_{stamp}"
+        self.position_number = int(position) if position else None
+        self.trial_number = len(trial_metas(root, participant, test_key, target)) + 1
+        stem = trial_name(participant, test_key, target, self.position_number, self.trial_number, stamp)
         self.base, n = folder / stem, 2
         while any(Path(f"{self.base}_{k}").exists() for k in ("meta.json", "data.csv", "raw.mp4")):
             # a trial of the same position started within the same second (the name has the time to the second): never write over it

@@ -121,8 +121,8 @@ def test_old_protocol_files_without_computed_points_still_load(tmp_path):
     d.pop("derived_points")
     for k in ("hip_abduction", "hip_adduction"):
         d["tests"].pop(k)
-    for k in ("abd_goniometer", "add_goniometer", "abd_hip_centre", "add_hip_centre"):
-        d["angle_library"].pop(k)
+    for k in ("abd_goniometer", "add_goniometer", "abd_hip_centre", "add_hip_centre"):    # (the add_ pair is gone since 0.20.0)
+        d["angle_library"].pop(k, None)
     assert validate_protocol(d) == []
     path = tmp_path / "protocol.json"
     path.write_text(json.dumps(d), encoding="utf-8")

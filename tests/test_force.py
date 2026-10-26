@@ -239,7 +239,9 @@ def test_review_reports_the_peak_force_and_the_angle_at_the_peak(tmp_path):
     high = tr.force_t[tr.force_n > 350.0]                                             # the hold: where the force is near its top
     first = high[: int(np.argmax(np.diff(high) > 0.5)) + 1] if np.any(np.diff(high) > 0.5) else high    # the first hold only (a slow run holds twice)
     hold = tr.force_summary(float(first.min()), float(first.max()))
-    assert hold["plateau_mean"] == pytest.approx(400.0, rel=0.03) and hold["rest_mean"] < 300.0
+    assert hold["plateau_mean"] == pytest.approx(400.0, rel=0.03)
+    # the resting force is taken from 3.0-0.5 s before the push (0.20.0); this short recording may have less than 0.5 s before it
+    assert hold["rest_mean"] < 300.0 if hold["rest_mean"] == hold["rest_mean"] else "not known" in hold["rest_note"]
     assert tr.force_summary(100.0, 101.0) is None                                    # a window with no samples
 
 
@@ -450,7 +452,10 @@ def test_smoothing_lowers_the_peak_of_a_noisy_signal_and_review_reports_the_hum(
     smooth = tr.force_summary(8.0, 13.0)
     assert raw["peak"] > smooth["peak"] + 0.05                                          # single noisy samples overstate the peak
     assert smooth["peak"] == pytest.approx(1.0, abs=0.01) and smooth["raw_peak"] == pytest.approx(raw["peak"])
-    assert smooth["mains_hum_v"] == pytest.approx(0.09, rel=0.08) and 11 < smooth["mains_hum_pct_of_peak"] < 15        # 0.09 V of a 0.7 V rise above the rest before the window
+    # 0.09 V of the 0.9 V rise above the rest before the push (0.20.0; until 0.19.0 the rest was the second before the window, inside
+    # the light push, and this read 0.09 of 0.7 V, about 13 %)
+    assert smooth["mains_hum_v"] == pytest.approx(0.09, rel=0.08) and 9 < smooth["mains_hum_pct_of_peak"] < 11
+    assert smooth["rest_mean"] == pytest.approx(0.1, abs=0.01) and smooth["rest_seconds"] == pytest.approx(2.5, abs=0.05)
     assert smooth["smoothing_s"] == 0.1
 
 

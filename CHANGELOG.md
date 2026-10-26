@@ -3,6 +3,54 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.20.0 - 2026-10-26
+
+### Made compatible with the protocol draft of 2026-10-20 and SOP v0.18 (review: `audit/SOP_vs_APP_2026-10-26.md`)
+- **The resting force was taken inside the ramp. Fixed (changes exported numbers).** SOP 9.10 says the resting level comes from the
+  3.0-0.5 s before the push; Review and the export took the mean of the second before the window *force above half of peak*, which holds
+  about half of the ramp. On the five P11 trials (2026-10-15) where both can be compared, *peak above rest* was 6-16 % too low (hip flexion
+  90, 14:32: 285 N instead of 337 N; exported rest 57.6 N instead of 5.4 N). Now `Trial.force_rest`: the push begins where the smoothed force
+  was last within 10 % of its rise above the low level before it (10th percentile of the force before it passed half of its peak); the rest
+  is the **median from 3.0 to 0.5 s before the push**. Less than 0.5 s of force before the push gives no resting force; less than 2.5 s or a
+  spread above 10 % of the rise gives a note (Review, the Check list, the after-trial message). Re-run on all 11 P11 trials: 8 had less than
+  the SOP's 3 s at rest before the push, 3 of them too little to give a resting force at all, and 12:41 shows "not steady" (the strap carried
+  85-160 N for 5 s before the push; the old onset rule put that trial's onset at its first sample). The angle at rest (`rest_mean_deg`,
+  `angle_rest_to_hold_deg`), `force_onset_s` and `force_time_to_90pct_s` use the same rule. New export columns `force_rest_s`,
+  `force_peak_above_rest`. `force_peak` does not change.
+- **The 10 % check after each trial (SOP 10.6, which waited for it).** When a trial is saved, all saved trials of the same participant,
+  test and target are compared on a helper thread with the export's number and rule (total peak, max - min over the mean; the group's
+  choice 2026-10-26; the peak above rest is shown beside it): *10 % check: ... No third trial needed*, or **THIRD TRIAL NEEDED** in red, in
+  the non-blocking message and the session log; the plan row reads `3rd!`. Three trials are judged on the closest two (none within 10 %:
+  *note it in the deviation log*). After a restart a position is checked quietly when the window goes to it.
+- **The tested leg belongs to the participant.** It was one setting per computer (frontal tests only) and carried over to the next
+  participant (P20: the other leg in all five dotted frontal trials). Now it is chosen in the Participant section for every test, kept per
+  participant code, saved in every trial's `meta.json` (side-view trials too); a new code has none, the chip reads *P05: leg?*, and Record
+  asks *Right leg / Left leg / Cancel*. Frontal tests cannot be locked without it. Remembered with a recent session only.
+- **protocol.json:** the SOP's fixed order (hip abduction and adduction before the ankle tests); default tolerance of the tested joint
+  5 deg (it was 3; a computer that remembers another value keeps it: check on screen); **hip adduction at 0 and 20 deg abduction** (Figure 12,
+  decided 2026-10-26): judged on the abduction angle like hip abduction (until 0.19.0, 20 meant 20 deg across the midline and P20's
+  adduction 20 read -11.7, never in range); the adduction-positive angles `add_goniometer` / `add_hip_centre` are removed (old trials keep
+  their definitions); **belt squat at knee flexion 90 then 60** (SOP 11.4 proposal, accepted 2026-10-26): two plan rows.
+- **Frontal posture tick:** *Hip against the bench, knee straight* (was *Against a wall: heel, buttocks, back touching*), as SOP v0.18's
+  set-up; `meta.json` `sagittal_posture.controlled_by` says the same.
+- `count_trials` also counts a trial started in the same second as another (`-2` after the time), new `recorder.trial_metas`.
+- **Position and trial number in the file names** (asked for on 2026-10-26): `P01_03_knee_extension_110deg_T2_20261026-101712_raw.mp4`,
+  03 = the position's number in the session plan, which is the No. of the SOP's test order (1-21; 00 for a typed target outside the plan),
+  T2 = the trial number at that position (the trials already saved there + 1). So a participant's files sort in the order of the session
+  and show the trial. Both are in `meta.json` (`position_number`, `trial_number`) and the export (new columns after `trial`), and the session
+  plan and the position dropdown show the number. The numbers are not used to find trials: names from before 0.20.0 (no numbers) are
+  counted together with new ones, in time order (`recorder.trial_name`, `trial_metas`; `protocol.plan_positions`, `position_number`).
+  Existing files are not renamed. Two trials of one position in the same second now differ by their trial number; `-2` stays for a name
+  that is taken anyway.
+- **Changes numbers:** `force_rest`, *peak above rest*, `rest_mean_deg`, `angle_rest_to_hold_deg`, `force_onset_s`, `force_time_to_90pct_s`,
+  `hum_pct_of_peak` in Review and exports (old trials too, when opened again); the meaning of the hip adduction main angle. Not changed: the
+  tracker, the angles, `force_peak`, `peak_n`, the saved files.
+- Tests: new `tests/test_rest_and_ten_percent.py` (16), `tests/test_tested_leg.py` (6), `tests/test_file_names.py` (4), `tests/conftest.py`
+  (window tests that are not about it answer the leg question 'Right leg'); updated for the new behaviour: `test_force.py` (2),
+  `test_frontal_engine.py` (4), `test_protocol_table2.py` (+1), `test_session_plan.py`, `test_steps.py` (6), `test_protocol_validation.py`,
+  `test_recording_integrity.py` (same-second names), and three that assumed the old 3 deg default (`test_filters.py`, `test_pipeline.py`,
+  `test_trace.py`).
+
 ## 0.19.0 - 2026-10-23
 
 ### From the review of the P20 session (2026-10-22, recorded with 0.17.2; `audit/P20_session_review_2026-10-23.md`)

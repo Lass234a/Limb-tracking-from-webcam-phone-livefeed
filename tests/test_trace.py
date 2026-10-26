@@ -44,7 +44,7 @@ def test_history_window_deviation_and_reset(tmp_path):
         eng.process(render(pts, seed=i), i / 30.0)                    # 2 s
     h = eng.history(seconds=1.0)
     assert h["t"][-1] == 0 and h["t"][0] >= -1.0 and 30 <= len(h["t"]) <= 32
-    assert h["primary"] == "knee" and h["target"] == 60.0 and h["tolerance"] == 3.0
+    assert h["primary"] == "knee" and h["target"] == 60.0 and h["tolerance"] == 5.0             # protocol.json default since 0.20.0
     assert np.nanmax(np.abs(h["deviations"]["knee"])) < 1.0           # still at target: deviation about 0
     assert set(h["values"]) == {"knee", "hip", "ankle"}
     assert np.all(np.isnan(h["deviations"]["ankle"]))                 # not locked yet: no reference for neighbours without a required angle

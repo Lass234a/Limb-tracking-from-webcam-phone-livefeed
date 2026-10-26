@@ -1,0 +1,453 @@
+% limbtrack: technical description and SOP text for KVT3-PROJ-01 (lower-extremity MVIC test day)
+% Written 2026-10-26 for limbtrack 0.20.0, SOP v0.18 (2026-10-21) and the protocol draft of 2026-10-20.
+% Compiles on its own (pdfLaTeX, Overleaf). To use it in the SOP: copy Part A as an appendix, replace the SOP steps with Part B,
+% add Table C1 as the settings checklist, and apply Part D to the protocol. Open points are \tbd{...} (red), as in the SOP.
+\documentclass[a4paper,10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2cm]{geometry}
+\usepackage{booktabs,tabularx,longtable,array,enumitem,amsmath,xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\lt}{\textsf{limbtrack}}
+\newcommand{\ltversion}{0.20.0}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\dg}{\ensuremath{^\circ}}
+\newcommand{\tbd}[1]{\textcolor{red}{[TBD: #1]}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\setlist{nosep,leftmargin=*}
+
+\title{\lt{} \ltversion: technical description and SOP text\\[2pt]\large KVT3-PROJ-01, lower-extremity MVIC test day}
+\author{KVT3 project group (lower body)}
+\date{2026-10-26 (draft, for SOP v0.19)}
+
+\begin{document}
+\maketitle
+
+\noindent This document has four parts. \textbf{Part A} describes how \lt{} works, technically, for an appendix of the SOP and for
+AnyBody Technology. \textbf{Part B} is replacement text for every SOP step that uses \lt{}. \textbf{Part C} is the list of settings to
+check at the start of each session. \textbf{Part D} lists the sentences of the research protocol that disagree with \lt{} or with the SOP.
+Everything refers to \lt{} \ltversion; the version is saved in every trial (\code{meta.json}).
+
+\tableofcontents
+
+%=====================================================================================================================================
+\part*{Part A. How \lt{} works}
+\addcontentsline{toc}{part}{Part A. How limbtrack works}
+
+\section{Purpose and scope}
+\lt{} is the group's camera-based tracking program. During each MVIC trial it (1) tracks felt-pad markers on bony landmarks in a live
+side or front view, (2) computes the joint angles of Table~3 of the protocol in every picture and shows the deviation from the target
+position to the operator, (3) records the load-cell force at 1000 samples per second on the same clock, (4) marks the start and end of the
+contraction from the force and gives sound cues in the 1--5--1 tempo, and (5) saves the raw video, a video with the overlay, the angles,
+the dot positions and the force of the trial. Its Review tab turns a trial into the numbers used in the analysis (angle during the hold,
+peak force, resting force, moment arm, torque, checks) and exports one row per trial.
+
+\lt{} measures in two dimensions, in the plane of the picture. It has \textbf{not yet been validated} against a goniometer or an
+inclinometer on a person; the angle-meter readings of SOP step 9.3 are the first validation data (Section~\ref{sec:limits}).
+
+\section{Hardware and software}
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+Part & What is used \\
+\midrule
+Computer & Windows 11 laptop, charged from the isolated socket (the DAQ's ground reference; without it the 50~Hz mains hum on the force was
+  about 40 times larger). \\
+Program & \lt{} \ltversion, Python 3.12 with PySide6 (window), OpenCV (pictures, video files), pyqtgraph (graphs), NI-DAQmx (force).
+  Started with \code{Start.bat}. Every trial saves the version, a hash of the program code, the git commit, the library versions and a
+  hash of \code{protocol.json}. \\
+Camera & Phone camera on a tripod, connected by USB through DroidCam (not Wi-Fi). \lt{} opens the camera by name and asks for
+  1280$\times$720 pixels at the camera's rate (about 30 pictures per second). Only one program can use the phone stream at a time. \\
+Force & TAS501c S-type load cell (500~kg) $\rightarrow$ SIC-A2 amplifier $\rightarrow$ NI USB-6003, differential input \code{ai0},
+  1000 samples per second. Only one program can hold the DAQ (close MATLAB and NI MAX). \\
+Test definitions & \code{protocol.json}: the dots, the angles (Table~3), the tests with their positions and required neighbour angles
+  (Table~2), the tolerances. Checked when the program starts. \\
+\bottomrule
+\end{tabularx}
+
+\section{A session in the program}
+The Live tab has a strip of ten steps in the order of a session: \emph{Participant, Camera, Privacy, Position, Dots, Ruler, Lock, Force,
+Markers, Record}. A step is green when done and amber while it is still to do; \emph{Privacy, Ruler, Force} and \emph{Markers} are asked
+every session (they stay amber until done or until ``not today'' is ticked). Under the strip a bar stays in view with the position (a
+dropdown of the whole session plan with the number of saved trials), one button per dot and \emph{Redo all}. Keys: R record, Space lock,
+Z zero, G reading taken now, S/E MVIC start/end by hand, D redo all dots, 1--9 redo one dot, N/B next/previous position, P pause.
+
+\begin{itemize}
+\item \textbf{Participant.} The participant code (P01, \dots; codes only) and the \textbf{tested leg}. The tested leg belongs to the
+  code: a new code starts with no leg chosen, the step reads \emph{P05: leg?}, and Record asks \emph{Right leg / Left leg}. The leg is saved
+  in every trial. A code kept from the previous session (within 12~h) must be confirmed before it counts.
+\item \textbf{Session plan.} The 19 positions and the two belt-squat positions in the SOP's fixed order, with the trials saved per
+  position for the participant. A position is ``done'' at two trials, or reads \code{3rd!} when the 10~\% check asks for a third.
+\end{itemize}
+
+\section{Markers and tracking}\label{sec:tracking}
+\begin{itemize}
+\item \textbf{Markers.} Black felt pads ($\geq$2~cm) on white sports tape, on the skin (\emph{Dot colour = Black dots}). The pelvis
+  landmark of the hip angle is one pad on the iliac crest, midway between ASIS and PSIS, because ASIS and PSIS are seen edge-on by a
+  side camera (\code{PELVIS\_LANDMARK.md}). Frontal tests add pads on both ASIS and the patella centre.
+\item \textbf{Marking.} The operator clicks each dot once in the order asked; a click finds a dot up to about 12~pixels away (limit
+  15~px). A dot can be marked again on its own (its number key) or all in turn (D, the old dots keep being tracked until each is replaced).
+\item \textbf{Tracking.} In every picture each dot is found again near its last position as a round, dark (or bright), right-sized
+  blob; its centre is the dot position. All tracking constants are fixed and saved with every trial.
+\item \textbf{Lost dots.} A dot that is not found is \emph{LOST}: it stays at its last good position, is searched for only within
+  2$\times$ its diameter, and is taken back only on a round, right-sized, contrasting blob. No angle is computed from a lost dot and nothing
+  is interpolated: the CSV has an empty cell. A dot seen only partly is flagged \emph{partial}.
+\item \textbf{Label checks.} The dots must lie in the anatomical order (for example, the malleolus farther from the epicondyle than the
+  fibular head; in frontal tests the tested ASIS on the side of the tested leg). A failing check shows \emph{CHECK LABELS}, blocks Lock, and is
+  saved per picture (\code{label\_check}).
+\item \textbf{Dots on one bone.} The distance between two dots on the same bone (fibular head--malleolus, 5th metatarsal base--head,
+  trochanter--epicondyle, the two ASIS) is taken when they are marked. When it changes by more than 25~\%, a tracker has most likely jumped
+  to something else: the angles using them show \emph{CHECK DOTS}, Lock is refused, and the frames are saved (\code{dots\_apart}). The angle
+  value itself is still saved unchanged.
+\end{itemize}
+
+\section{Joint angles}\label{sec:angles}
+Each angle is the angle between two ``arms'' in the picture, an arm being the vector from one dot to another, as the goniometer arms of
+Table~3. The shown value is $\text{sign}\times\text{angle}+\text{offset}$. Signed angles depend on which way the participant faces in the
+picture (\emph{Participant faces}); the program warns when the dots show the other way (from the foot dots, or from a knee bent the wrong
+way).
+
+\begin{tabularx}{\linewidth}{@{}P{2.4cm}P{3.1cm}P{3.1cm}L@{}}
+\toprule
+Angle & Proximal arm & Distal arm & Zero and sign \\
+\midrule
+Hip & iliac crest pad $\rightarrow$ greater trochanter & trochanter $\rightarrow$ lateral epicondyle & 0 = thigh in line with the pelvis
+  line; flexion positive, extension negative. Fulcrum: trochanter. \\
+Knee & trochanter $\rightarrow$ lateral epicondyle & fibular head $\rightarrow$ lateral malleolus & 0 = straight; flexion positive,
+  hyperextension negative. Fulcrum: epicondyle. \\
+Ankle & malleolus $\rightarrow$ fibular head & 5th metatarsal base $\rightarrow$ head & angle $-$ 90\dg: 0 = foot square to the shank;
+  dorsiflexion positive, plantarflexion negative ($-20$ = 20\dg{} plantarflexion). Fulcrum: malleolus. \\
+Hip abduction (front view) & tested ASIS $\rightarrow$ other ASIS & tested ASIS $\rightarrow$ patella centre & angle $-$ 90\dg: 0 = thigh
+  square to the line between the ASIS; abduction positive, adduction negative; the same for either leg. Fulcrum: tested ASIS. Used for
+  both frontal tests: hip adduction is measured at 0 and 20\dg{} \emph{abduction}. \\
+Hip abduction about the hip centre & as above & estimated hip joint centre $\rightarrow$ patella & shown and saved, never judged. The hip
+  centre is computed from the two ASIS and the ruler scale (Harrington et al.\ 2007) \tbd{constants to be checked in the original paper}. \\
+\bottomrule
+\end{tabularx}
+
+\medskip\noindent The saved angles are never smoothed. On screen they are shown as a 0.2~s moving average (display only).
+
+\section{Judging the position, and Lock}
+\begin{itemize}
+\item \textbf{Tested joint:} judged against the target position $\pm$ the tolerance (5\dg{} in the study; green inside, red outside).
+\item \textbf{Adjacent joints with a value in Table~2} (hip 90\dg{} in the knee tests, knee 0\dg{} or 90\dg{} in the hip and ankle tests):
+  judged against that value $\pm$ 5\dg{} from the start.
+\item \textbf{Lock} stores the other angles (0.2~s average, unsmoothed) as the reference, so drift during the trial shows. Lock is refused
+  when a dot is missing or lost, a label check fails, dots on one bone moved apart, the picture faces the other way, or (frontal tests) no
+  leg is chosen. Lock does \emph{not} require the tested joint to be within tolerance (a set-up a few degrees beyond the target, SOP 9.11,
+  can be locked).
+\item \textbf{Record} asks before recording when the position is not locked, the main angle cannot be measured, the force has not been
+  zeroed since the start, or no leg is chosen.
+\end{itemize}
+
+\section{Scale, strap and moment arm}
+\begin{itemize}
+\item \textbf{Ruler (scale).} Two fixed pads 100~cm apart, clicked once, give pixels per centimetre. The scale is valid only at the
+  pads' distance from the camera (the pads are at the depth of the joint; for the frontal tests at the depth of the ASIS). The pads are not
+  tracked: mark them again whenever the camera or the bench moves. With the scale, dots under 2~cm are flagged.
+\item \textbf{Strap and anchor dots} (sagittal tests). The line of pull is the line from the strap dot to the anchor dot. \lt{} saves the
+  pull angle (the angle between the segment and the line of pull, and its difference from 90\dg) and the \textbf{moment arm}: the
+  perpendicular distance from the fulcrum dot of the tested joint to the line of pull, in pixels and in centimetres. Surface landmarks
+  are not exact joint centres (protocol 2.5).
+\item \textbf{Frontal tests:} no strap or anchor dots and no moment arm; the ASIS-to-strap distance is measured with a tape (SOP 9.9)
+  \tbd{pivot for the frontal moment arm: ASIS or estimated hip centre, with AnyBody}. The ASIS-to-ASIS tape measure (mm) is compared with
+  the scale; a difference above 8~\% is warned.
+\end{itemize}
+
+\section{Force}\label{sec:force}
+\subsection{Chain, calibration and zero}
+The DAQ reads the amplifier output in volts at 1000 samples per second; every sample is saved as measured (\code{force.csv}). Newtons are
+computed as $F = (V - V_0)\times k$ with $k = 526.95$~N/V, the regression of 2026-10-13 (0--250~kg up and down, 24 runs, $R^2 = 0.999996$),
+and $V_0$ the zero. \textbf{Zero} (Z) is taken with the strap slack and the chain hanging in the test direction: it removes the
+amplifier offset and what the hardware itself puts on the load cell. A zero is accepted when its 1~s reading does not drift (halves within
+10~mV) and its noise is at most 30~mV; it is saved with each trial and forgotten when the program closes. Review warns for forces beyond
+the heaviest calibration load (250~kg).
+
+\subsection{Peak, smoothing and timing}
+Force and pictures share one clock (the DAQ clock is aligned to it). The live and saved peak (\code{peak\_n}) is the highest 20~ms moving
+average, one 50~Hz mains cycle, so hum is not counted as force; the highest single sample is kept as \code{peak\_raw\_n}. Review uses a
+100~ms moving average by default (a multiple of 20~ms removes the hum exactly). The delay between a picture being taken and being stamped
+(\emph{picture delay}, typically 0.1--0.3~s) is not yet measured \tbd{tap test}; Review can correct for it.
+
+\subsection{Resting force}\label{sec:rest}
+The \textbf{push} begins where the smoothed force was last within 10~\% of its rise above the low level before it (the 10th percentile
+of the force before it passed half of its peak). The \textbf{resting force} is the \emph{median of the force from 3.0 to 0.5~s before the
+push}. With less than 0.5~s of force before the push there is no resting force; with less than 2.5~s, or with a spread (SD) above 10~\% of
+the rise (the strap was loaded or moving), \lt{} says so after the trial and in Review. The angle at rest is taken from the same stretch.
+The participant therefore rests in the strap for at least 3~s after Record. Export columns: \code{force\_rest}, \code{force\_rest\_s} (seconds
+of rest), \code{force\_peak\_above\_rest}. (Until 0.19.0 the resting force was the second before the window \emph{force above half of
+peak}, which holds about half of the ramp: on the trials of 2026-10-15 the peak above rest came out 6--16~\% too low.)
+
+\subsection{Automatic MVIC markers}
+With \emph{Mark the MVIC automatically from the force} on, Record arms a detector: the force is averaged over 20~ms; its rest level is the
+median from 3.0 to 0.5~s before the present moment; the start is called when the force differs from that level by at least the threshold
+(25~N on the lab laptop \tbd{confirm the value}; raised to 6 times the rest noise when the rest is unsteady), has moved by at least 40~\% of
+the threshold within 0.25~s, and both hold for 70~ms. The start marker is written about 0.1--0.2~s after the force began to rise (the
+estimate of the true onset is saved), the end marker 7~s later (1--5--1), and the recording stops by itself 2~s after the end marker. S and
+E by hand take over. The markers only mark time; they never change the force or an angle.
+
+\subsection{Sound cues}
+Record: one beep. Ramp registered (the start marker): two rising beeps. One second later: one long high beep (hold). During the hold: a
+short tick every second. One second before the end: two falling beeps (relax). End marker: one low beep. The times follow the force onset,
+so the 5~s hold is timed by the program. The cue settings are saved with each trial because participants hear them.
+
+\section{Checks after each trial}
+When a trial is saved, the record line and a message that does not block (R starts the next trial) name every problem; each is also
+written to the session log (\code{session\_log.csv}):
+\begin{itemize}
+\item \textbf{No force rise:} the force moved less than 60~N between the MVIC markers (strap not on the load cell, amplifier off, cable out).
+\item \textbf{CHECK DOTS} / \textbf{CHECK LABELS} in some pictures (a tracker jumped, or two dots swapped labels).
+\item \textbf{Rest:} less than 3~s at rest before the push, or the force was not steady before it (Section~\ref{sec:rest}).
+\item \textbf{10~\% check (SOP 10.6):} all saved trials of the same participant, test and target are compared. The total peak force is
+  used (the export's \code{force\_peak}); the spread is $(\max-\min)/\text{mean}$. Two trials more than 10~\% apart: \emph{THIRD TRIAL
+  NEEDED} (and \code{3rd!} in the plan). Three trials: judged on the closest two; none within 10~\%: note it in the deviation log. The
+  peak above rest is shown beside it for information.
+\end{itemize}
+
+\section{Recording, files and privacy}
+Each trial is saved in \code{recordings/<code>/} as \code{<code>\_<NN>\_<test>\_<target>deg\_T<n>\_<date>-<time>} plus the file
+type, for example \code{P01\_03\_knee\_extension\_110deg\_T2\_20261026-101712\_raw.mp4}: NN is the position number, the No.\ of the SOP's test
+order (01--21, as shown in the session plan; 00 for a typed target that is not a plan position), and n the trial number at that position.
+A participant's files therefore sort in the order of the session. Both numbers are also saved in \code{meta.json} and exported
+(\code{position\_number}, \code{trial\_number}).
+
+\medskip
+
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+File & Content \\
+\midrule
+\code{\_raw.mp4} & the camera picture (cropped and masked for privacy) \\
+\code{\_overlay.mp4} & the same with dots, angles and the header drawn (optional) \\
+\code{\_data.csv} & one row per picture: time, every dot's position (empty while lost), quality and partial flag, every angle with its
+  reference, deviation and within-tolerance flag, \code{all\_ok}, markers, scale, mean force since the previous picture (\code{force\_n},
+  \code{force\_v}), pull angle and moment arm, \code{label\_check}, \code{dots\_apart}. Angles are unsmoothed. \\
+\code{\_force.csv} & every force sample (time, volts, newtons) \\
+\code{\_meta.json} & everything needed to reproduce the trial: participant, tested leg, test, target, tolerances, the angle definitions,
+  the settings at the start, camera, privacy, zero and calibration, automatic markers and their times, cue settings, checks, frame rate and
+  timing, reference readings, program version and hashes. Written when the recording starts and replaced at the end. \\
+\bottomrule
+\end{tabularx}
+
+\medskip\noindent Rows are written as they come and the videos are encoded on their own threads; pictures are never dropped. The crop
+and black masks apply to both saved videos only; tracking and the CSV use the whole picture (in full-picture pixels). Recording does not
+start when a tracked dot is within 30~px of the crop edge or inside a mask. The Notes field is saved in every \code{meta.json} and must never
+hold a name.
+
+\section{Review and the numbers for the analysis}
+\begin{itemize}
+\item \textbf{Window.} The export uses the stretch around the peak where the smoothed force is above half of its peak (\emph{force above
+  half of peak}); without force, the MVIC markers.
+\item \textbf{Plateau angle} (\code{plateau\_angle\_deg}): the mean of the tested joint's angle over the middle 60~\% of the window.
+  \textbf{Angle at peak force} (\code{angle\_at\_peak\_force\_deg}): the mean angle of the pictures within 0.1~s of the peak (after the
+  picture delay). \tbd{which of the two goes to AnyBody (SOP 10.7)}
+\item \textbf{Angle rest to hold} (\code{angle\_rest\_to\_hold\_deg}): plateau angle minus the angle at rest (the joint's movement under
+  load: slack, padding, stretch).
+\item \textbf{Force:} peak, plateau mean, resting force, peak above rest, onset, time from 10 to 90~\% of the rise, steadiness of the
+  hold, hum as a share of the rise.
+\item \textbf{Torque:} smoothed force $\times$ moment arm, when the force is calibrated and the ruler, strap and anchor dots are present.
+\item \textbf{Reference readings:} the angle-meter value typed for each joint, the program's angle at the moment G was pressed (0.2~s
+  average), their difference, and over all trials the mean difference and 95~\% limits of agreement (Bland and Altman).
+\item \textbf{Export all trials of this participant} writes one row per trial (\code{session\_summary.csv}) with the numbers above, the
+  checks and the 10~\% columns.
+\end{itemize}
+
+\section{Using the force in AnyBody: zero versus resting force}\label{sec:anybody}
+Moments about the tested joint, positive in the direction the participant pushes. With the strap force $F$ at moment arm $d$, static
+equilibrium gives, at rest (muscles relaxed) and at the peak:
+\begin{align*}
+F_\text{rest}\,d_\text{rest} &= M_\text{gravity}(\theta_\text{rest}) + M_\text{passive}(\theta_\text{rest}),\\
+F_\text{peak}\,d_\text{peak} &= M_\text{active} + M_\text{gravity}(\theta_\text{hold}) + M_\text{passive}(\theta_\text{hold}),
+\end{align*}
+where $M_\text{gravity}$ is the moment of the weight of the limb beyond the joint (with the strap and any hardware hanging on it) and
+$M_\text{passive}$ that of stretched muscles, tendons and capsule. The zero removes only the amplifier offset and the load-cell hardware;
+it does not remove either of these.
+
+\begin{enumerate}
+\item \textbf{The exact set-up modelled in AnyBody, with gravity: use the total zeroed force} ($F_\text{peak}$, column \code{force\_peak}).
+  The model adds $M_\text{gravity}$ itself. \textbf{Subtracting the resting force as well would remove gravity twice.} The simple muscle
+  model has no passive elements, so its scaled strength then includes $M_\text{passive}$: small in mid-range positions, larger where muscles
+  are stretched (for example knee flexion 20\dg{} with the hip at 90\dg, hip extension at 45\dg{} with the knee straight).
+\item \textbf{Peak above rest} ($F_\text{peak}-F_\text{rest}$, column \code{force\_peak\_above\_rest}) estimates $M_\text{active}$ alone.
+  It is valid only when the model's MVIC load case does \emph{not} include the limb's gravity, and only when the posture is the same at rest
+  and at the peak ($\theta_\text{rest}\approx\theta_\text{hold}$, $d_\text{rest}\approx d_\text{peak}$, same direction of pull).
+\item \textbf{To exclude passive tension while modelling gravity:} use $F_\text{peak} - (F_\text{rest} - F_\text{rest}^\text{model})$,
+  where $F_\text{rest}^\text{model}$ is the strap force the AnyBody model needs to hold the relaxed limb in the rest posture (gravity only,
+  muscles off). The difference $F_\text{rest} - F_\text{rest}^\text{model}$ is the passive tension and any pre-tension of the set-up.
+\end{enumerate}
+
+\noindent\textbf{Rule: subtract the resting force or model the limb's gravity, never both.} Whatever is chosen, the resting force is
+usable only when the participant was relaxed (\lt{} flags a rest that was not steady), at rest for at least 3~s, and in the same posture as
+during the hold (\code{angle\_rest\_to\_hold\_deg}: the knee moved about 6\dg{} under load in the first force trials, and up to 19\dg{} is
+reported \cite{tsaopoulos}). Recommendation: give AnyBody the total zeroed force with the hold angle and the pull direction at the peak,
+and use the resting force as a check: $F_\text{rest}\,d$ should be close to the model's gravity moment in the rest posture; a large
+difference means passive tension, pre-tension or a participant who was not relaxed \tbd{decide with AnyBody whether passive tension is
+removed (option 3)}. Hardware between the load cell and the limb (strap, carabiner, in vertical pulls possibly the cell) loads the limb but
+is not in the reading: about 10--15~N at most; include it in the model as a small force at the strap or state it.
+
+\section{Settings remembered per computer}
+\lt{} remembers its set-up in \code{settings.json} on each computer (tolerances, dot colour, markers, cues, ruler length, camera). The
+participant code and the tested legs are remembered for 12~h only. The zero, the marked dots, the lock and the ``not today'' ticks are
+never remembered. Because a remembered value can differ from the SOP's, the operator checks the values in Table~C1 at the start of each
+session.
+
+\section{Known limitations and validation status}\label{sec:limits}
+\begin{itemize}
+\item Not yet validated against a goniometer or inclinometer on a person; the readings of SOP 9.3 are the validation data (target:
+  mean difference within 0.5\dg, limits of agreement within $\pm$1\dg, which a hand-held instrument read to 1\dg{} cannot demonstrate).
+\item 2D: a segment turned out of the picture's plane is shortened and its angle changes; the camera must be square to the plane of
+  movement and level with the joint.
+\item Skin and pads move over the bone; the trochanter in particular in hip flexion. Seated at a nominal hip 90\dg{} the hip angle read
+  37--68\dg{} in earlier sessions \tbd{hip-first angle-meter readings in the pilot decide whether the pelvis line or the positioning is off}.
+\item In the ankle tests the foot arm (5th metatarsal base to head) is short in the picture (33--69~px on 2026-10-22): one pixel of
+  error is about 1\dg. Frame the ankle closely and keep both foot dots on skin, clear of the strap.
+\item The estimated hip centre uses constants taken from a secondary source; the hip-centre angle is never judged.
+\item The picture delay is not measured; the frame rate is saved with every trial and should be close to 30 pictures per second.
+\end{itemize}
+
+%=====================================================================================================================================
+\part*{Part B. SOP steps that use \lt{} (replacement text)}
+\addcontentsline{toc}{part}{Part B. SOP steps that use limbtrack}
+
+\noindent Step numbers are those of SOP v0.18. Text in this part replaces the step; steps not listed stay as they are.
+
+\begin{longtable}{@{}P{2.2cm}p{14.3cm}@{}}
+\toprule
+Step & Text \\
+\midrule
+\endhead
+1.3 & Laptop with \lt{} \ltversion{} \tbd{the version frozen after the pilot}; the same version is used for every participant and is not
+  updated during data collection (it is saved in every \code{meta.json}; write it on the session sheet). Phone camera on a tripod,
+  connected to the laptop by USB with DroidCam, not over Wi-Fi. Only one program can use the phone stream at a time. \\
+3.4 & Start \lt{}, choose NI DAQ, press Connect, and check that the force read-out responds to a light pull. Choose the study's
+  recordings folder (Record section) \tbd{name of the folder}: a new, empty folder, never the folder with the pilot trials. \\
+3.5 & Set up the camera according to the Camera set-up list (stabilisation off, zoom 1x, focus, exposure and white balance locked in
+  the phone app) and run Check the camera (5~s). Check the settings in Table~C1. \\
+4.5 & Determine the dominant leg by asking: ``Which leg do you kick a ball with?'' The dominant leg is the tested leg. In \lt{}, type the
+  participant code and choose the tested leg in the Participant section; it is kept for this code and saved in every trial (Record asks
+  for it if it is not chosen). \\
+9.2 & Set the adjacent joint to its required angle (Table~2). \lt{} judges the adjacent joint from the start. \tbd{until the pilot has
+  decided the hip 90\dg{} question, the angle meter decides the adjacent hip and knee angles; \lt{}'s colour for them is not used} \\
+9.3 & Cross-check the joint angle at rest with the electronic angle meter, with its arms aligned as in Table~3. In \lt{}, open
+  Reference reading and choose Goniometer (the A-Digit 50 has two arms) and resolution 0.1. Keep the participant still, press G once at the
+  first reading, take up to five readings and type them in the joint's box separated by a space (they are averaged against that moment).
+  Pressing G again replaces the moment. A reading belongs to this participant and position only. In the pilot, a reading is taken at every
+  position, the hip first at the seven positions with the hip at 90\dg; in data collection, at the first position of each test. \\
+9.5 & (unchanged) The scale pads must be at about the joint's distance from the camera; type 100~cm. Mark them again if the camera or the
+  bench is moved. Frontal tests: pads on a board in the frontal plane at the depth of the ASIS. \\
+9.6 & In \lt{}: choose the position in the dropdown under Lock/Record (N = next position), check \emph{Participant faces} (side view: it
+  changes between seated, prone and supine) or the tested leg (front view), choose Black dots, mark the dots, position the joint (green
+  within tolerance), and lock (Space). Check on screen that the tolerance for the tested joint reads 5.0 and for the other joints 5.0. A
+  deviation within the tolerance is accepted, because the measured angle during the hold is recorded and used in AMS. \\
+9.7 & In the sagittal tests, put a dot on the flat side of the strap facing the camera (not on the buckle) and one on the anchor, at least
+  5~cm from any landmark dot. Landmark dots stay on the skin and clear of the strap edge (hip tests: the strap just proximal to the
+  condyles is next to the epicondyle dot; plantarflexion: the strap at the metatarsal heads is at the 5th metatarsal head dot). \\
+9.9 & \lt{} tracks the fulcrum dot and the strap dot and gives the moment arm (the perpendicular distance from the fulcrum to the line
+  from the strap dot to the anchor dot) in cm. Check that both dots are tracked before recording. Frontal tests: no moment arm; measure the
+  ASIS-to-strap distance with a tape and write it on the session sheet. \\
+9.10 & Zero the load cell (Z) with the strap slack and the chain hanging in the test direction; zero again after any restart of \lt{}.
+  Then attach the strap. After Record, the participant rests relaxed in the strap for at least 3~s before TL gives the cue (the record
+  beep is the signal): \lt{} takes the resting force as the median force from 3.0 to 0.5~s before the push and says after the trial when
+  the rest was shorter or not steady. Both the total force and the force minus the resting force are exported; which one AnyBody gets
+  follows Part~A, Section~\ref{sec:anybody}. \\
+9.11 & (unchanged; \lt{} does not require the tested joint to be within tolerance to lock, so a set-up a few degrees beyond the target
+  can be locked). \\
+10.1 & DR checks that \emph{Mark the MVIC automatically from the force} is on and presses Record while the participant is at rest. \\
+10.2--10.3 & TL gives the verbal cue with \lt{}'s beeps: ``Ready'' after the record beep and 3~s of rest, ``build up'' (two rising beeps
+  follow when the ramp is seen), ``max, push, push, push'' from the long beep (a tick every second), ``and relax'' on the two falling beeps.
+  TL watches for compensation (trunk lean, pelvic tilt, lifting off the support). \\
+10.4 & The recording stops by itself 2~s after the end marker. DR reads the record line and the message: \emph{no force rise} $\rightarrow$
+  check chain, load cell and amplifier and repeat; \emph{CHECK DOTS} or \emph{CHECK LABELS} $\rightarrow$ mark the dot again (its number
+  key, or D for all) and repeat; \emph{not at rest for 3~s} $\rightarrow$ note it (repeat if the resting force is needed). A trial with lost
+  dots or a clear compensation is repeated. If the hold is outside $\pm$5\dg, this is noted, and the set-up is adjusted before the next
+  trial. \\
+10.6 & After the second trial \lt{} gives the 10~\% check of the position (total peak force, spread over the mean of the two). \emph{THIRD
+  TRIAL NEEDED} $\rightarrow$ rest 60~s and record a third trial. After a third trial it judges the closest two; if no two are within
+  10~\%, note it in the deviation log. No more than three trials are performed. \\
+10.7 & Record on the session sheet: trial numbers, peak force, the measured joint angle during the hold \tbd{plateau mean or angle at
+  peak force}, and any remarks. \\
+11.6 & In \lt{}, choose the belt squat position (knee flexion 90\dg, then 60\dg; 0\dg{} = straight knee), mark the dots and lock. The
+  knee and hip angles are recorded by \lt{}. \\
+13.1 & Check that each trial in the study's recordings folder \code{<code>/} has \code{\_raw.mp4}, \code{\_overlay.mp4},
+  \code{\_data.csv}, \code{\_meta.json} and \code{\_force.csv}. The file names begin with the participant code, the position number
+  (No.\ of the test order) and, after the target, the trial number (for example \code{P01\_03\_knee\_extension\_110deg\_T2\_\dots}); check
+  them against the session sheet. Run Export all trials of this participant. \\
+13.2 & (add) Never write a name in \lt{}'s Notes field: it is saved in every trial. \\
+Test order & Rows 12--15: Hip abduction, hip 0\dg: abduction 0\dg, 20\dg. Hip adduction, hip 0\dg: at abduction 0\dg, 20\dg{} (\lt{}
+  shows the abduction angle). Rows 20--21: Belt squat: knee flexion 90\dg, 60\dg. Delete the TBD on the order (\code{protocol.json}
+  follows it since 0.20.0) and on adduction 20 (20\dg{} abduction, decided 2026-10-26). \\
+Definitions & \emph{Resting force}: median force from 3.0 to 0.5~s before the push, with the participant relaxed in the strap.
+  \emph{Push}: where the force was last within 10~\% of its rise above the level before it. \emph{10~\% check}: spread of the peak forces
+  of one position over their mean (SOP 10.6). \emph{Tested leg}: the dominant leg, chosen per participant in \lt{}. \emph{limbtrack}: the
+  group's camera-based tracking program (\ltversion). \\
+Related documents & \lt{} \ltversion{} documentation: README.md, FEATURES.md, SETUP\_AND\_VALIDATION.md, PELVIS\_LANDMARK.md, and this
+  document. \\
+Revision & v0.19, 2026-10-26: updated to \lt{} \ltversion: tested leg per participant, resting force 3.0--0.5~s before the push, 10~\%
+  check after each trial, test order and adduction at abduction 0/20\dg{} in \code{protocol.json}, belt squat 90/60\dg{} (proposal
+  accepted), settings checklist (Table~C1), zero versus resting force for AnyBody, Notes without names, new recordings folder, position
+  and trial number in the file names. \\
+\bottomrule
+\end{longtable}
+
+%=====================================================================================================================================
+\part*{Part C. Settings to check at the start of each session}
+\addcontentsline{toc}{part}{Part C. Settings to check at the start of each session}
+
+\begin{longtable}{@{}P{4.6cm}P{2.6cm}P{8.8cm}@{}}
+\caption*{Table C1: \lt{} settings for the study. \lt{} remembers its settings per computer, so a value can differ from the SOP's.}\\
+\toprule
+Setting (section) & Value & Note \\
+\midrule
+\endhead
+Tested leg (Participant) & the dominant leg & per participant; Record asks when not chosen \\
+Tolerance main joint (Position) & 5.0\dg & default in \code{protocol.json} since 0.20.0 \tbd{10\dg{} after the pilot, if 5\dg{} is not possible} \\
+Tolerance other joints (Position) & 5.0\dg & \\
+Dot colour (Dots) & Black dots & black felt pads on white tape; \emph{Auto} can follow the tape \\
+Smooth the displayed angles (Position) & on & display only \\
+Mark the MVIC automatically (Markers) & on & \\
+Start when force rises by (Markers) & 25~N & \tbd{confirm; the program's default is 10~N} \\
+MVIC length (Markers) & 7.0~s & 1--5--1 \\
+Stop by itself after the MVIC end (Markers) & on, 2.0~s & \\
+Sound cues (Markers) & on & Test the beeps every session \\
+Tick during the hold every (Markers) & 1.0~s & \\
+Ruler length (Ruler) & 100~cm & pads 100~cm apart \\
+Also save the overlay video (Record) & on & \\
+Recordings folder (Record) & the study folder & never the pilot folder \tbd{name} \\
+\bottomrule
+\end{longtable}
+
+%=====================================================================================================================================
+\part*{Part D. Research protocol: sentences to change}
+\addcontentsline{toc}{part}{Part D. Research protocol: sentences to change}
+
+\begin{longtable}{@{}P{2.2cm}P{6.0cm}P{7.8cm}@{}}
+\toprule
+Where & Now & Change to \\
+\midrule
+\endhead
+2.2 & ``National instruments USB-6000''; ``accuracy is $\pm$0.03''; ``A goniometer \dots{} will be used'' & NI USB-6003; the accuracy with
+  its unit \tbd{from the data sheet}; ``an electronic angle meter (geo-FENNEL A-Digit 50)''. \\
+2.3 & ``the feed will be cropped to exclude the subject's face before recording'' & ``the saved videos are cropped and masked to exclude
+  the face; the live picture is used for tracking and is not saved uncropped''. \\
+2.3 / MVIC & no trial testing; 1--5--1 & add: one submaximal contraction (about 50~\%) takes up the slack before the trials and is not
+  used; the participant rests in the strap for 3~s before each contraction; standardised beeps give the tempo. \\
+1.3 & ``two-to-four MVIC measurements in different joint positions'' & ``two or three joint positions per test (Table~2)''. \\
+Table 2 caption & ``Dorsal- and plantarflexion are negative'' & ``Hip and knee flexion positive; ankle dorsiflexion positive and
+  plantarflexion negative ($-20$\dg{} = 20\dg{} plantarflexion in both ankle tests); hip adduction is tested at 0 and 20\dg{} abduction''. \\
+Table 2 & Hip ADD $\theta_2$ = 20\dg & 20\dg{} abduction. \\
+Table 3, hip & ``Proximal: lateral midline of the pelvis'' & ``Proximal: from the iliac crest pad (midway between ASIS and PSIS) towards
+  the greater trochanter (lateral midline of the pelvis)''. \\
+Table 3, pelvic tilt & ``Angle between the ipsilateral ASIS--PSIS line and horizontal'' & remove, or ``observed, not measured''. \\
+Analysis & (not stated) & which angle (plateau mean or at peak force) and which force (total zeroed force, see Part~A,
+  Section~\ref{sec:anybody}) go to AnyBody; with three trials, which trial counts \tbd{decide}. \\
+\bottomrule
+\end{longtable}
+
+\begin{thebibliography}{9}
+\bibitem{tsaopoulos} D.\,E.\ Tsaopoulos et al., ``Mechanical correction of dynamometer moment for the effects of segment motion during
+  isometric knee-extension tests'', \emph{J Appl Physiol} 111(1):68--74, 2011 (SOP reference [45]).
+\end{thebibliography}
+
+\end{document}

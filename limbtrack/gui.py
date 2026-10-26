@@ -25,10 +25,11 @@ from .camera import CameraSource, camera_names, classify_source, list_cameras, n
 from .engine import Engine
 from .loadcell import GRAVITY, find_regression
 from .force import HUM_NOTE_V, ForceCalibration, ForceError, NiDaqForce, SimulatedForce
-from .recorder import count_trials
+from .protocol import plan_positions
+from .recorder import count_trials, trial_metas
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
-from .review import ReviewTab, fill_reference_choices, select_reference_choices
+from .review import ReviewTab, after_trial_check, fill_reference_choices, select_reference_choices
 
 BIG = "font-size: 15pt; font-weight: bold;"
 NOTE = "font-size: 11pt; font-weight: bold;"
@@ -383,12 +384,19 @@ class VideoWorker(QThread):
 
 
 class LiveTab(QWidget):
+    position_checked = Signal(object)        # the 10 % check of a position, worked out on a helper thread (see _check_position)
+
     def __init__(self, engine, recordings_dir):
         super().__init__()
         self.engine, self.recordings_dir = engine, Path(recordings_dir)
         self.worker = None
         self._rec_started = None
         self._trial_box = None               # the message about problems in the trial just saved (non-modal, see _show_trial_warnings)
+        self._last_trial_warnings = []       # the problems of the trial just saved (the resting force and the 10 % check are added later)
+        self._repeat = {}                    # (participant, test, target) -> (trials it was worked out for, analysis.position_check dict)
+        self._repeat_running = set()         # positions whose 10 % check is being worked out
+        self._repeat_announce = set()        # ... and of those, the ones whose result is said (a trial was just saved there)
+        self.position_checked.connect(self._on_position_checked)
         self._say_until = 0.0
         self._combo_index = {"test": 0, "kind": 0, "facing": 0, "leg": 0}     # last accepted choice, restored if the engine refuses a change
         self._ref_box_position = None        # (test, target, participant) the reference boxes were filled for (see _fill_reference_boxes)
@@ -509,12 +517,15 @@ class LiveTab(QWidget):
         self.facing_combo.addItem("Left side of the image", False)
         self.facing_combo.currentIndexChanged.connect(self.on_facing_changed)
         # frontal tests (hip abduction/adduction, camera in front of the participant): these replace 'Participant faces'
+        # the tested (dominant) leg belongs to the participant (0.20.0): chosen in the Participant section, saved in every trial
         self.leg_combo = NoWheelComboBox()
-        self.leg_combo.addItem("Right leg (left of the picture)", "right")
-        self.leg_combo.addItem("Left leg (right of the picture)", "left")
-        self.leg_combo.setToolTip("Which leg is tested. Facing the camera, the right leg is on the left of the picture (the other way round when the "
-                                  "image is mirrored). Used to check that the two ASIS dots were not swapped, which would turn abduction into "
-                                  "adduction.")
+        self.leg_combo.addItem("Choose the tested leg", None)
+        self.leg_combo.addItem("Right leg", "right")
+        self.leg_combo.addItem("Left leg", "left")
+        self.leg_combo.setToolTip("The leg that is tested: the dominant leg (SOP 4.5, the leg the participant kicks a ball with). It belongs to the "
+                                  "participant code: another code starts with no leg chosen, and Record asks for it. Saved in every trial. In the "
+                                  "front-view tests it also checks that the two ASIS dots were not swapped (which would turn abduction into adduction): "
+                                  "facing the camera, the right leg is on the left of the picture (the other way round when the image is mirrored).")
         self.leg_combo.currentIndexChanged.connect(self.on_leg_changed)
         self.tape_spin = self._spin(0.0, 500.0, 1.0, " mm")
         self.tape_spin.setSpecialValueText("not measured")
@@ -522,9 +533,9 @@ class LiveTab(QWidget):
                                   "distance in the picture (ruler scale) and warns when they differ by more than 8 %: that would mean the ruler is "
                                   "not at the pelvis' distance, the pelvis is turned, or an ASIS dot is misplaced. It does not change any angle.")
         self.tape_spin.valueChanged.connect(lambda v: self._set_setting("tape_pelvic_width_mm", self.tape_spin, v))
-        self.chk_wall = QCheckBox("Against a wall: heel, buttocks, back touching")
-        self.chk_wall.setToolTip("How the sagittal posture (hip flexion 0, straight knee) is controlled in these tests. It is not measured; this "
-                                 "tick is saved with the trial.")
+        self.chk_wall = QCheckBox("Hip against the bench, knee straight")
+        self.chk_wall.setToolTip("How the sagittal posture (hip flexion 0, straight knee) is kept in these tests (SOP: standing with the hip against "
+                                 "the treatment bench). It is not measured; this tick is saved with the trial.")
         self.chk_wall.toggled.connect(self.on_wall_toggled)
         self.chk_smooth = QCheckBox("Smooth the displayed angles (0.2 s average)")
         self.chk_smooth.setToolTip("Only changes what you see. The saved CSV always has the unsmoothed angles.")
@@ -538,7 +549,6 @@ class LiveTab(QWidget):
         f.addRow("Tolerance main joint", self.tol_spin)
         f.addRow("Tolerance other joints", self.ntol_spin)
         f.addRow("Participant faces", self.facing_combo)
-        f.addRow("Tested leg", self.leg_combo)
         f.addRow("ASIS to ASIS, tape", self.tape_spin)
         f.addRow(self.chk_wall)
         f.addRow(self.chk_smooth)
@@ -734,6 +744,7 @@ class LiveTab(QWidget):
         pf = QFormLayout(pc)
         pf.addRow("Participant ID", self.participant)
         pf.addRow(self.btn_participant_ok)
+        pf.addRow("Tested leg", self.leg_combo)
         pf.addRow("Notes", self.notes)
         pf.addRow(self.key_hint)
         # markers and sound: set and tried before the first recording, not inside it
@@ -999,7 +1010,7 @@ class LiveTab(QWidget):
         self.plan = QListWidget()
         self.plan.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.plan.setTextElideMode(Qt.ElideRight)
-        self.plan_rows = [(key, tgt) for key, t in engine.tests.items() for tgt in (t.targets or [None])]
+        self.plan_rows = plan_positions(engine.tests)     # row i is position i + 1: the number in the SOP's test order and the file names
         for _ in self.plan_rows:
             self.plan.addItem("")
         self.plan.setFixedHeight(min(len(self.plan_rows), 8) * (self.plan.fontMetrics().height() + 4) + 8)     # 8 rows, then scrolls
@@ -1194,7 +1205,8 @@ class LiveTab(QWidget):
         else:
             force_state = ("todo", "Force" if kind == "off" else "Force: connect")
         states = {
-            "participant": ("done", pid) if id_ok else ("todo", f"{pid}?") if unconfirmed else ("todo", "Participant"),
+            "participant": (("done", pid) if id_ok and e.tested_leg else ("todo", f"{pid}: leg?") if id_ok
+                            else ("todo", f"{pid}?") if unconfirmed else ("todo", "Participant")),
             "camera": ("done" if running else "todo", "Camera"),
             "privacy": (("off", "Privacy") if not running else ("todo", "Privacy: fix") if priv_problem
                         else ("done", "Privacy") if shaped or priv_checked else ("todo", "Privacy")),
@@ -1270,6 +1282,8 @@ class LiveTab(QWidget):
         if step == "participant" and self._participant_unconfirmed():
             return (f"{self.participant.text().strip()} was kept from the last session. Press Enter in the box if it is the same "
                     f"participant, or type the new code.")
+        if step == "participant" and privacy.check_participant_id(self.participant.text().strip()) is None and not self.engine.tested_leg:
+            return f"Choose the tested (dominant) leg of {self.participant.text().strip()} in the Participant section."
         return STEP_HINT[step]
 
     def _participant_unconfirmed(self):
@@ -1302,7 +1316,6 @@ class LiveTab(QWidget):
             "target": e.target,
             "tolerance": self.tol_spin.value(), "neighbour_tolerance": self.ntol_spin.value(),
             "dot_kind": self.kind_combo.currentData(), "facing_right": bool(self.facing_combo.currentData()),
-            "tested_leg": self.leg_combo.currentData(),
             "mirror": self.chk_mirror.isChecked(), "smoothing": self.chk_smooth.isChecked(),
             "landmarks_disabled": sorted(e.disabled_dots),
             "trails": self.chk_trails.isChecked(), "overlay": self.chk_overlay.isChecked(),
@@ -1317,6 +1330,7 @@ class LiveTab(QWidget):
             "camera_model": self.camera_model.text().strip(),
             "ruler_cm": self.ruler_len.value(),
             "participant": self.participant.text().strip(),
+            "tested_legs": self.engine.tested_legs,
             "ui": {"section": self.accordion.current(), "splitter": self.splitter.sizes(), "window": [g.x(), g.y(), g.width(), g.height()]},
         }
 
@@ -1343,7 +1357,9 @@ class LiveTab(QWidget):
             part(lambda: self._pick(self.test_combo, s["test"]) if s.get("test") in self.engine.tests else None)
             part(lambda: self._pick(self.kind_combo, s["dot_kind"]))
             part(lambda: self._pick(self.facing_combo, bool(s["facing_right"])))
-            part(lambda: self._pick(self.leg_combo, s["tested_leg"]))
+            # the tested leg of each participant (0.20.0), only from a recent session, like the participant code; the single
+            # 'tested_leg' of older files belonged to nobody in particular and is not used
+            part(lambda: setattr(self.engine, "tested_legs", s.get("tested_legs") or {}) if session_memory.participant_if_recent(s) else None)
             part(lambda: self.chk_mirror.setChecked(bool(s["mirror"])))
             part(lambda: self.chk_smooth.setChecked(bool(s["smoothing"])))
             part(lambda: self.tol_spin.setValue(float(s["tolerance"])))
@@ -1563,6 +1579,17 @@ class LiveTab(QWidget):
         self.engine.participant_code = text.strip()
         self.update_reference_box()
         self._show_cleared_pelvis_facts()
+        self._show_leg()
+
+    def _show_leg(self):
+        """The leg box shows the leg chosen for the participant code in the window (none for a new code; 0.20.0)."""
+        i = max(self.leg_combo.findData(self.engine.tested_leg), 0)
+        if i != self.leg_combo.currentIndex():
+            self.leg_combo.blockSignals(True)
+            self.leg_combo.setCurrentIndex(i)
+            self.leg_combo.blockSignals(False)
+            self._combo_index["leg"] = i
+        self.leg_combo.setStyleSheet("" if self.engine.tested_leg else "color: #d97706; font-weight: bold;")
 
     def _show_cleared_pelvis_facts(self):
         """The engine clears the tape measure of the pelvis and the wall tick when the participant changes (after a recording, if the
@@ -1658,10 +1685,10 @@ class LiveTab(QWidget):
             self.accordion.set_summary("reference", summary)
 
     def _update_view_rows(self):
-        """A frontal test (camera in front of the participant) has no 'Participant faces': it asks which leg is tested, and offers the
-        optional tape measure of the pelvis and the wall tick, instead."""
+        """A frontal test (camera in front of the participant) has no 'Participant faces': it offers the optional tape measure of the
+        pelvis and the posture tick instead. (The tested leg is in the Participant section for every test since 0.20.0.)"""
         frontal = self.engine.test.frontal
-        for w, show in ((self.facing_combo, not frontal), (self.leg_combo, frontal), (self.tape_spin, frontal), (self.chk_wall, frontal)):
+        for w, show in ((self.facing_combo, not frontal), (self.tape_spin, frontal), (self.chk_wall, frontal)):
             w.setVisible(show)
             label = self.settings_form.labelForField(w)               # (None for the tick box: it spans the row)
             if label is not None:
@@ -1674,6 +1701,7 @@ class LiveTab(QWidget):
             self._revert_combo(self.leg_combo, "leg", e)
             return
         self._combo_index["leg"] = self.leg_combo.currentIndex()
+        self._show_leg()
         self.refresh_view()
 
     def on_wall_toggled(self, on):
@@ -2569,8 +2597,10 @@ class LiveTab(QWidget):
         for i, (key, tgt) in enumerate(self.plan_rows):
             n = count_trials(self.recordings_dir, pid, key, tgt) if valid else 0
             mark = "-" if not valid else ("done" if n >= TRIALS_PER_POSITION else f"{n}/{TRIALS_PER_POSITION}")
-            text = f"{mark:>5}   {self._plan_text(key, tgt)}"
-            pinned.append(self._plan_text(key, tgt) + (f"   ({mark})" if valid else ""))
+            if valid and n == TRIALS_PER_POSITION and (self._repeat_state(pid, key, tgt, n) or {}).get("state") == "third":
+                mark = "3rd!"                             # the two peaks differ by more than 10 %: a third trial (SOP 10.6, 0.20.0)
+            text = f"{mark:>5}   {i + 1:02d}  {self._plan_text(key, tgt)}"
+            pinned.append(f"{i + 1:02d}  {self._plan_text(key, tgt)}" + (f"   ({mark})" if valid else ""))
             item = self.plan.item(i)
             if item.text() != text:
                 item.setText(text)
@@ -2599,7 +2629,21 @@ class LiveTab(QWidget):
         elif current is None:
             self.trial_label.setText(f"{where}: not a position of the plan (trials are not counted).")
         elif n_cur >= TRIALS_PER_POSITION:
-            self.trial_label.setText(f"{where}: {n_cur} trials already saved (planned {TRIALS_PER_POSITION}). Another is trial {n_cur + 1}.")
+            chk = self._repeat_state(pid, cur_key, cur_tgt, n_cur)
+            if chk is None and self._rec_started is None:   # not known yet (a restart): work it out for this position, quietly
+                metas = trial_metas(self.recordings_dir, pid, cur_key, cur_tgt)
+                if metas:
+                    self._check_position(metas[-1], self._position_key(pid, cur_key, cur_tgt), announce=False)
+            state = (chk or {}).get("state")
+            if state == "third":
+                self.trial_label.setText(f"{where}: THIRD TRIAL NEEDED, the two peaks differ by {chk['pct']:.1f} % (limit 10 %). "
+                                         f"Next is trial {n_cur + 1}.")
+            elif state == "deviation":
+                self.trial_label.setText(f"{where}: {n_cur} trials and no two within 10 %: note it in the deviation log (no more trials).")
+            else:
+                ok = " 10 % check: fine." if state == "ok" else ""
+                self.trial_label.setText(f"{where}: {n_cur} trials already saved (planned {TRIALS_PER_POSITION}).{ok} "
+                                         f"Another is trial {n_cur + 1}.")
         else:
             self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}\n{where}")
         pc.setToolTip(self.trial_label.text().split("\n")[0] + "\nPick another position to set the test and the target in one step.")
@@ -2892,6 +2936,9 @@ class LiveTab(QWidget):
                     self.btn_rec.setChecked(False)
                     return
                 self._participant_restored = ""
+            if not self.engine.tested_leg and not self._ask_tested_leg():
+                self.btn_rec.setChecked(False)
+                return
             notes_problem = privacy.notes_problem(self.notes.text())
             if notes_problem:
                 self.btn_rec.setChecked(False)
@@ -2977,13 +3024,114 @@ class LiveTab(QWidget):
                                        f"({n} frames, {duration:.1f} s)" + ("  VERY SHORT RECORDING" if short else "")
                                        + ("\nCHECK THIS TRIAL: " + warnings[0] if warnings else ""))
                 self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;" if warnings else "color: #d97706; font-weight: bold;" if short else "")
+                self._last_trial_warnings = warnings
                 if warnings:
                     self._show_trial_warnings(warnings)
+                try:                                       # the 10 % check and the resting force follow from the saved files (0.20.0)
+                    m = json.loads(paths["meta.json"].read_text(encoding="utf-8"))
+                    key = self._position_key(m.get("participant"), m.get("test_key"), m.get("target_deg"))
+                except (OSError, ValueError) as e:
+                    self._add_after_trial([f"The 10 % check could not be made: {e}"], warn=True)
+                else:
+                    self._check_position(paths["meta.json"], key, announce=True)
 
-    def _show_trial_warnings(self, warnings):
-        """Problems found in the trial just saved (no force rise, dots that moved apart, CHECK LABELS; 0.19.0): a message that does not block,
-        so the next trial can still be started with R, and a line each in the session log."""
-        for w in warnings:
+    def _ask_tested_leg(self):
+        """Record with no tested leg chosen for this participant (0.20.0): ask Right / Left / Cancel. True when a leg was chosen."""
+        code = self.participant.text().strip()
+        box = QMessageBox(QMessageBox.Question, "Tested leg",
+                          f"Which leg is tested for {code}?\n\nIt is the dominant leg (SOP 4.5: the leg the participant kicks a ball with). "
+                          f"It is kept for {code} and saved in every trial.", QMessageBox.Cancel, self)
+        right = box.addButton("Right leg", QMessageBox.AcceptRole)
+        left = box.addButton("Left leg", QMessageBox.AcceptRole)
+        box.exec()
+        clicked = box.clickedButton()
+        leg = "right" if clicked is right else "left" if clicked is left else None
+        if leg is None:
+            self.open_step("participant")
+            return False
+        self.leg_combo.setCurrentIndex(self.leg_combo.findData(leg))
+        return self.engine.tested_leg == leg
+
+    # ------------------------------------------------------------ the 10 % check after each trial (SOP 10.6; 0.20.0)
+    @staticmethod
+    def _position_key(participant, test_key, target):
+        return (participant or "", test_key, None if target is None else round(float(target), 6))
+
+    def _check_position(self, meta_path, key, announce):
+        """Work out the 10 % check of the position of `meta_path` (every saved trial of that participant, test and target) on a helper
+        thread: reading the trials takes 0.1-0.2 s each and the live picture must not wait. The result comes back through
+        position_checked. `announce`: say it (after a trial just saved), else only update the plan (a position reached after a restart)."""
+        if announce:
+            self._repeat_announce.add(key)
+        if key in self._repeat_running:                   # (one is on its way: it reads the same files, the newest trial included)
+            return
+        self._repeat_running.add(key)
+
+        def work():
+            res = {"key": key, "meta_path": meta_path}
+            try:
+                res.update(after_trial_check(meta_path))
+            except Exception as e:  # noqa: BLE001 - said on screen and in the session log, never hidden
+                res["error"] = f"{type(e).__name__}: {e}"
+            try:
+                self.position_checked.emit(res)
+            except RuntimeError:                          # the window was closed meanwhile: nobody left to tell
+                pass
+        threading.Thread(target=work, name="position-check", daemon=True).start()
+
+    def _on_position_checked(self, res):
+        key = res["key"]
+        self._repeat_running.discard(key)
+        announce = key in self._repeat_announce
+        self._repeat_announce.discard(key)
+        if "error" in res:
+            text = "The 10 % check could not be made: " + res["error"]
+            self.note("position check failed", text)
+            n = len(trial_metas(Path(res["meta_path"]).parent.parent, *key))
+            self._repeat[key] = (n, {"state": "error", "text": text, "pct": math.nan, "n": n})    # not tried again for these trials
+            if announce:
+                self._add_after_trial([text], warn=True)
+            return
+        chk = res["check"]
+        self._repeat[key] = (res["n"], chk)
+        if announce:
+            saved = trial_metas(Path(res["meta_path"]).parent.parent, *key)
+            if res["n"] < len(saved):                 # a check that began before this trial was saved: once more, with it
+                self._check_position(saved[-1], key, announce=True)
+                return
+        if announce:
+            lines, warn = [], False
+            if res["rest_note"]:
+                self.note("trial warning", res["rest_note"])
+                lines.append(res["rest_note"])
+                warn = True
+            if chk["text"]:
+                self.note("position check", chk["text"])
+                lines.append(chk["text"])
+                warn = warn or chk["state"] in ("third", "deviation", "units")
+            if lines:
+                self._add_after_trial(lines, warn)
+        self.refresh_plan()
+
+    def _add_after_trial(self, lines, warn):
+        """Add lines to what the window says about the trial just saved: the record line, and (when one of them asks for something)
+        the non-blocking message together with the trial's other warnings. Not while the next trial is already recording."""
+        if self._rec_started is not None:
+            return
+        self.rec_label.setText(self.rec_label.text() + "".join("\n" + ln for ln in lines))
+        if warn:
+            self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
+            self._show_trial_warnings(self._last_trial_warnings + lines, log=False)
+
+    def _repeat_state(self, pid, key, tgt, n):
+        """The 10 % check of a position when it is known for the trials now saved there (n), else None."""
+        got = self._repeat.get(self._position_key(pid, key, tgt))
+        return got[1] if got is not None and got[0] == n else None
+
+    def _show_trial_warnings(self, warnings, log=True):
+        """Problems found in the trial just saved (no force rise, dots that moved apart, CHECK LABELS; 0.19.0; the resting force and the 10 %
+        check, 0.20.0): a message that does not block, so the next trial can still be started with R, and a line each in the session log."""
+        for w in warnings if log else ():
             self.note("trial warning", w)
         if self._trial_box is not None:
             self._trial_box.close()

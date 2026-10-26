@@ -387,6 +387,22 @@ def load_protocol(path):
     return tests
 
 
+def plan_positions(tests):
+    """The session plan: (test key, target) for every position of every test in the protocol's order, which is the SOP's fixed test
+    order; a test without positions has one row with target None. A position's number is its place in this list, from 1 (the No. of
+    the SOP's test order: knee extension 20 deg = 1, ..., belt squat 60 deg = 21)."""
+    return [(key, tgt) for key, t in tests.items() for tgt in (t.targets or [None])]
+
+
+def position_number(tests, test_key, target):
+    """The number of this test and target in the session plan (plan_positions), or None for a target that is not a position of the plan."""
+    for i, (key, tgt) in enumerate(plan_positions(tests), 1):
+        if key == test_key and ((tgt is None and target is None)
+                                or (tgt is not None and target is not None and abs(float(tgt) - float(target)) < 1e-6)):
+            return i
+    return None
+
+
 def _clicked_dots(angle, derived_defs):
     """None when the angle's arms use only dots. Otherwise the dots to click for it: each computed point replaced by the dots it is made of."""
     names = [n for v in angle.vectors for n in spec_dots(v)]

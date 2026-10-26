@@ -41,8 +41,17 @@ def _f(s):
 
 
 PLATEAU_TRIM = 0.2         # the plateau of a hold is its middle part: the first and last 20 % of the window are left out
-REST_SECONDS = 1.0         # "rest" is the second before the window starts
+REST_SECONDS = 1.0         # without a clear push in the force: "rest" is the second before the window starts
 REST_MIN_FRAMES = 5
+# The resting level before the push (0.20.0; SOP 9.10). Until 0.19.0 it was the second before the window 'force above half of peak',
+# which holds about half of the ramp: on P11 the peak above rest came out 6-16 % too low.
+REST_FROM_S = 3.0          # the rest is the force from 3.0 s ...
+REST_TO_S = 0.5            # ... to 0.5 s before the push begins (the same span the automatic MVIC marker takes its rest level from)
+REST_MIN_S = 0.5           # less force than this before the push: no resting level (the automatic marker needs the same)
+REST_FULL_S = REST_FROM_S - REST_TO_S
+PUSH_RISE_FRACTION = 0.10  # the push begins where the force was last within 10 % of its rise above the low level before it ...
+PRE_LEVEL_PERCENTILE = 10  # ... that low level being the 10th percentile of the force before it passed half of its peak
+REST_UNSTEADY_FRACTION = 0.10   # a rest whose spread (SD) is more than this share of the rise is called not steady
 
 
 class Trial:
@@ -270,9 +279,67 @@ class Trial:
             b += 1
         return float(self.force_t[a]), float(self.force_t[b])
 
+    def force_rest(self):
+        """The resting force before the push (SOP 9.10), or None without force or without a clear contraction. A dict: `level` = the
+        median of the smoothed force from REST_FROM_S to REST_TO_S s before the push began (NaN when there was less than REST_MIN_S
+        of force before it), `sd` its spread, `t_from` / `t_to` the stretch used, `seconds` how long it was, `onset_s` when the push
+        began, `level_before` the low level the push was measured from, `note` a plain sentence when the rest was short or not steady.
+        The push begins where the force was last within PUSH_RISE_FRACTION of its rise above the low level before it (the
+        PRE_LEVEL_PERCENTILE-th percentile of the force before it passed half of its peak), walking back from that point. A light push
+        or pre-tension before the real push therefore counts as pushing, not as rest; a strap that was already loaded before the push
+        (P11 12:41: 85-160 N for 5 s) no longer puts the onset at the first sample, as the trial-wide low level did until 0.19.0.
+        One rule for every trial, marked by hand or automatically; it does not depend on the analysis window."""
+        if not self.has_force():
+            return None
+        key = (self.force_smooth_s, id(self.force_n))
+        if getattr(self, "_rest_cache", (None,))[0] == key:
+            return self._rest_cache[1]
+        out = self._find_force_rest()
+        self._rest_cache = (key, out)
+        return out
+
+    def _find_force_rest(self):
+        win = self.force_window()
+        if win is None:
+            return None
+        unit, y, _ = self.force_signal()
+        t = self.force_t
+        rate = 1.0 / float(np.median(np.diff(t))) if len(t) > 2 else 1000.0
+        i_half = int(np.searchsorted(t, win[0]))
+        in_win = (t >= win[0]) & (t <= win[1])
+        peak = float(np.nanmax(y[in_win]))
+        before = np.arange(t.size) < i_half
+        good = ~np.isnan(y)
+        pre = before & good
+        if pre.sum() < 0.1 * rate:                                     # (almost) no force before the push: the recording began during it
+            onset, level0 = float(t[0]), math.nan
+        else:
+            level0 = float(np.percentile(y[pre], PRE_LEVEL_PERCENTILE))
+            thr = level0 + PUSH_RISE_FRACTION * (peak - level0)
+            with np.errstate(invalid="ignore"):
+                at_rest = np.nonzero(before & good & (y <= thr))[0]
+            onset = float(t[at_rest[-1]]) if at_rest.size else float(t[0])
+        rm = good & (t >= onset - REST_FROM_S) & (t < onset - REST_TO_S)
+        seconds = float(rm.sum()) / rate
+        level = float(np.median(y[rm])) if seconds >= REST_MIN_S else math.nan
+        sd = float(np.std(y[rm])) if rm.sum() > 1 else math.nan
+        d = 3 if unit == "V" else 0
+        notes = []
+        if seconds < REST_MIN_S:
+            notes.append(f"Only {seconds:.1f} s of force before the push, so the resting force is not known (the SOP asks for "
+                         f"{REST_FROM_S:g} s at rest in the strap after Record).")
+        elif seconds < REST_FULL_S - 0.05:
+            notes.append(f"Only {seconds + REST_TO_S:.1f} s at rest before the push (the SOP asks for {REST_FROM_S:g} s): the resting "
+                         f"force is taken from {seconds:.1f} s.")
+        if not math.isnan(level) and not math.isnan(sd) and sd > REST_UNSTEADY_FRACTION * abs(peak - level):
+            notes.append(f"The force was not steady before the push (it varied by {sd:.{d}f} {unit}, SD): the strap was loaded or moving, "
+                         "so the resting force is doubtful.")
+        return {"unit": unit, "level": level, "sd": sd, "t_from": max(onset - REST_FROM_S, float(t[0])), "t_to": onset - REST_TO_S,
+                "seconds": seconds, "onset_s": onset, "level_before": level0, "note": " ".join(notes)}
+
     def force_summary(self, t0, t1, picture_delay=0.0):
-        """The force in the window: peak and when, the plateau mean, the rest level before, and the main joint angle at the peak
-        (the two candidate numbers for a model input: angle at peak force, and plateau mean angle). None without force.
+        """The force in the window: peak and when, the plateau mean, the resting level before the push (force_rest), and the main joint
+        angle at the peak (the two candidate numbers for a model input: angle at peak force, and plateau mean angle). None without force.
         All force numbers come from the smoothed signal (the raw peak of a noisy signal is too high)."""
         if not self.has_force():
             return None
@@ -284,9 +351,17 @@ class Trial:
         k = int(np.nanargmax(yw))
         span = t1 - t0
         pm = (self.force_t >= t0 + PLATEAU_TRIM * span) & (self.force_t <= t1 - PLATEAU_TRIM * span)
-        rm = (self.force_t >= t0 - REST_SECONDS) & (self.force_t < t0)
         plateau = float(np.nanmean(y[pm])) if pm.any() else math.nan
-        rest = float(np.nanmean(y[rm])) if rm.any() else math.nan
+        ri = self.force_rest()
+        if ri is not None:
+            rm = (self.force_t >= ri["t_from"]) & (self.force_t < ri["t_to"])
+            rest, rest_s, rest_note = ri["level"], ri["seconds"], ri["note"]
+            rest_basis = f"median {REST_FROM_S:g} to {REST_TO_S:g} s before the push"
+        else:                                                          # no clear push: the second before the window, as before 0.20.0
+            rm = (self.force_t >= t0 - REST_SECONDS) & (self.force_t < t0)
+            rest = float(np.nanmean(y[rm])) if rm.any() else math.nan
+            rest_s, rest_note = (float(rm.sum()) / (1.0 / float(np.median(np.diff(self.force_t)))) if rm.any() and len(self.force_t) > 2 else 0.0), ""
+            rest_basis = "mean of the second before the window (no clear push)"
         raw = self.force_n if unit == "N" else self.force_v
         main = self.main_angle
         angle = math.nan
@@ -303,6 +378,7 @@ class Trial:
         vrest = float(np.nanmean(yv[rm])) if rm.any() else float(np.nanpercentile(yv, 10))
         hum_pct = 100.0 * hum / max(abs(vpeak - vrest), 1e-9) if not math.isnan(hum) else math.nan
         return {"unit": unit, "peak": float(yw[k]), "t_peak_s": float(tw[k]), "plateau_mean": plateau, "rest_mean": rest,
+                "rest_seconds": rest_s, "rest_basis": rest_basis, "rest_note": rest_note,
                 "peak_minus_rest": float(yw[k]) - rest if not math.isnan(rest) else math.nan,
                 "raw_peak": float(np.nanmax(raw[m])), "smoothing_s": self.force_smooth_s,
                 "mains_hum_v": hum, "mains_hum_pct_of_peak": hum_pct,
@@ -343,6 +419,8 @@ class Trial:
     def summary(self, t0, t1):
         """Rows of statistics per angle within [t0, t1] seconds."""
         m = (self.t >= t0) & (self.t <= t1)
+        ri = self.force_rest()
+        rest_win = (ri["t_from"], ri["t_to"]) if ri is not None and ri["seconds"] >= REST_MIN_S else None
         out = []
         for a in self.angle_defs:
             n = a.name
@@ -358,7 +436,8 @@ class Trial:
             pv = self.deg[n][pm]
             pv = pv[~np.isnan(pv)]
             plateau = float(np.mean(pv)) if pv.size >= REST_MIN_FRAMES else math.nan
-            rm = (self.t >= t0 - REST_SECONDS) & (self.t < t0)
+            # the angle at rest: the same stretch as the resting force (before the push), else the second before the window
+            rm = ((self.t >= rest_win[0]) & (self.t < rest_win[1])) if rest_win else (self.t >= t0 - REST_SECONDS) & (self.t < t0)
             rv = self.deg[n][rm]
             rv = rv[~np.isnan(rv)]
             rest = float(np.mean(rv)) if rv.size >= REST_MIN_FRAMES else math.nan
@@ -385,6 +464,41 @@ class Trial:
                 "pct_in_tolerance": 100.0 * sum(f == "1" for f in flags) / len(flags) if flags else math.nan,
             })
         return out
+
+
+def after_trial_check(meta_path):
+    """What the window says after a trial is saved (0.20.0): the SOP 10.6 10 % check over every saved trial of the same participant,
+    test and target (analysis.position_check on the export rows, so the numbers are the export's), and the resting-force note of
+    this trial (SOP 9.10: 3 s at rest in the strap). Reads files only; safe to run off the window's thread. Returns a dict:
+    participant, test_key, target_deg, n (trials of the position), check (position_check's dict), rest_note."""
+    from .recorder import trial_metas
+    meta_path = Path(meta_path).resolve()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    who, key, tgt = meta.get("participant") or "", meta.get("test_key"), meta.get("target_deg")
+    paths = [p.resolve() for p in trial_metas(meta_path.parent.parent, who, key, tgt)]
+    if meta_path not in paths:                         # (a file name of another form: check the trial on its own)
+        paths.append(meta_path)
+    rows, rest_note, unreadable = [], "", []
+    for p in paths:
+        try:
+            tr = Trial(p)
+        except Exception:  # noqa: BLE001 - an older trial that cannot be opened (a crashed recording) is named, not hidden
+            if p == meta_path:
+                raise
+            unreadable.append(p.name[: -len("_meta.json")])
+            continue
+        try:
+            rows.append(analysis.session_row(tr))
+            if p == meta_path and tr.has_force():
+                ri = tr.force_rest()
+                rest_note = ri["note"] if ri is not None else ""
+        finally:
+            tr.cap.release()
+    check = analysis.position_check(rows)
+    if unreadable:
+        check["text"] = (check["text"] + " " if check["text"] else "") + f"Could not be read, so not compared: {', '.join(unreadable)}."
+    return {"participant": who, "test_key": key, "target_deg": tgt, "n": len(paths), "check": check,
+            "rest_note": rest_note, "trial": meta_path.name[: -len("_meta.json")]}
 
 
 class _TextPane(QTextEdit):
@@ -1181,7 +1295,10 @@ class ReviewTab(QWidget):
         lines = [f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}; {sm})",
                  f"  peak                {fmt(fs['peak'], d)} at {fs['t_peak_s']:.2f} s",
                  f"  plateau mean        {fmt(fs['plateau_mean'], d)}   (middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window)",
-                 f"  rest before         {fmt(fs['rest_mean'], d)}      peak above rest {fmt(fs['peak_minus_rest'], d)}"]
+                 f"  rest before         {fmt(fs['rest_mean'], d)}      peak above rest {fmt(fs['peak_minus_rest'], d)}",
+                 f"                      ({fs['rest_basis']}, {fs['rest_seconds']:.1f} s of force)"]
+        if fs["rest_note"]:
+            lines.append("  " + fs["rest_note"])
         if fs["smoothing_s"] > 0:
             lines.append(f"  raw single-sample max {fmt(fs['raw_peak'], d)}   (a noisy single sample overstates the peak)")
         lines += ["", f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg"
@@ -1191,7 +1308,7 @@ class ReviewTab(QWidget):
         ft = analysis.force_timing(tr, t0, t1)
         if ft is not None:
             lines += ["", "Timing and steadiness (smoothed force)",
-                      f"  onset                 {ft['onset_s']:.2f} s   (force last below 10 % of its rise)",
+                      f"  onset                 {ft['onset_s']:.2f} s   (force last within 10 % of its rise above the level before the push)",
                       f"  10 % to 90 % of rise  {ft['time_to_90pct_s']:.2f} s",
                       f"  steepest rise         {fmt(ft['rise_rate_per_s'], d)} {u}/s  (over 100 ms)",
                       f"  held above 90 % of peak for {ft['hold_above_90pct_s']:.2f} s, steadiness (SD / mean) {fmt(ft['hold_cv_pct'])} %"]

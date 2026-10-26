@@ -85,6 +85,10 @@ def test_every_step_in_turn_becomes_the_next_one(win):
     live = win.live
     live.participant.setText("P01")
     live.update_steps()
+    assert states(live)["participant"] == "next" and live.strip.chips["participant"].text().endswith("P01: leg?")   # 0.20.0: the leg too
+    assert "tested (dominant) leg of P01" in live._hint("participant")
+    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
+    live.update_steps()
     assert states(live)["participant"] == "done" and "P01" in live.strip.chips["participant"].text() and next_step(live) == "camera"
     live.worker = RunningCamera()
     live.update_steps()
@@ -115,6 +119,7 @@ def test_the_panel_moves_on_by_itself_when_a_step_is_finished_in_its_own_section
     live.update_steps()
     assert live.accordion.current() == "participant"
     live.participant.setText("P01")
+    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.update_steps()
     assert live.accordion.current() == "participant"                               # typing a code never takes the box away from you
     live.participant.editingFinished.emit()                                        # Tab or a click into Notes: the box stays
@@ -169,6 +174,7 @@ def test_the_privacy_chip_wants_a_crop_a_mask_or_a_look(win):
     live.worker = RunningCamera()
     mark_all(win)
     live.participant.setText("P01")
+    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.update_steps()
     assert states(live)["privacy"] == "next" and "not set" in live.accordion.sections["privacy"].summary
     ok, _ = win.engine.set_privacy_rect("mask", 0, 0, 200, 200)                    # a black mask over a face
@@ -263,6 +269,7 @@ def test_the_instruction_follows_the_next_step(win):
     live.refresh_status()
     assert live.instruction.text() == STEP_HINT["participant"]
     live.participant.setText("P01")
+    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.refresh_status()
     assert live.instruction.text() == STEP_HINT["camera"]
     live.worker = RunningCamera()
@@ -419,7 +426,9 @@ def test_a_participant_code_kept_from_last_time_counts_only_after_it_is_confirme
     live = win.live
     answers = []
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: answers.append(a[2]) or QMessageBox.No)
+    win.engine.tested_legs = {"P07": "left"}                                        # remembered with the code (restore_session, 0.20.0)
     live.participant.setText("P07")
+    assert live.leg_combo.currentData() == "left"
     live._participant_restored = "P07"                                              # what restore_session does with a code from the last session
     live.update_steps()
     assert states(live)["participant"] == "next" and live.strip.chips["participant"].text().endswith("P07?")
@@ -445,6 +454,8 @@ def test_another_code_counts_at_once_and_so_does_the_old_one_after_it_is_confirm
     live.participant.setText("P07")
     live._participant_restored = "P07"
     live.participant.setText("P08")                                                 # a new participant: typed, so no question
+    assert win.engine.tested_leg is None and live.leg_combo.currentData() is None   # ... and no leg yet (it was P07's)
+    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.update_steps()
     assert states(live)["participant"] == "done" and not live._participant_unconfirmed()
     live.participant.setText("P07")                                                 # back to the old code: still the kept one

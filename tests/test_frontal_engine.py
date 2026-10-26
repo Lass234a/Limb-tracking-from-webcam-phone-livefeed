@@ -97,12 +97,16 @@ def test_the_two_angles_do_not_share_a_zero(tmp_path):
 
 
 @pytest.mark.parametrize("deg", [10.0, 20.0])
-def test_adduction_reads_positive_when_the_knee_moves_towards_the_midline(tmp_path, deg):
-    eng, p = engine(tmp_path, "hip_adduction", -deg)
+def test_the_adduction_test_is_judged_on_the_abduction_angle(tmp_path, deg):
+    """0.20.0: the adduction MVIC is made at 0 and 20 deg ABDUCTION (SOP Figure 12), so it reads abduction positive, like the abduction
+    test; a knee across the midline reads negative. (Until 0.19.0 it had its own adduction-positive angles.)"""
+    eng, p = engine(tmp_path, "hip_adduction", deg)
     res = run(eng, p)
-    assert angle(res, "add_hip_centre").raw_value == pytest.approx(deg, abs=0.3)
-    assert angle(res, "add_goniometer").raw_value == pytest.approx(goniometer_by_hand(p, sign=-1), abs=0.3)
-    assert angle(res, "add_goniometer").raw_value > 0
+    assert eng.primary_angle.name == "abd_goniometer"
+    assert angle(res, "abd_hip_centre").raw_value == pytest.approx(deg, abs=0.3)
+    assert angle(res, "abd_goniometer").raw_value == pytest.approx(goniometer_by_hand(p), abs=0.3)
+    eng, p = engine(tmp_path / "across", "hip_adduction", -deg)
+    assert angle(run(eng, p), "abd_hip_centre").raw_value == pytest.approx(-deg, abs=0.3)
 
 
 @pytest.mark.parametrize("leg, roll", [("left", 0.0), ("right", 15.0), ("left", -20.0)])
@@ -129,7 +133,7 @@ def test_the_target_is_judged_on_the_goniometer_angle(tmp_path):
     assert hjc.reference is None and hjc.status == "info" and hjc.raw_status == "info"          # never judged, not even against the locked value
     assert angle(res, "abd_goniometer").raw_status == "out"                   # the main joint is
     eng, p = engine(tmp_path / "b", "hip_abduction", 0.0)                    # a thigh square to the pelvis about the hip centre: the goniometer reads -4
-    eng.target = 0.0
+    eng.target, eng.tolerance = 0.0, 3.0                                      # (the protocol's default is 5 since 0.20.0)
     gon = angle(run(eng, p), "abd_goniometer")
     assert gon.raw_status == "out" and gon.raw_deviation == pytest.approx(-4.1, abs=0.5)
 
@@ -270,7 +274,7 @@ def test_the_recording_holds_the_hip_centre_and_both_angles_and_says_how_they_we
     assert "Harrington" in meta["derived_points"]["hip_centre_frontal"]["equation"] and "not checked" in meta["derived_points"]["hip_centre_frontal"]["status"]
     assert meta["hip_centre_scale"]["source"] == "ruler" and meta["hip_centre_scale"]["pelvic_width_tape_mm"] == 248.0
     assert meta["hip_centre_scale"]["pelvic_width_in_last_picture_mm"] == pytest.approx(250.0, abs=2.0)
-    assert meta["sagittal_posture"] == {"controlled_by": "standing against a wall: heel, buttocks and back touching", "measured": False,
+    assert meta["sagittal_posture"] == {"controlled_by": "standing with the hip against the treatment bench, knee straight", "measured": False,
                                         "operator_ticked": True}
     assert meta["facing_not_used"] and "changed_during_recording" not in meta
     by_name = {a["name"]: a for a in meta["angles"]}
@@ -313,17 +317,19 @@ def test_a_sagittal_trial_has_no_computed_columns_and_opens_as_before(tmp_path):
     assert "hip_centre_x" not in open(paths["data.csv"]).readline()
 
 
-def test_the_live_tab_asks_which_leg_instead_of_which_way_the_participant_faces():
+def test_the_live_tab_has_no_participant_faces_in_the_front_view_and_the_leg_in_every_test():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as d:
         win = MainWindow(TESTS, d)
         live = win.live
+        live.participant.setText("P01")
         live.test_combo.setCurrentIndex(live.test_combo.findData("knee_extension"))
-        assert not live.facing_combo.isHidden() and live.leg_combo.isHidden() and live.tape_spin.isHidden() and live.chk_wall.isHidden()
+        assert not live.facing_combo.isHidden() and live.tape_spin.isHidden() and live.chk_wall.isHidden()
+        assert not live.leg_combo.isHidden()                                  # the tested leg is the participant's, in every test (0.20.0)
         live.test_combo.setCurrentIndex(live.test_combo.findData("hip_abduction"))
         assert live.facing_combo.isHidden() and not live.leg_combo.isHidden() and not live.tape_spin.isHidden() and not live.chk_wall.isHidden()
         live.leg_combo.setCurrentIndex(live.leg_combo.findData("left"))
-        assert win.engine.tested_leg == "left" and live.session_state()["tested_leg"] == "left"
+        assert win.engine.tested_leg == "left" and live.session_state()["tested_legs"] == {"P01": "left"}
         live.tape_spin.setValue(251.0)
         assert win.engine.tape_pelvic_width_mm == 251.0
         live.tape_spin.setValue(live.tape_spin.minimum())

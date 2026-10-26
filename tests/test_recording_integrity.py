@@ -53,7 +53,8 @@ def test_csv_rows_reach_the_disk_one_by_one_and_a_complete_meta_exists_from_the_
 
 
 def test_two_trials_started_in_the_same_second_never_write_over_each_other(tmp_path, monkeypatch):
-    """The file name has the time to the second; a second trial of the same position in that second gets '-2', '-3' (0.17.1)."""
+    """The file name has the time to the second; since 0.20.0 it also has the trial number (T1, T2, T3), which keeps trials of one
+    position in the same second apart. The '-2', '-3' of 0.17.1 is still there for a name that is taken anyway (shown below)."""
     from datetime import datetime
     import limbtrack.recorder as recorder
 
@@ -69,9 +70,17 @@ def test_two_trials_started_in_the_same_second_never_write_over_each_other(tmp_p
         eng.process(render(PTS, seed=k), 1.0 + k)
         eng.stop_trial()
         metas.append(paths["meta.json"])
-    assert [m.name[-len("120000-2_meta.json"):] for m in metas[1:]] == ["120000-2_meta.json", "120000-3_meta.json"]
-    assert metas[0].name.endswith("120000_meta.json") and len(list((tmp_path / "P01").glob("*_meta.json"))) == 3
+    assert [m.name.split("deg_")[1] for m in metas] == ["T1_20261021-120000_meta.json", "T2_20261021-120000_meta.json",
+                                                         "T3_20261021-120000_meta.json"]
+    assert len(list((tmp_path / "P01").glob("*_meta.json"))) == 3
     assert all(json.loads(m.read_text())["frames"] == 1 for m in metas)                # each trial kept its own files
+    for m in metas[1:]:                                                                # trial 2 and 3 removed: the next is trial 2 again,
+        for f in (tmp_path / "P01").glob(m.name[: -len("_meta.json")] + "_*"):         # and its name is free
+            f.unlink()
+    (tmp_path / "P01" / metas[1].name.replace("_meta.json", "_raw.mp4")).write_bytes(b"")   # ... unless a video of that name was left
+    paths = eng.start_trial("P01")
+    eng.stop_trial()
+    assert paths["meta.json"].name.endswith("T2_20261021-120000-2_meta.json")         # never written over
 
 
 def test_a_trial_cut_short_can_still_be_opened_in_review(tmp_path):
