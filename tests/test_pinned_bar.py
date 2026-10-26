@@ -190,6 +190,44 @@ def test_the_position_cannot_change_during_a_recording(win):
         win.engine.rec = None
 
 
+def test_a_refused_change_of_target_is_not_logged_or_announced_as_done(win, monkeypatch):
+    """Same test, other target, during a recording: the engine refuses the target, so the window must neither log 'position chosen'
+    nor say 'Position set' over the refusal (the guard in go_to_position)."""
+    live = win.live
+    logged = []
+    monkeypatch.setattr(live, "note", lambda event, detail="": logged.append(event))
+    before = (win.engine.test.key, win.engine.target)
+    win.engine.rec = object()
+    live.go_to_position(row_of(live, "knee_extension", 70))
+    assert (win.engine.test.key, win.engine.target) == before
+    assert "position chosen" not in logged and "Position set" not in live.instruction.text()
+    assert "Stop recording" in live.instruction.text()
+
+
+def test_changing_position_and_test_over_and_over_leaves_no_widgets_behind(win):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QWidget
+
+    live = win.live
+
+    def settle():
+        for _ in range(3):
+            QApplication.processEvents()
+            QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    for key in ("hip_abduction", "knee_extension"):                                  # (once round, so every row and button exists)
+        live._pick(live.test_combo, key)
+    settle()
+    before = len(win.findChildren(QWidget))
+    for _ in range(12):
+        live.go_to_position(row_of(live, "hip_flexion", 0))
+        live.go_to_position(row_of(live, "hip_abduction", 0))
+        live.go_to_position(row_of(live, "knee_extension", 20))
+    settle()
+    assert len(win.findChildren(QWidget)) == before
+    assert len(live.chips) == len(live.lm_rows) == len(win.engine.test.all_dots)
+
+
 def test_same_landmarks_keep_the_marked_dots_when_the_position_changes(win):
     live = win.live
     mark_all(win)

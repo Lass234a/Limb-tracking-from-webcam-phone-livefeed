@@ -1797,6 +1797,7 @@ class LiveTab(QWidget):
             self.say("Start the camera first (and stop recording or the break) to mark a dot." if self.worker is None
                      else "Dots cannot be marked during a recording or a break.")
             return
+        self._leave_ruler_marking()
         if self._pass:                                        # in the middle of 'Redo all': its own dot is skipped, another one is taken next
             if name == self._arm:
                 self._pass.remove(name)
@@ -1834,6 +1835,7 @@ class LiveTab(QWidget):
         if not names:
             self.say("No landmark is switched on: there is no dot to mark.")
             return
+        self._leave_ruler_marking()
         self._pass, self._pass_total, self._pass_unlocked, self._arm = names, len(names), False, names[0]
         self.note("marking all dots again started")
         self.update_dot_rows()
@@ -2328,6 +2330,8 @@ class LiveTab(QWidget):
             self.say("The scale cannot be changed while recording.")
             return
         self.engine.clear_scale()
+        self._stop_marking()                                  # (the ruler is served first: a dot waiting for a click would never get it)
+        self.update_dot_rows()
         self._ruler_marking = 0
         self.say("Click the ruler dot at one end of the ruler.", 8.0)
 
@@ -2343,6 +2347,12 @@ class LiveTab(QWidget):
         else:
             self.say(self.engine.mark_problem or "No dot found at that spot. Click the centre of the ruler dot.")
         self.refresh_view()
+
+    def _leave_ruler_marking(self):
+        """A dot is about to wait for the next click on the picture: the ruler dots, which are served first, no longer may."""
+        if self._ruler_marking is not None:
+            self._ruler_marking = None
+            self.update_scale_label()
 
     def clear_scale(self):
         self.engine.clear_scale()

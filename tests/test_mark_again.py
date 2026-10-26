@@ -112,7 +112,8 @@ def test_without_a_camera_or_during_a_break_it_does_not_start(win):
 def test_a_pass_marks_every_dot_at_its_new_place_in_order_and_releases_the_lock(win):
     live, e = win.live, win.engine
     names = list(e.active_dots)
-    assert e.lock_position()
+    live.btn_lock.click()                                                           # the real Lock button, not only the engine
+    assert e.locked and live.btn_lock.isChecked()
     move_the_participant(win)
     live.btn_redo_dots.click()
     for i, n in enumerate(names):
@@ -223,6 +224,62 @@ def test_a_number_key_works_in_a_pass_like_the_button(win):
     assert live._arm == names[1]
     live.redo_dot_number(4)
     assert live._arm == names[3]
+
+
+# ------------------------------------------------------------------------------------------------ other tests, other dots
+def test_a_pass_with_the_strap_and_anchor_dots_on_asks_for_all_nine(win):
+    live = win.live
+    for n in win.engine.test.all_dots:
+        live.lm_checks[n].setChecked(True)
+    live.update_dot_rows()
+    live.btn_redo_dots.click()
+    assert live._pass == list(win.engine.test.all_dots) and len(live._pass) == 9 and live._arm == live._pass[0]
+    assert f"1 of 9" in live.instruction.text()
+    assert all(not c.isHidden() for c in live.chips.values())
+    live.btn_redo_dots.click()
+    assert not live._pass
+
+
+def test_a_pass_in_a_frontal_test_asks_for_that_tests_dots(win):
+    live = win.live
+    live._pick(live.test_combo, "hip_abduction")
+    names = list(win.engine.active_dots)
+    assert names and set(names) != set(TESTS["knee_extension"].dots)                  # other landmarks than the leg test
+    live.btn_redo_dots.click()
+    assert live._pass == names and live._arm == names[0]
+    assert list(live.chips) == list(win.engine.test.all_dots) == list(live.lm_rows)
+
+
+# ------------------------------------------------------------------------------------------------ the ruler and the dots share the next click
+def test_starting_a_pass_takes_over_from_the_ruler_marking(win):
+    live = win.live
+    live.start_ruler_marking()
+    assert live._ruler_marking == 0
+    live.btn_redo_dots.click()
+    assert live._ruler_marking is None and live._pass                                  # the next click is for the dot, not the ruler
+    first = live._arm
+    live.on_click(*(PTS[first] + 2))
+    assert first not in live._pass and win.engine.scale.px_per_cm is None             # (no ruler dot was marked by it)
+
+
+def test_arming_one_dot_takes_over_from_the_ruler_marking(win):
+    live = win.live
+    a = list(win.engine.active_dots)[0]
+    live.start_ruler_marking()
+    live.chips[a].click()
+    assert live._ruler_marking is None and live._arm == a
+
+
+def test_starting_the_ruler_marking_ends_a_pass_and_a_waiting_dot(win):
+    live = win.live
+    a = list(win.engine.active_dots)[0]
+    live.btn_redo_dots.click()
+    assert live._pass
+    live.start_ruler_marking()
+    assert not live._pass and live._arm is None and live._ruler_marking == 0 and live.btn_redo_dots.text() == "Redo all (D)"
+    live.chips[a].click()
+    live.start_ruler_marking()
+    assert live._arm is None and live._ruler_marking == 0
 
 
 # ------------------------------------------------------------------------------------------------ the engine's part
