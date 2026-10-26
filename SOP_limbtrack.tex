@@ -105,7 +105,7 @@ Z zero, G reading taken now, S/E MVIC start/end by hand, D redo all dots, 1--9 r
 
 \section{Joint angles}\label{sec:angles}
 Each angle is the angle between two ``arms'' in the picture, an arm being the vector from one dot to another, as the goniometer arms of
-Table~3. The shown value is $\text{sign}\times\text{angle}+\text{offset}$. Signed angles depend on which way the participant faces in the
+Table~3. The shown value is $\text{sign}\times\text{angle}+\text{offset}$ (formulas in Section~\ref{sec:angle-formulas}). Signed angles depend on which way the participant faces in the
 picture (\emph{Participant faces}); the program warns when the dots show the other way (from the foot dots, or from a knee bent the wrong
 way).
 
@@ -117,7 +117,7 @@ Hip & iliac crest pad $\rightarrow$ greater trochanter & trochanter $\rightarrow
   line; flexion positive, extension negative. Fulcrum: trochanter. \\
 Knee & trochanter $\rightarrow$ lateral epicondyle & fibular head $\rightarrow$ lateral malleolus & 0 = straight; flexion positive,
   hyperextension negative. Fulcrum: epicondyle. \\
-Ankle & malleolus $\rightarrow$ fibular head & 5th metatarsal base $\rightarrow$ head & angle $-$ 90\dg: 0 = foot square to the shank;
+Ankle & malleolus $\rightarrow$ fibular head & 5th metatarsal base $\rightarrow$ head & 90\dg{} $-$ angle: 0 = foot square to the shank;
   dorsiflexion positive, plantarflexion negative ($-20$ = 20\dg{} plantarflexion). Fulcrum: malleolus. \\
 Hip abduction (front view) & tested ASIS $\rightarrow$ other ASIS & tested ASIS $\rightarrow$ patella centre & angle $-$ 90\dg: 0 = thigh
   square to the line between the ASIS; abduction positive, adduction negative; the same for either leg. Fulcrum: tested ASIS. Used for
@@ -128,6 +128,93 @@ Hip abduction about the hip centre & as above & estimated hip joint centre $\rig
 \end{tabularx}
 
 \medskip\noindent The saved angles are never smoothed. On screen they are shown as a 0.2~s moving average (display only).
+
+\subsection{Formulas}\label{sec:angle-formulas}
+\noindent This is the calculation exactly as \lt{} does it in every picture. Written out as a separate program from this text, it gives the
+same value as \lt{} for all five angles of Table~3 on 2000 to 3000 random sets of dot positions each, for a participant facing either
+way (no difference beyond rounding).
+
+\paragraph{Dots and arms.} A dot is the centre of its marker, $(x,y)$ in picture pixels, with $x$ to the right and $y$ \emph{downwards}.
+The arm from dot $A$ to dot $B$ is the vector
+\begin{gather}
+  \mathbf{v}_{AB}=\bigl(m\,(x_B-x_A),\ y_B-y_A\bigr),\label{eq:arm}\\
+  m=\begin{cases}+1 & \text{the participant faces right in the picture,}\\ -1 & \text{the participant faces left.}\end{cases}\notag
+\end{gather}
+The factor $m$ mirrors the picture of a participant who faces left, so that a sign means the same whichever way the participant faces. It
+makes no difference to the unsigned angles (ankle and front view).
+
+\paragraph{The angle between two arms.} Let $\mathbf{v}_1\cdot\mathbf{v}_2=v_{1x}v_{2x}+v_{1y}v_{2y}$ and
+$\mathbf{v}_1\times\mathbf{v}_2=v_{1x}v_{2y}-v_{1y}v_{2x}$, and let $\operatorname{atan2}(y,x)$ be the four-quadrant arctangent. Then
+\begin{gather}
+  \theta=\operatorname{atan2}\bigl(\lvert\mathbf{v}_1\times\mathbf{v}_2\rvert,\ \mathbf{v}_1\cdot\mathbf{v}_2\bigr)\in[0\dg,180\dg],\label{eq:theta}\\
+  \theta_s=\operatorname{atan2}\bigl(\mathbf{v}_1\times\mathbf{v}_2,\ \mathbf{v}_1\cdot\mathbf{v}_2\bigr)\in[-180\dg,180\dg].\label{eq:thetas}
+\end{gather}
+$\theta$ is the ordinary angle between the two arms (0\dg{} when they point the same way, 180\dg{} when they point opposite ways). $\theta_s$ is
+the same angle with a sign: positive when the turn from $\mathbf{v}_1$ to $\mathbf{v}_2$ is clockwise on the screen. If an arm has length zero
+the angle does not exist and the cell in the CSV is empty.
+
+\paragraph{The shown value.}
+\begin{equation}\label{eq:alpha}
+  \alpha=s\,\theta+c\quad(\text{unsigned angles}),\qquad\qquad \alpha=s\,\theta_s+c\quad(\text{signed angles}),
+\end{equation}
+with the sign $s$ and the offset $c$ of the table below. They are set in \code{protocol.json} and saved with every trial. The letters
+are: $C$ iliac crest pad, $G$ greater trochanter, $E$ lateral femoral epicondyle, $F$ fibular head, $M$ lateral malleolus, $B$ 5th
+metatarsal base, $D$ 5th metatarsal head, $A$ tested ASIS, $O$ other ASIS, $P$ patella centre, $J$ estimated hip joint centre.
+
+\medskip
+\begin{tabularx}{\linewidth}{@{}P{2.5cm}cclccL@{}}
+\toprule
+Angle & $\mathbf{v}_1$ & $\mathbf{v}_2$ & Type & $s$ & $c$ & Shown value $\alpha$ \\
+\midrule
+Hip & $\mathbf{v}_{CG}$ & $\mathbf{v}_{GE}$ & signed & $-1$ & $0$ & $-\theta_s$ (flexion positive) \\
+Knee & $\mathbf{v}_{GE}$ & $\mathbf{v}_{FM}$ & signed & $+1$ & $0$ & $\theta_s$ (flexion positive) \\
+Ankle & $\mathbf{v}_{MF}$ & $\mathbf{v}_{BD}$ & unsigned & $-1$ & $90\dg$ & $90\dg-\theta$ (dorsiflexion positive) \\
+Hip abduction, front view & $\mathbf{v}_{AO}$ & $\mathbf{v}_{AP}$ & unsigned & $+1$ & $-90\dg$ & $\theta-90\dg$ (abduction positive) \\
+Hip abduction about the hip centre & $\mathbf{v}_{AO}$ & $\mathbf{v}_{JP}$ & unsigned & $+1$ & $-90\dg$ & $\theta-90\dg$ (shown and saved, never judged) \\
+\bottomrule
+\end{tabularx}
+
+\medskip\noindent Why the signs are as they are:
+\begin{itemize}
+\item \textbf{Hip and knee.} For a participant facing right, both arms point down the leg when the leg is straight ($\theta_s=0$). Bending the hip
+  swings the thigh forward, which is anticlockwise on the screen ($\theta_s<0$, hence $s=-1$); bending the knee swings the shank
+  backwards, which is clockwise ($\theta_s>0$, hence $s=+1$). In both, flexion is positive. If the \emph{Participant faces} setting is
+  wrong, a flexion reads as the same number with a minus sign; the facing warning above catches this, and Lock is refused until the
+  setting is corrected.
+\item \textbf{Ankle.} $\mathbf{v}_{MF}$ runs up the shank and $\mathbf{v}_{BD}$ along the foot towards the toes, so a foot square to the
+  shank gives $\theta=90\dg$. Toes towards the shin make $\theta$ smaller (so $\alpha>0$, dorsiflexion); toes pointing away make it larger
+  ($\alpha<0$, plantarflexion; $-20$ is 20\dg{} plantarflexion).
+\item \textbf{Hip abduction (front view).} $\mathbf{v}_{AO}$ runs along the line between the two ASIS, so a thigh hanging square to that line
+  gives $\theta=90\dg$. The knee moving away from the other leg makes $\theta$ larger ($\alpha>0$, abduction), towards it smaller
+  ($\alpha<0$, adduction). Being unsigned, it is the same for either leg and for a mirrored picture.
+\end{itemize}
+
+\paragraph{Estimated hip joint centre (front view).} The point $J$ is calculated from the two ASIS pads, not clicked. Let $T$ and $O$ be the
+centres of the tested and the other ASIS pad (pixels), $k$ the scale of the ruler in pixels per millimetre, $w=\lVert T-O\rVert$ and
+$PW=w/k$ the distance between the two ASIS in millimetres. Then
+\begin{gather}
+  J=\tfrac12\,(T+O)+k\,\bigl(d_{\text{side}}\,\mathbf{u}+d_{\text{down}}\,\mathbf{n}\bigr),\label{eq:hipcentre}\\
+  d_{\text{side}}=0.33\,PW+7.3\ \text{mm},\qquad d_{\text{down}}=0.30\,PW+10.9\ \text{mm},\notag
+\end{gather}
+where $\mathbf{u}=(T-O)/w$ points from the other ASIS to the tested ASIS and $\mathbf{n}$ is the unit vector square to $\mathbf{u}$ with
+$\mathbf{n}\cdot(P-T)>0$, that is, pointing to the side of the line $TO$ where the patella is (``down'' in the pelvis' own frame, so a tilted
+camera or a participant lying on one side does not matter). The constants are those of Harrington et al.\ (2007), equation set~1
+\tbd{constants to be checked in the original paper}. Without a ruler scale $J$ is not calculated and the hip-centre angle is empty.
+
+\paragraph{Worked example} (participant faces right; picture pixels): $G=(300,200)$, $E=(500,200)$, $F=(500,220)$, $M=(500,420)$,
+$B=(480,440)$, $D=(580,450)$, $C=(300,40)$.
+\begin{itemize}
+\item \textbf{Knee:} $\mathbf{v}_{GE}=(200,0)$, $\mathbf{v}_{FM}=(0,200)$, cross product $40000$, dot product $0$, so
+  $\theta_s=\operatorname{atan2}(40000,0)=90.00\dg$ and $\alpha_{\text{knee}}=90.00\dg$ (the shank is vertical, the thigh horizontal).
+\item \textbf{Hip:} $\mathbf{v}_{CG}=(0,160)$, $\mathbf{v}_{GE}=(200,0)$, cross product $-32000$, dot product $0$, so $\theta_s=-90.00\dg$ and
+  $\alpha_{\text{hip}}=+90.00\dg$.
+\item \textbf{Ankle:} $\mathbf{v}_{MF}=(0,-200)$, $\mathbf{v}_{BD}=(100,10)$, cross product $20000$, dot product $-2000$, so
+  $\theta=\operatorname{atan2}(20000,-2000)=95.71\dg$ and $\alpha_{\text{ankle}}=90\dg-95.71\dg=-5.71\dg$ (5.7\dg{} plantarflexion: the toes
+  point slightly down).
+\end{itemize}
+\noindent The same numbers come out of \lt{} for these dot positions (knee $90.00$, hip $90.00$, ankle $-5.71$). Picture pixels are used as
+they are: lens distortion and perspective are not corrected, so each angle is that of the limb projected on the picture plane and is
+right only for a limb moving in a plane square to the camera (Section~\ref{sec:limits}).
 
 \section{Judging the position, and Lock}
 \begin{itemize}
