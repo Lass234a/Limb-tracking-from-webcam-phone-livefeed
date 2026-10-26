@@ -24,6 +24,8 @@ class AngleResult:
     reference: float = None          # target (main joint) or the value shown when the position was locked (others)
     tolerance: float = None
     judged: bool = True              # False: shown and saved only (protocol "judged": false); never stops Lock or makes 'all_ok' 0
+    suspect: str = None              # why this angle is doubtful although it has a value (two dots on one bone moved apart: a dot may have
+                                     # jumped, 0.19.0); shown as CHECK, makes 'all_ok' 0 when judged; the value is still saved
 
 
 @dataclass

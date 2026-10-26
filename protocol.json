@@ -21,9 +21,12 @@
   "_optional_dots_note": "Extra dots that are tracked and recorded but not part of any angle. They start switched off; tick them in Landmarks to use them. Per test you can override with \"optional_dots\".",
   "optional_dots": ["strap", "anchor"],
 
-  "_derived_points_note": "Computed points are never clicked: they are calculated from marked dots in every picture and can be used as the end of an arm. 'hip_centre_frontal' estimates the hip joint centre of the tested side in a picture taken from the front, from the two ASIS and the ruler scale (Harrington et al. 2007, equation set 1; see limbtrack/geometry.py for the equation and its status).",
+  "_rigid_pairs_note": "Two dots on the same bone stay the same distance apart. When the distance between such a pair changes by more than 25 % from what it was when the dots were marked, a dot has most likely jumped to something else (P20, 2026-10-22): every angle that uses either dot is marked CHECK on screen, does not count as within limits, and the frames are saved in data.csv ('dots_apart') and meta.json. Only pairs on ONE bone belong here: iliac_crest-trochanter spans the hip and changes length when the hip moves.",
+  "rigid_pairs": [["fibular_head", "malleolus"], ["mt5_base", "mt5_head"], ["trochanter", "epicondyle"], ["asis", "asis_opposite"]],
+
+  "_derived_points_note": "Computed points are never clicked: they are calculated from marked dots in every picture and can be used as the end of an arm. 'hip_centre_frontal' estimates the hip joint centre of the tested side in a picture taken from the front, from the two ASIS and the ruler scale (Harrington et al. 2007, equation set 1; see limbtrack/geometry.py for the equation and its status). The optional 'knee' dot tells which way is down along the body (towards the knee), so the hip centre is also right when the participant lies on the side; without it, down is the bottom of the picture.",
   "derived_points": {
-    "hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite"}
+    "hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite", "knee": "patella"}
   },
 
   "_frontal_angles_note": "Frontal view (camera in front of the participant). The four frontal angles in angle_library are unsigned interior angles between the arm towards the other ASIS and the thigh; 90 deg = the thigh square to the line between the ASIS = neutral, so the shown value is angle - 90 for abduction (the knee moves away from the other leg) and 90 - angle for adduction. Independent of which leg and of mirroring. 'goniometer' = Tabel 3 as written (fulcrum the ASIS, thigh towards the patella centre); 'hip_centre' = the same thigh line drawn from the estimated hip joint centre, which is what rotates when the leg moves; it is shown and saved but never judged green/red ('judged': false). The two do not share a zero.",

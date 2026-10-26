@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .geometry import DERIVED_KINDS, derived_input_dots, spec_dots
+from .geometry import DERIVED_KINDS, DERIVED_OPTIONAL, derived_input_dots, spec_dots
 
 VIEWS = ("sagittal", "frontal")      # which way the camera looks at the movement; a frontal test has no 'Participant faces' (0.15.0)
 
@@ -49,6 +49,7 @@ class TestDef:
     view: str = "sagittal"                        # "frontal": the camera is in front of the participant (hip abduction/adduction)
     derived: dict = field(default_factory=dict)   # computed points this test's angles use: name -> definition (geometry.DERIVED_KINDS)
     reference_extras: dict = field(default_factory=dict)   # readings the operator may type that are not one of the angles (key -> name), e.g. the hip flexion of a frontal test
+    rigid_pairs: list = field(default_factory=list)   # (dotA, dotB) on one bone, both dots of this test: their distance must not change (0.19.0)
 
     @property
     def frontal(self):
@@ -93,7 +94,8 @@ class ProtocolError(ValueError):
     """protocol.json has mistakes; the message lists all of them with their place in the file."""
 
 
-_TOP_KEYS = {"tolerance_deg", "neighbour_tolerance_deg", "dot_order", "dot_labels", "optional_dots", "derived_points", "angle_library", "tests"}
+_TOP_KEYS = {"tolerance_deg", "neighbour_tolerance_deg", "dot_order", "dot_labels", "optional_dots", "derived_points", "angle_library", "tests",
+             "rigid_pairs"}
 _TEST_KEYS = {"label", "primary", "targets", "angles", "dots", "tolerance_deg", "neighbour_tolerance_deg", "optional_dots",
               "neighbour_targets", "view", "reference_extras"}
 _ANGLE_KEYS = {"name", "vectors", "label", "signed", "sign", "offset", "primary", "fulcrum", "kind", "points", "judged"}
@@ -208,19 +210,35 @@ def validate_protocol(data):
             errs.append(f'{path}.kind: "{kind}" is not a kind of computed point{_near(kind, DERIVED_KINDS)}; use one of '
                         + ", ".join(DERIVED_KINDS))
             continue
-        keys = DERIVED_KINDS[kind]
+        keys, optional_keys = DERIVED_KINDS[kind], DERIVED_OPTIONAL.get(kind, ())
         for k in spec:
-            if k != "kind" and k not in keys and not str(k).startswith("_"):
-                errs.append(f'{path}: unknown field "{k}"{_near(k, keys)}')
-        for k in keys:
+            if k != "kind" and k not in keys and k not in optional_keys and not str(k).startswith("_"):
+                errs.append(f'{path}: unknown field "{k}"{_near(k, keys + optional_keys)}')
+        for k in keys + tuple(k for k in optional_keys if k in spec):
             v = spec.get(k)
             if not isinstance(v, str):
                 errs.append(f"{path}.{k}: needs the name of a dot")
             elif v not in known:
                 errs.append(f'{path}.{k}: unknown dot "{v}"{_near(v, known)}')
-        names = [spec.get(k) for k in keys]
+        names = [spec.get(k) for k in keys + tuple(k for k in optional_keys if k in spec)]
         if all(isinstance(n, str) for n in names) and len(set(names)) < len(names):
             errs.append(f"{path}: the dots must be different")
+    pairs = data.get("rigid_pairs", [])
+    if not isinstance(pairs, list):
+        errs.append("rigid_pairs: must be a list of [dotA, dotB] pairs")
+        pairs = []
+    for i, pair in enumerate(pairs):
+        path = f"rigid_pairs[{i}]"
+        if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(n, str) for n in pair)):
+            errs.append(f"{path}: must be two dot names, for example [\"fibular_head\", \"malleolus\"]")
+            continue
+        if pair[0] == pair[1]:
+            errs.append(f'{path}: both dots are "{pair[0]}"')
+        for n in pair:
+            if n in derived:
+                errs.append(f'{path}: "{n}" is a computed point; only dots that are clicked can be checked')
+            elif n not in known:
+                errs.append(f'{path}: unknown dot "{n}"{_near(n, known)}')
     known_arms = known + [d for d in derived if d not in known]       # an arm may end at a dot or at a computed point
     library = data.get("angle_library", {})
     if not isinstance(library, dict):
@@ -364,6 +382,7 @@ def load_protocol(path):
             view=t.get("view", "sagittal"),
             reference_extras=dict(t.get("reference_extras", {})),
             derived={n: dict(derived_defs[n]) for a in angles for v in a.vectors for n in spec_dots(v) if n in derived_defs},
+            rigid_pairs=[tuple(p) for p in data.get("rigid_pairs", []) if p[0] in dots and p[1] in dots],
         )
     return tests
 

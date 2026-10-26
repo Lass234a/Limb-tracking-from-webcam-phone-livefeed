@@ -26,6 +26,7 @@ from .geometry import (HARRINGTON_DOWN, HARRINGTON_SIDEWAYS, KNEE_FACING_MIN_DEG
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
+from .force import smooth_signal
 from .recorder import FrameSizeChanged, TrialRecorder
 from . import cues, privacy, provenance
 from .reference import INSTRUMENTS, ReferenceReadings
@@ -36,13 +37,21 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.18.2"
+SOFTWARE_VERSION = "0.19.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
 TRAIL_MIN_STEP_PX = 0.5      # a dot adds a trail point only after moving at least this far (display only)
 STAMP_MAX_PICTURE_AGE_S = 1.0      # 'reading taken now' is refused when the latest picture is older than this (its angles are not of this moment)
 PELVIC_WIDTH_TAPE_WARN_PCT = 8.0   # frontal tests: warn when the ASIS-to-ASIS distance in the picture (ruler scale) and the typed tape measure differ by more
+RIGID_PAIR_CHANGE = 0.25     # two dots on one bone (protocol rigid_pairs) whose distance changed by more than this fraction since marking: a dot
+                             # may have jumped (P20 2026-10-22: +50 % and +290 % at the two ankle jumps; 25 % = 41 deg of turn out of the
+                             # picture's plane; over P01-P20 it flags only real jumps). 0.19.0
+FORCE_PEAK_WINDOW_S = 0.02   # the peak force is taken from a moving average over one 50 Hz mains cycle, so the hum is not counted as force
+                             # (P20: 'peak 214 N' on screen with no load at all, 0.5 V of hum). The raw maximum is saved as peak_raw_n. 0.19.0
+NO_FORCE_RISE_N = 60.0       # after a trial with an MVIC start marker: the force (0.1 s average) must have moved at least this far from its
+                             # level before the marker, or the window warns. P20 (no load reached the DAQ): at most 47 N; P11: at least 112 N
+FORCE_RISE_SMOOTH_S = 0.1    # averaging for that check (a multiple of 20 ms: removes the 50 Hz hum)
 
 
 class _FrozenWhileRecording:
@@ -158,6 +167,9 @@ class Engine:
         self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
         self.reference = ReferenceReadings()   # what the operator typed from a goniometer or inclinometer, and the app's angles at that moment (limbtrack/reference.py)
         self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
+        self._rigid_ref = {}         # (dotA, dotB) of protocol rigid_pairs -> their distance in pixels when they were marked (0.19.0)
+        self._dots_apart = {}        # pairs of the latest picture whose distance changed by more than RIGID_PAIR_CHANGE -> the change (fraction)
+        self.last_trial_warnings = []   # plain-English problems found when the last recording was stopped (the window shows them)
         self._refs = {}
         self._last_gray = None
         self._last_states = {}
@@ -233,6 +245,7 @@ class Engine:
             self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
             self._last_states = {}
+            self._rigid_ref, self._dots_apart = {}, {}
             self._forget_angle_averages()
             self._hist.clear()
             self._trails, self._trail_open = {}, {}
@@ -393,6 +406,9 @@ class Engine:
             bad = self.marking_problems()
             if bad:
                 return "The dots look mislabelled: " + "; ".join(bad) + ". Use 'Re-mark all dots' and click them in the order asked."
+            if self._dots_apart:
+                return ("Check the dots: " + "; ".join(self.dots_apart_text(p, c) for p, c in self._dots_apart.items())
+                        + ". Mark the dot that is off again (its number key), or Redo all (D), then lock.")
             if self.facing_mismatch:
                 return self.facing_message() + " Change 'Participant faces' (or the mirror) to match the picture, then lock."
             if not self.active_angles:
@@ -405,6 +421,24 @@ class Engine:
             if lost:
                 return "These dots are not visible right now: " + ", ".join(lost)
             return "Every dot must be marked and visible to lock the position."
+
+    def main_angle_problem(self):
+        """Why the main joint cannot be measured, or may be wrong, in the latest picture (plain English), or None. The window asks before
+        recording then: in P20 (2026-10-22) a plantarflexion trial was recorded with a foot dot already lost and has no ankle angle at all."""
+        with self.lock:
+            main = self.primary_angle
+            if main is None or not self._last_states:
+                return None
+            lost = [self.test.dot_title(n) for n in main.dots if n in self._last_states and self._last_states[n].lost]
+            if lost:
+                return (f"The {main.title} cannot be measured right now: the {', '.join(lost)} "
+                        f"{'dot is' if len(lost) == 1 else 'dots are'} not visible.")
+            r = next((a for a in self._last_angles if a.name == main.name), None)
+            if r is not None and r.status == LOST:
+                return f"The {main.title} cannot be measured right now."
+            if r is not None and r.suspect:
+                return f"The {main.title} may be wrong right now: {r.suspect}."
+            return None
     def set_dot_enabled(self, name, on):
         """Use or skip one landmark (pilot testing). Not possible while recording.
 
@@ -422,6 +456,7 @@ class Engine:
             self.trackers.set_enabled(name, on)
             self._trails, self._trail_open = {}, {}          # the set of dots changed: old trails no longer apply
             self._last_states.pop(name, None)
+            self._forget_rigid_reference(name)
             self._forget_angle_averages()
             self.unlock_position()
 
@@ -549,7 +584,47 @@ class Engine:
                     return False
             self._last_states[name] = DotState(name, t.x, t.y, False, 0)   # usable at once, e.g. by Lock
             self._last_angles = []
+            self._forget_rigid_reference(name)
+            for pair in self.test.rigid_pairs:                # the distance to a dot that is tracked right now is the new reference
+                if name in pair:
+                    other = self._last_states.get(pair[1] if pair[0] == name else pair[0])
+                    if other is not None and not other.lost:
+                        self._rigid_ref[pair] = math.hypot(other.x - t.x, other.y - t.y)
             return True
+
+    # ------------------------------------------------------- dots on one bone (protocol rigid_pairs, 0.19.0)
+    def _forget_rigid_reference(self, name):
+        """A dot was marked again or switched on or off: the distances it is part of are measured afresh."""
+        for pair in list(self._rigid_ref):
+            if name in pair:
+                del self._rigid_ref[pair]
+        self._dots_apart = {p: c for p, c in self._dots_apart.items() if name not in p}
+
+    def _check_rigid_pairs(self, states):
+        """Compare the distance of every pair of dots on one bone with its distance when the dots were marked. A pair without a reference
+        (one of its dots was lost when the other was marked) takes the first picture in which both are tracked."""
+        out = {}
+        for pair in self.test.rigid_pairs:
+            a, b = states.get(pair[0]), states.get(pair[1])
+            if a is None or b is None or a.lost or b.lost or pair[0] in self.disabled_dots or pair[1] in self.disabled_dots:
+                continue
+            d = math.hypot(a.x - b.x, a.y - b.y)
+            ref = self._rigid_ref.get(pair)
+            if ref is None:
+                self._rigid_ref[pair] = d
+            elif ref > 1e-6 and abs(d / ref - 1.0) > RIGID_PAIR_CHANGE:
+                out[pair] = d / ref - 1.0
+        self._dots_apart = out
+
+    def dots_apart_text(self, pair, change):
+        a, b = (self.test.dot_title(n) for n in pair)
+        return (f"the {a} and {b} dots are {100 * abs(change):.0f} % {'farther apart' if change > 0 else 'closer together'} than when they "
+                "were marked: a dot may have jumped to something else")
+
+    def dots_apart(self):
+        """Pairs of dots on one bone that moved apart in the latest picture: {(dotA, dotB): change as a fraction}."""
+        with self.lock:
+            return dict(self._dots_apart)
 
     def nearest_dot(self, x, y, lost_dist=LOST_CLICK_REACH_PX):
         """Name of the marked dot a click at (x, y) is meant to re-mark, or None. Used to re-mark a single dot.
@@ -577,7 +652,7 @@ class Engine:
         """Store the current neighbour angles as the reference. Returns False if any angle is unavailable."""
         with self.lock:
             self._forbid_while_recording("the locked position")
-            if self.paused or self.facing_mismatch or self.marking_problems():
+            if self.paused or self.facing_mismatch or self.marking_problems() or self._dots_apart:
                 return False
             angles = self._last_angles or (self._compute_angles(self._last_states) if self._last_states else [])
             # an angle that is shown but never judged (the hip-centre angle, blank without the ruler) does not stop the lock
@@ -818,6 +893,9 @@ class Engine:
                 if r.reference is not None:
                     r.deviation = r.value - r.reference
                     r.status = OK if abs(r.deviation) <= r.tolerance else OUT
+                apart = [(p, c) for p, c in self._dots_apart.items() if set(p) & set(a.dots)]
+                if apart:                                           # the value is kept (and saved), but it may come from a jumped dot
+                    r.suspect = "; ".join(self.dots_apart_text(p, c) for p, c in apart)
             out.append(r)
         return out
 
@@ -1044,32 +1122,49 @@ class Engine:
         self._privacy_crop, self._privacy_masks = None, []      # drawn on the old picture: no longer valid
         self._notice = (text + ": mark the dots (and the ruler) again. The privacy crop and masks were cleared.", t)
 
-    # Distances that hold for any body posture (upright, seated, lying) and either leg: (longer pair, shorter pair, what is wrong,
-    # smallest allowed ratio longer/shorter). They catch dots clicked in the wrong order or two labels swapped (audit GUI-14).
+    # Distances that hold for any body posture (upright, seated, lying) and either leg: (code, longer pair, shorter pair, what is wrong,
+    # smallest allowed ratio longer/shorter). They catch dots clicked in the wrong order or two labels swapped (audit GUI-14). The code
+    # is what data.csv's 'label_check' column holds in the pictures where the check failed (0.19.0).
     LABEL_CHECKS = [
-        (("malleolus", "mt5_head"), ("malleolus", "mt5_base"),
+        ("foot_order", ("malleolus", "mt5_head"), ("malleolus", "mt5_base"),
          "the 5th metatarsal head should be farther from the lateral malleolus than the base is (head and base swapped?)", 1.0),
-        (("fibular_head", "malleolus"), ("mt5_base", "mt5_head"),
+        ("foot_vs_shank", ("fibular_head", "malleolus"), ("mt5_base", "mt5_head"),
          "the foot (metatarsal base to head) should be shorter than the shank (fibular head to malleolus)", 1.0),
-        (("trochanter", "epicondyle"), ("iliac_crest", "trochanter"),
+        ("thigh_vs_pelvis", ("trochanter", "epicondyle"), ("iliac_crest", "trochanter"),
          "the thigh (trochanter to epicondyle) should be longer than the pelvis arm (iliac crest to trochanter)", 1.0),
-        (("epicondyle", "malleolus"), ("fibular_head", "malleolus"),
+        ("knee_order", ("epicondyle", "malleolus"), ("fibular_head", "malleolus"),
          "the lateral malleolus should be farther from the epicondyle than from the fibular head (epicondyle and fibular head swapped?)", 0.97),
     ]
+    UPRIGHT_PELVIS_MAX_DEG = 45.0    # frontal tests: the line between the ASIS within this of the picture's horizontal = standing or sitting
+                                     # (the picture's left/right and bottom mean something); steeper, with the thigh nearer the
+                                     # picture's horizontal than its vertical = lying on the side
 
     def marking_problems(self):
         """Plain-English reasons to doubt that the dots were marked in the right order (empty if all is plausible)."""
+        return [text for _, text in self.marking_problem_items()]
+
+    def marking_problem_items(self):
+        """[(code, plain-English text)] of the label checks that fail in the latest picture."""
         with self.lock:
             xy = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost and n in self.active_dots}
         out = []
-        for (a1, a2), (b1, b2), text, ratio in self.LABEL_CHECKS:
+        for code, (a1, a2), (b1, b2), text, ratio in self.LABEL_CHECKS:
             if all(n in xy for n in (a1, a2, b1, b2)):
                 dl = math.hypot(xy[a1][0] - xy[a2][0], xy[a1][1] - xy[a2][1])
                 ds = math.hypot(xy[b1][0] - xy[b2][0], xy[b1][1] - xy[b2][1])
                 if ds > 1e-6 and dl < ratio * ds:
-                    out.append(text)
+                    out.append((code, text))
         if self.test.frontal:
             out += self._frontal_marking_problems(xy)
+        return out
+
+    def label_check_texts(self):
+        """code -> text of every label check this test can show (for meta.json)."""
+        out = {code: text for code, *_, text, _ in self.LABEL_CHECKS}
+        if self.test.frontal:
+            out.update({"asis_side": "the tested ASIS, the other ASIS and the patella do not fit the 'Tested leg' (ASIS dots swapped, or the wrong 'Tested leg'?)",
+                        "patella_below": "the patella centre should be below the ASIS, towards the feet (wrong dot clicked?)",
+                        "thigh_vs_pelvic_width": "the thigh (ASIS to patella centre) should be longer than the distance between the two ASIS"})
         return out
 
     def _frontal_dots(self):
@@ -1082,23 +1177,40 @@ class Engine:
         return pair[0], pair[1], knee
 
     def _frontal_marking_problems(self, xy):
-        """Plausibility of the three frontal dots (tested ASIS, other ASIS, patella centre). A swapped ASIS pair would turn abduction into
-        adduction without any other sign of it, so these block Lock like the sagittal label checks do."""
+        """Plausibility of the three frontal dots (tested ASIS, other ASIS, patella centre), as [(code, text)]. A swapped ASIS pair would
+        turn abduction into adduction without any other sign of it, so these block Lock like the sagittal label checks do.
+
+        Standing or sitting the picture's left, right and bottom tell the sides. Lying on the side (P20, 2026-10-22: the line between the
+        ASIS steeper than UPRIGHT_PELVIS_MAX_DEG and the thigh closer to the picture's horizontal than to its vertical) they do not: the
+        feet point sideways, so until 0.19.0 Lock was refused for a good set of dots. Then the side is told by the turn from the line
+        between the ASIS to the patella, which a rotation of the picture does not change, and the 'patella below the ASIS' check is left out."""
         t, o, p = (np.array(xy[n], float) if n in xy else None for n in self._frontal_dots())
         out = []
-        axes = pelvis_axes(t, o) if t is not None and o is not None else None
+        axes = pelvis_axes(t, o) if t is not None and o is not None else None      # 'down' = the picture's bottom (no knee given)
         if axes is None:
             return out
-        u, v, width = axes                                  # the same frame the hip centre is computed in
+        u, v, width = axes
+        thigh = p - (t + o) / 2.0 if p is not None else None
+        upright = (abs(float(u[1])) <= math.sin(math.radians(self.UPRIGHT_PELVIS_MAX_DEG))
+                   or (thigh is not None and abs(float(thigh[1])) >= abs(float(thigh[0]))))
         left_expected = (self.tested_leg == "right") != bool(self.mirror)       # facing the camera, the right leg is on the picture's left
-        if (t[0] < o[0]) != left_expected:
-            out.append(f"with the {self.tested_leg} leg tested and the participant facing the camera, the tested ASIS should be on the "
-                       f"{'left' if left_expected else 'right'} of the other ASIS in the picture (ASIS dots swapped, or the wrong 'Tested leg'?)")
+        if upright:
+            if (t[0] < o[0]) != left_expected:
+                out.append(("asis_side", f"with the {self.tested_leg} leg tested and the participant facing the camera, the tested ASIS should "
+                                         f"be on the {'left' if left_expected else 'right'} of the other ASIS in the picture (ASIS dots "
+                                         "swapped, or the wrong 'Tested leg'?)"))
+        elif p is not None:
+            a, b = o - t, p - t
+            turn = float(a[0] * b[1] - a[1] * b[0])      # > 0 for the right leg seen from the front (picture y down), in any rotation
+            if turn != 0 and (turn > 0) != left_expected:
+                out.append(("asis_side", f"with the {self.tested_leg} leg tested and the participant seen from the front lying on the side, the "
+                                         "dots fit the other leg (ASIS dots swapped, or the wrong 'Tested leg'?)"))
         if p is not None:
-            if float(np.dot(p - t, v)) <= 0:
-                out.append("the patella centre should be below the ASIS, towards the feet (wrong dot clicked?)")
+            if upright and float(np.dot(p - t, v)) <= 0:
+                out.append(("patella_below", "the patella centre should be below the ASIS, towards the feet (wrong dot clicked?)"))
             elif float(np.hypot(*(p - t))) < width:
-                out.append("the thigh (ASIS to patella centre) should be longer than the distance between the two ASIS (patella and ASIS mixed up?)")
+                out.append(("thigh_vs_pelvic_width", "the thigh (ASIS to patella centre) should be longer than the distance between the two "
+                                                     "ASIS (patella and ASIS mixed up?)"))
         return out
 
     FACING_MISMATCH_FRAMES = 5
@@ -1172,8 +1284,18 @@ class Engine:
             return mean_v, None
         st["sum"] += float(np.nansum(ns))
         k = int(np.nanargmax(ns))
-        if math.isnan(st["peak"]) or ns[k] > st["peak"]:
-            st["peak"], st["peak_clock"] = float(ns[k]), float(ts[k])
+        if math.isnan(st["peak_raw"]) or ns[k] > st["peak_raw"]:
+            st["peak_raw"], st["peak_raw_clock"] = float(ns[k]), float(ts[k])
+        # The peak without the mains hum: a moving average over one 50 Hz cycle, carried across the chunks (FORCE_PEAK_WINDOW_S).
+        w = st["win"]
+        cn, ct = np.concatenate([st["carry_n"], ns]), np.concatenate([st["carry_t"], ts])
+        if cn.size >= w:
+            avg = np.convolve(cn, np.ones(w) / w, mode="valid")          # avg[j] = mean of cn[j : j + w]
+            if np.any(np.isfinite(avg)):
+                j = int(np.nanargmax(avg))
+                if math.isnan(st["peak"]) or avg[j] > st["peak"]:
+                    st["peak"], st["peak_clock"] = float(avg[j]), float(ct[j + w // 2])     # the time of the window's middle
+        st["carry_n"], st["carry_t"] = cn[cn.size - (w - 1):], ct[ct.size - (w - 1):]
         return mean_v, float(np.nanmean(ns))
 
     def _force_meta(self):
@@ -1188,6 +1310,10 @@ class Engine:
             "measured_rate_hz": round((st["n"] - 1) / dur, 2) if dur else None,
             "peak_n": None if math.isnan(st["peak"]) else round(st["peak"], 3),
             "peak_t_s": round(st["peak_clock"] - t0, 4) if st["peak_clock"] is not None and t0 is not None else None,
+            "peak_raw_n": None if math.isnan(st["peak_raw"]) else round(st["peak_raw"], 3),
+            "peak_raw_t_s": round(st["peak_raw_clock"] - t0, 4) if st["peak_raw_clock"] is not None and t0 is not None else None,
+            "peak_meaning": (f"peak_n: the highest {1000 * FORCE_PEAK_WINDOW_S:g} ms moving average (one 50 Hz mains cycle, so the hum is not "
+                             "counted; 0.19.0). peak_raw_n: the highest single sample, hum included (what peak_n was until 0.18.2)."),
             "mean_n": round(st["sum"] / st["n"], 3) if src.calibration.calibrated and st["n"] else None,
             "frames_without_samples_over_0_5s": self._force_gap_frames,
             "samples_at_range_limit": src.clipped_total - self._force_clip0,
@@ -1199,6 +1325,39 @@ class Engine:
                      "start marker is an independent check.",
             "units": "volts are always saved; newtons need a calibration (zero and a known load), otherwise they are blank",
         })
+        return out
+
+    def _force_rise(self):
+        """How far the force moved during the MVIC: the largest distance of its 0.1 s average between the first MVIC start marker and the next
+        end marker (else the end of the recording) from its level 1.0-0.2 s before the start marker. {} when the trial has no start marker
+        or no samples there. In P20 (2026-10-22) no load reached the DAQ and the program still showed a 'peak' of 200-440 N (hum)."""
+        rec, f = self.rec, self.force
+        starts = [e["t_s"] for e in rec.events if e["label"] == "MVIC start"]
+        if not starts or rec._t0 is None:
+            return {}
+        t_start = starts[0]
+        t_end = next((e["t_s"] for e in rec.events if e["label"] == "MVIC end" and e["t_s"] > t_start), rec.last_t)
+        a, b = rec._t0 + t_start, rec._t0 + t_end
+        ts, vs = f.samples_between(a - 1.0 - FORCE_RISE_SMOOTH_S, b + FORCE_RISE_SMOOTH_S)
+        if ts.size == 0:
+            return {}
+        s = smooth_signal(vs, f.rate, FORCE_RISE_SMOOTH_S)
+        half = int(round(FORCE_RISE_SMOOTH_S * f.rate)) // 2 + 1
+        whole = np.zeros(ts.size, bool)
+        whole[half:ts.size - half] = True               # only averages over a whole window: at the ends of the block the edge value is
+        before = whole & (ts >= a - 1.0) & (ts < a - 0.2)                              # repeated, which leaves part of the hum in
+        if before.sum() < FORCE_RISE_SMOOTH_S * f.rate:
+            before = whole & (ts < a)
+        during = whole & (ts >= a) & (ts <= b)
+        if not before.any() or not during.any():
+            return {}
+        rise_v = float(np.max(np.abs(s[during] - np.median(s[before]))))
+        out = {"rise_v": round(rise_v, 5), "rise_window_t_s": [round(t_start, 4), round(t_end, 4)]}
+        if f.calibration.has_slope:
+            rise_n = rise_v * abs(float(f.calibration.n_per_v))
+            out.update({"rise_n": round(rise_n, 2), "no_rise_warning": rise_n < NO_FORCE_RISE_N, "no_rise_limit_n": NO_FORCE_RISE_N})
+        out["rise_meaning"] = (f"the largest distance of the {1000 * FORCE_RISE_SMOOTH_S:g} ms average force from its level 1.0-0.2 s before "
+                               "the MVIC start marker, between that marker and the MVIC end marker (0.19.0)")
         return out
 
     # ----------------------------------------------------------------- privacy
@@ -1351,6 +1510,7 @@ class Engine:
             if self._pause_ghost is not None and not any(st.lost for st in states.values()):
                 self._pause_ghost = None                       # after a break: every dot is back on its circle, the ghost has done its job
             self.scale.update(gray)
+            self._check_rigid_pairs(states)
             angles = self._compute_angles(states, t)
             self._check_facing(states)
             self._last_angles = angles
@@ -1364,8 +1524,11 @@ class Engine:
                 head.append(f"main joint ({self.test.primary.title}) not available with the chosen landmarks")
             if self.facing_mismatch:
                 head.append(self.facing_message())
-            for text in self.marking_problems():
+            label_items = self.marking_problem_items()
+            for _, text in label_items:
                 head.append("CHECK LABELS: " + text)
+            for pair, change in self._dots_apart.items():
+                head.append(f"CHECK DOTS: {self.dots_apart_text(pair, change)}. Mark it again (its number key) or Redo all (D).")
             pull = self._compute_pull(states)
             if self.pull_active:
                 head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
@@ -1426,7 +1589,8 @@ class Engine:
                 try:
                     force_v, force_n = self._take_force(t)
                     self.rec.write(frame, img, self.rec.frames, t, self.locked, states, angles, event or "", live_scale, pull,
-                                   source_frame, force_n=force_n, force_v=force_v, derived=self._last_derived)
+                                   source_frame, force_n=force_n, force_v=force_v, derived=self._last_derived,
+                                   label_codes=[c for c, _ in label_items], dots_apart=self._dots_apart)
                 except FrameSizeChanged as e:           # (normally caught earlier; kept as a safety net)
                     self.last_stop_reason = f"{e} The recording was stopped and saved up to this point."
                     self.stop_trial(self.last_stop_reason)
@@ -1479,7 +1643,9 @@ class Engine:
             if self._force_active:
                 self.force.frozen = True                  # the zero and the calibration cannot change during the recording
                 self._force_cursor = time.perf_counter()
-                self._force_stats = {"n": 0, "sum": 0.0, "peak": math.nan, "peak_clock": None, "first": None, "last": None}
+                w = max(1, int(round(FORCE_PEAK_WINDOW_S * self.force.rate)))
+                self._force_stats = {"n": 0, "sum": 0.0, "peak": math.nan, "peak_clock": None, "first": None, "last": None,
+                                     "peak_raw": math.nan, "peak_raw_clock": None, "win": w, "carry_n": np.empty(0), "carry_t": np.empty(0)}
                 self._force_gap_frames = 0
                 self._force_clip0 = self.force.clipped_total
             self._arm_auto_mvic()
@@ -1603,8 +1769,21 @@ class Engine:
                                       "flexion (180 - interior angle, 0 = straight)" if self.three_point_flexion
                                       else "interior angle (180 = straight)"),
             "angles": [asdict(a) for a in self.active_angles],
+            "checks": self._checks_meta(),
         }
         return meta
+
+    def _checks_meta(self):
+        """What data.csv's 'label_check' and 'dots_apart' columns mean (the recorder adds how many frames had each)."""
+        pairs = [p for p in self.test.rigid_pairs if p[0] in self.active_dots and p[1] in self.active_dots]
+        return {"label_checks": self.label_check_texts(),
+                "rigid_pairs": [list(p) for p in pairs],
+                "rigid_pair_reference_px": {f"{p[0]}-{p[1]}": round(self._rigid_ref[p], 2) for p in pairs if p in self._rigid_ref},
+                "rigid_pair_change_limit_pct": round(100 * RIGID_PAIR_CHANGE),
+                "meaning": "label_check: codes of the label checks that failed in that frame (CHECK LABELS on screen). dots_apart: pairs of dots "
+                           "on one bone whose distance changed by more than the limit since they were marked, with the change in percent "
+                           "(CHECK DOTS on screen): a dot may have jumped to something else, so every angle using either dot is doubtful there "
+                           "and all_ok is 0. The angle values themselves are saved unchanged."}
 
     def stop_trial(self, reason=None):
         with self.lock:
@@ -1626,9 +1805,22 @@ class Engine:
                 meta["stopped_automatically"] = {"after_mvic_end_s": self.auto_stop_s,
                                                  "meaning": "the recording was stopped by the program this long after the MVIC end marker"}
             meta["pipeline_timing"] = self._timing_meta()
+            self.last_trial_warnings = []
             if self._force_active:
                 self._take_force(None)                    # the last samples
                 meta["force"] = self._force_meta()
+                meta["force"].update(self._force_rise())
+                if meta["force"].get("no_rise_warning"):
+                    self.last_trial_warnings.append(
+                        f"No force rise in this trial: between the MVIC markers the force moved at most {meta['force']['rise_n']:.0f} N "
+                        f"(a contraction moves it by much more). Is the strap hooked to the load cell, the amplifier on and its cable in "
+                        f"the DAQ? Pull the strap by hand and watch the force before the next trial.")
+            for pair, (n, t_a, t_b) in self.rec._apart_frames.items():
+                self.last_trial_warnings.append(f"CHECK DOTS in {n} pictures of this trial ({t_a:.1f} to {t_b:.1f} s): the dots {pair.replace('-', ' and ')} "
+                                                "moved apart, so a dot may have jumped. Look at the video before keeping the trial.")
+            if self.rec._label_frames:
+                self.last_trial_warnings.append("CHECK LABELS was shown in " + ", ".join(f"{n} pictures" for n, _, _ in self.rec._label_frames.values())
+                                                + " of this trial: two dots may have swapped labels. Look at the video before keeping the trial.")
             if self._auto is not None:
                 meta["auto_mvic"] = self._auto.result(self.rec._t0)
             if self.audio_cues and self._cues.last_error:

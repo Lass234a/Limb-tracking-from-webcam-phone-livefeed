@@ -110,7 +110,7 @@ def test_a_computed_point_counts_as_the_dots_it_is_made_of():
     angles = {a.name: a for a in t.angles}
     assert angles["abd_hip_centre"].needs == ["asis", "asis_opposite", "patella"] == angles["abd_hip_centre"].dots
     assert angles["abd_goniometer"].needs is None                          # only dots in its arms
-    assert t.derived == {"hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite"}}
+    assert t.derived == {"hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite", "knee": "patella"}}
     assert t.dots == ["asis", "asis_opposite", "patella"] and "hip_centre" not in t.all_dots     # the hip centre is never clicked
     assert t.view == "frontal" and tests["knee_extension"].view == "sagittal" and tests["knee_extension"].derived == {}
     assert tests["hip_abduction"].all_dots == tests["hip_adduction"].all_dots      # the same dots: switching between them keeps them marked

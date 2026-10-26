@@ -192,6 +192,7 @@ class Trial:
             if not (math.isnan(x) or math.isnan(y)):
                 derived[n] = (x, y)
         angles = []
+        apart = [p.split(":")[0].split("-") for p in (r.get("dots_apart") or "").split(";") if p]     # 0.19.0 column; absent in older trials
         for a in self.angle_defs:
             n = a.name
             xy = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
@@ -201,8 +202,12 @@ class Trial:
             res.reference = None if math.isnan(self.ref[n][i]) else self.ref[n][i]
             flag = self.ok[n][i]
             res.status = LOST if math.isnan(res.value) else OK if flag == "1" else OUT if flag == "0" else INFO
+            if any(set(pair) & set(a.dots) for pair in apart):
+                res.suspect = "dots moved apart"
             angles.append(res)
         head = f"{self.meta['test_label']} | {self.meta['participant']} | t = {self.t[i]:.2f} s"
+        if r.get("label_check"):
+            head += f" | CHECK LABELS: {r['label_check']}"
         # PARKED-GHOST: ghost = None
         # PARKED-GHOST: if self.ghost and r["locked"] == "1":
             # PARKED-GHOST: live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}

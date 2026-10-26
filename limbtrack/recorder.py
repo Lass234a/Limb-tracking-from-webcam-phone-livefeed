@@ -142,6 +142,9 @@ class TrialRecorder:
         self.with_pull = with_pull
         if with_pull:
             head += PULL_COLUMNS
+        # 0.19.0: the checks shown on the picture, per frame. label_check: codes of the failing label checks (meta.json 'checks' says what
+        # each means); dots_apart: pairs of dots on one bone whose distance changed since marking, with the change in % ("a-b:+50").
+        head += ["label_check", "dots_apart"]
         head.append("source_frame")        # frame number in the source (file frame, or camera read count)
         head += [f"{d}_partial" for d in self.dot_names]      # 1 = the dot looked partly covered / cut off in this frame
         self._csv.writerow(head)
@@ -157,6 +160,7 @@ class TrialRecorder:
         self._t0 = None
         self.gaps = []             # {frame, t_s, gap_s}: stretches where no frame arrived
         self._partial = {d: 0 for d in self.dot_names}      # frames in which each dot looked partly covered
+        self._label_frames, self._apart_frames = {}, {}       # code / "a-b" -> [frames, first t_s, last t_s] (0.19.0)
         self._dts, self._prev_t = [], None
         self.fps = fps
         self.frame_size = frame_size
@@ -191,7 +195,7 @@ class TrialRecorder:
         self._ffh.flush()
 
     def write(self, frame, overlay, frame_index, t, locked, dots, angles, event="", scale_px_per_cm=None, pull=None, source_frame=None,
-              force_n=None, force_v=None, derived=None):
+              force_n=None, force_v=None, derived=None, label_codes=(), dots_apart=None):
         if (frame.shape[1], frame.shape[0]) != self.full_size or overlay.shape[:2] != frame.shape[:2]:
             raise FrameSizeChanged(f"The picture size changed from {self.full_size[0]}x{self.full_size[1]} to "
                                    f"{frame.shape[1]}x{frame.shape[0]}.")
@@ -231,8 +235,8 @@ class TrialRecorder:
         for n in self.angle_names:
             a = by_name[n]
             ok = 1 if a.raw_status == OK else 0 if a.raw_status == OUT else ""
-            if a.raw_status in (OUT, LOST) and a.judged:    # an angle that is only shown (not judged) never makes the picture 'not ok'
-                oks.append(False)
+            if (a.raw_status in (OUT, LOST) or getattr(a, "suspect", None)) and a.judged:   # an angle only shown (not judged) never makes the picture
+                oks.append(False)                                         # 'not ok'; one from dots that moved apart cannot be called ok
             row += [_num(a.raw_value), _num(a.reference), _num(a.raw_deviation), ok]       # unsmoothed values
         row.append(0 if oks else 1)
         row.append(event or "")
@@ -242,6 +246,14 @@ class TrialRecorder:
             row.append(_num(force_n, 3))
         if self.with_pull:                          # angle of pull / moment arm; blank when the strap, anchor or segment dots are lost
             row += [_num((pull or {}).get(c), 2) for c in PULL_COLUMNS]
+        apart = {f"{p[0]}-{p[1]}": c for p, c in (dots_apart or {}).items()}
+        row.append(";".join(label_codes))
+        row.append(";".join(f"{k}:{100 * c:+.0f}" for k, c in apart.items()))
+        t_rel = round(t - self._t0, 4)
+        for counts, keys in ((self._label_frames, label_codes), (self._apart_frames, apart)):
+            for k in keys:
+                n = counts.setdefault(k, [0, t_rel, t_rel])
+                n[0], n[2] = n[0] + 1, t_rel
         row.append("" if source_frame is None else int(source_frame))
         for d in self.dot_names:
             st = dots.get(d)
@@ -288,6 +300,10 @@ class TrialRecorder:
             "video_writer": {"overlay_video_saved": self.save_overlay, "frames_encoded": self._video.written,
                              "queue_peak": self._video.peak, "queue_capacity": _VideoThread.QUEUE_FRAMES},
         })
+        checks = dict(meta.get("checks") or {})
+        checks["label_check_frames"] = {k: {"frames": n, "first_t_s": a, "last_t_s": b} for k, (n, a, b) in self._label_frames.items()}
+        checks["dots_apart_frames"] = {k: {"frames": n, "first_t_s": a, "last_t_s": b} for k, (n, a, b) in self._apart_frames.items()}
+        meta["checks"] = checks
         if errors:
             meta["close_errors"] = errors
         self._write_meta(meta)

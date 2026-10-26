@@ -14,6 +14,11 @@ COLOURS = {  # BGR
     INFO: (235, 235, 235),
 }
 DOT_OK, DOT_WEAK = (0, 215, 255), (0, 140, 255)   # yellow / orange
+CHECK_COLOUR = (0, 165, 255)                      # BGR orange: an angle whose dots moved apart (AngleResult.suspect, 0.19.0), neither green nor red
+
+
+def _angle_colour(a):
+    return CHECK_COLOUR if getattr(a, "suspect", None) and a.status != LOST else COLOURS[a.status]
 DERIVED_COLOUR = (255, 255, 0)                    # BGR cyan: a computed point (the hip centre of a frontal test), unlike a sticker
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 PROMPT_PREFIX = "click dot: "                         # header line that asks for the next dot (engine.py writes it), drawn in yellow
@@ -165,7 +170,7 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
     for n, (dx, dy) in (derived or {}).items():
         ends[n] = SimpleNamespace(x=dx, y=dy, lost=False)
     for a in angles:
-        col = COLOURS[a.status]
+        col = _angle_colour(a)
         for p, q in a.segments:
             dp, dq = ends.get(p), ends.get(q)
             if dp is not None and dq is not None:
@@ -204,13 +209,15 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
     if rows:
         rows[-1] = rows[-1][:4] + (rows[-1][4] + 6 * s,)
     for a in angles:
-        col = COLOURS[a.status]
+        col = _angle_colour(a)
         if a.status == LOST:
             s_val = "lost"
         else:
             s_val = f"{a.value:6.1f}"
             if a.reference is not None:
                 s_val += f"  ({a.deviation:+.1f} vs {a.reference:.0f})"
+            if getattr(a, "suspect", None):
+                s_val += "  CHECK DOTS"
         rows.append((f"{a.title}: {s_val}", 0.75 * s, col, thick, 32 * s))
     y = 34 * s
     _shade_behind(img, rows, 12, y)

@@ -3,6 +3,61 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.19.0 - 2026-10-23
+
+### From the review of the P20 session (2026-10-22, recorded with 0.17.2; `audit/P20_session_review_2026-10-23.md`)
+Of 6 ankle trials, 2 had a silently wrong ankle angle (a tracker had jumped from its dot to something dark next to it and stayed there, quality
+0.64, no warning: dorsiflexion -20 read +22 instead of about -16 for the whole MVIC) and 1 had none; no force reached the DAQ in any of the 22
+trials, yet the program showed a 'peak' of 200-440 N (the 50 Hz hum); side-lying hip trials put the computed hip centre on the head side of the
+pelvis and refused Lock for good dots. The foot plate idea from the review is **not** built (not decided).
+- **Dots on one bone that move apart are caught** (`protocol.json` `rigid_pairs`: fibular head-malleolus, 5th metatarsal base-head,
+  trochanter-epicondyle, the two ASIS; iliac crest-trochanter is left out because it spans the hip). The distance of each pair is taken when its
+  dots are marked (`Engine.mark_dot`; a pair whose other dot was lost then takes the first picture with both); when it changes by more than 25 %
+  (`RIGID_PAIR_CHANGE`) every angle that uses either dot gets `AngleResult.suspect`: drawn orange with *CHECK DOTS*, a *CHECK DOTS: the ... and
+  ... dots are N % farther apart than when they were marked ...* header line, Lock refused with the reason, `all_ok` 0 in the CSV. **The angle
+  value itself is still saved unchanged.** Marking either dot again takes a new distance. Tried on every saved recording (P01-P20): flags the two
+  P20 ankle jumps (+50 %, +290 %) and two moments already known as tracking problems (P11 hip flexion 90 14:15, the swinging leg; an early P01
+  pilot), nothing else.
+- **The checks are saved per picture:** two new `data.csv` columns before `source_frame`: `label_check` (codes of the failing label checks:
+  `foot_order`, `foot_vs_shank`, `thigh_vs_pelvis`, `knee_order`, `asis_side`, `patella_below`, `thigh_vs_pelvic_width`) and `dots_apart`
+  (`mt5_base-mt5_head:+50`). `meta.json` `checks`: what each code means, the pairs and their reference distances, the limit, and per code / pair
+  the number of frames and the first and last time. Before, CHECK LABELS was on screen only (P20 dorsiflexion 0 12:08: the knee dots swapped
+  half way, nothing of it in the files).
+- **After a trial**, problems are named in the record line (red, *CHECK THIS TRIAL: ...*), in a message that does **not** block (R starts the next
+  trial), and in the session log (`trial warning`): no force rise, CHECK DOTS frames, CHECK LABELS frames. Review's *Check* list names them too,
+  and Review's redrawn video shows the CHECK DOTS angles orange.
+- **Force peak without the hum:** `peak_n` (and the live *peak*) is now the highest 20 ms moving average (one 50 Hz cycle, carried across the
+  DAQ chunks); the highest single sample is kept as `peak_raw_n` / `peak_raw_t_s`. With little hum the two differ by the noise of a sample.
+  **This changes the saved `peak_n`** (P20: 214 N became about 0 N).
+- **No force rise:** after a trial with an MVIC start marker, the largest distance of the 0.1 s average force (between the start marker and the
+  end marker) from its level 1.0-0.2 s before the start marker is saved as `force.rise_n`; under 60 N (`NO_FORCE_RISE_N`) `no_rise_warning` is
+  true and the window says so. On the saved trials: P20 at most 47 N (no load reached the DAQ), P11 at least 112 N. Only with a calibration slope.
+- **Frontal tests lying on the side:** the computed hip centre's "down" now points towards the knee dot (`derived_points.hip_centre.knee =
+  "patella"`, new optional key; `geometry.pelvis_axes(..., knee_xy)`, `DERIVED_OPTIONAL`); without it, as before, the picture's bottom. Recomputed
+  for P20: the hip-centre angle was 0.7, 3.9 and 5.1 deg off in the three side-lying trials where it had been put on the head side; the goniometer
+  angle (the judged one) was never affected. The label checks tell lying on the side (the line between the ASIS steeper than 45 deg and the thigh
+  closer to the picture's horizontal) and then judge the side from the turn ASIS line -> patella (rotation-proof) and leave out "patella below
+  the ASIS"; standing and sitting are judged as before. The P20 refusals at 13:59 and 14:14 ("patella below the ASIS") gave the wrong reason;
+  with the new rule those trials would still have been refused, rightly, because *Tested leg* was set to the other leg (as in all five dotted
+  frontal P20 trials).
+- **Record asks** *The ... cannot be measured right now (... not visible)* / *may be wrong right now* before recording, like the unlocked
+  question (`Engine.main_angle_problem`). P20 plantarflexion 13:28 was recorded with the foot dot already lost: no ankle angle at all.
+- **Keys act once per press:** every shortcut except Left / Right (video stepping) no longer repeats while held. In P20 a held Z refused the zero
+  45 times in 9 s; a held R would start and stop recordings.
+- **Protocol validation:** `rigid_pairs` entries must be two different, known, clicked dots; a computed point's optional key must name a known dot.
+- Tests: `tests/test_p20_checks.py` (31), `tests/test_p20_checks_gui.py` (4); `test_force.py` now compares the raw peak with the force.csv
+  maximum; `test_protocol_validation.py` expects the knee key. Checked by breaking the code on purpose in a scratch copy: 12 deliberate
+  damages (guard off, knee ignored, side-lying taken as upright, raw peak, no warning, the edge of the force average, keys repeating, no
+  record question, suspect angles counted ok, codes not saved, Review ignoring the column, Lock not refused) are each noticed (the edge one only
+  after a test was added for it). **Full suite: 943 tests, none failed** (run in two parts: the first run was cut off at 848 by the end of the
+  session, all passed; the 97 it had not reached passed on 2026-10-26).
+- **Checked on the real P20 videos** (replayed through 0.19.0 from the first picture's dot positions): CHECK DOTS from 2.5 to 10.0 s in
+  dorsiflexion -20 (the jump), 3 pictures at 11.2 s in plantarflexion 13:32 (the jump to the other foot), 4 pictures at 10.2 s in
+  dorsiflexion 12:08, none in dorsiflexion 12:18 and 12:24, the 34 s knee extension 70 or knee flexion 90; CHECK LABELS from 4.0 s in
+  dorsiflexion 12:08 (the knee dots swapping). The five dotted hip trials: with the recorded *Tested leg* every picture is refused (that
+  setting was the other leg), with the other leg none is; the hip centre recomputed from the saved dots is on the knee side in 100 % of the
+  pictures.
+
 ## 0.18.2 - 2026-10-23
 
 ### Review of the 0.18.x tests and speed: one real fault found, the tests made sharper

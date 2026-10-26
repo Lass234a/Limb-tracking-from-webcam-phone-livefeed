@@ -191,6 +191,13 @@ def trial_checks(tr, t0=None, t1=None):
             add("check", f"Dot '{d}' was lost in {pct:.0f} % of the pictures" + (" (the strap dot is often hidden by the buckle or a fold: put a bright sticker where it stays visible)" if d == "strap" else "."))
     if m.get("partial_dot_frames"):
         add("info", "Dots seen only partly (the centre may be a little off): " + ", ".join(f"{k} {v} pictures" for k, v in m["partial_dot_frames"].items()))
+    checks = m.get("checks") or {}                                     # 0.19.0
+    for pair, c in (checks.get("dots_apart_frames") or {}).items():
+        add("check", f"Dots {pair.replace('-', ' and ')} moved apart in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): "
+                     "a dot may have jumped to something else, so the angles using them are doubtful there. Look at the video.")
+    texts = checks.get("label_checks") or {}
+    for code, c in (checks.get("label_check_frames") or {}).items():
+        add("check", f"CHECK LABELS in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): {texts.get(code, code)}.")
     small = (m.get("dot_size_check") or {}).get("below_minimum")
     if small:
         add("check", "Dots under the 2 cm minimum: " + ", ".join(small))
@@ -226,6 +233,9 @@ def trial_checks(tr, t0=None, t1=None):
             add("check", "The DAQ stopped during the recording: " + str(f["read_error"]))
         if f.get("frames_without_samples_over_0_5s"):
             add("check", f"No force samples for more than 0.5 s in {f['frames_without_samples_over_0_5s']} pictures.")
+        if f.get("no_rise_warning"):                                   # 0.19.0
+            add("check", f"The force hardly moved during the MVIC (at most {f['rise_n']:.0f} N): was the strap on the load cell and the "
+                         "amplifier on? The newtons of this trial are not a contraction.")
         fw = tr.force_window()
         hw = tr.hold_window()
         if fw and hw:

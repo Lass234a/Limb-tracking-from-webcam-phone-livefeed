@@ -388,6 +388,7 @@ class LiveTab(QWidget):
         self.engine, self.recordings_dir = engine, Path(recordings_dir)
         self.worker = None
         self._rec_started = None
+        self._trial_box = None               # the message about problems in the trial just saved (non-modal, see _show_trial_warnings)
         self._say_until = 0.0
         self._combo_index = {"test": 0, "kind": 0, "facing": 0, "leg": 0}     # last accepted choice, restored if the engine refuses a change
         self._ref_box_position = None        # (test, target, participant) the reference boxes were filled for (see _fill_reference_boxes)
@@ -1119,6 +1120,11 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_F9), self, activated=self.btn_lock.click)
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=self.btn_back.click)
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=self.btn_fwd.click)
+        # A held key repeats; that is wanted only for stepping through a video (Left / Right). Every other key acts once per press: in P20
+        # (2026-10-22) a held Z refused the zero 45 times in 9 s, and a held R would start and stop recordings (0.19.0).
+        for sc in self.findChildren(QShortcut):
+            if sc.key() not in (QKeySequence(Qt.Key_Left), QKeySequence(Qt.Key_Right)):
+                sc.setAutoRepeat(False)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.update_force_box()                  # button states right away, not after the first timer tick
@@ -2903,6 +2909,13 @@ class LiveTab(QWidget):
                 if r != QMessageBox.Yes:
                     self.btn_rec.setChecked(False)
                     return
+            main_problem = self.engine.main_angle_problem()
+            if main_problem:
+                r = QMessageBox.question(self, "Main angle", main_problem + " The trial would have no (or a doubtful) main angle "
+                                         "until that is fixed.\n\nRecord anyway?")
+                if r != QMessageBox.Yes:
+                    self.btn_rec.setChecked(False)
+                    return
             src = self.force_source
             if src is not None and not src.error and src.calibration.has_slope and not src.calibration.zero_set:
                 # 4 of the 11 trials of 2026-10-15 were recorded like this: volts only, no newtons and no peak force
@@ -2959,9 +2972,25 @@ class LiveTab(QWidget):
                                     "Check the camera and repeat the trial.")
             else:
                 short = n is not None and n < 30
+                warnings = list(self.engine.last_trial_warnings)
                 self.rec_label.setText(f"Saved: {paths['data.csv'].parent.name}/{paths['raw.mp4'].name[:-8]}... "
-                                       f"({n} frames, {duration:.1f} s)" + ("  VERY SHORT RECORDING" if short else ""))
-                self.rec_label.setStyleSheet("color: #d97706; font-weight: bold;" if short else "")
+                                       f"({n} frames, {duration:.1f} s)" + ("  VERY SHORT RECORDING" if short else "")
+                                       + ("\nCHECK THIS TRIAL: " + warnings[0] if warnings else ""))
+                self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;" if warnings else "color: #d97706; font-weight: bold;" if short else "")
+                if warnings:
+                    self._show_trial_warnings(warnings)
+
+    def _show_trial_warnings(self, warnings):
+        """Problems found in the trial just saved (no force rise, dots that moved apart, CHECK LABELS; 0.19.0): a message that does not block,
+        so the next trial can still be started with R, and a line each in the session log."""
+        for w in warnings:
+            self.note("trial warning", w)
+        if self._trial_box is not None:
+            self._trial_box.close()
+        box = QMessageBox(QMessageBox.Warning, "Check this trial", "\n\n".join(warnings), QMessageBox.Ok, self)
+        box.setModal(False)
+        box.show()
+        self._trial_box = box
 
     def update_camera_info(self):
         """One line on what the camera really delivers; orange when it differs from what was asked for."""

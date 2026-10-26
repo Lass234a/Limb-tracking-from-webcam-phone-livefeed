@@ -149,7 +149,8 @@ def test_a_recording_with_force_saves_every_sample_and_a_column_per_picture(tmp_
     t = np.array([float(r["t_s"]) for r in frows])
     assert np.all(np.diff(t) >= 0)
     peak_row = max(frows, key=lambda r: float(r["newtons"]))
-    assert float(peak_row["newtons"]) == pytest.approx(f["peak_n"], abs=0.01)
+    assert float(peak_row["newtons"]) == pytest.approx(f["peak_raw_n"], abs=0.01)     # the raw peak is the highest single sample
+    assert f["peak_n"] <= f["peak_raw_n"] and f["peak_raw_n"] - f["peak_n"] < 5.0   # the 20 ms average: the noise of a sample or two less
     rows = list(csv.DictReader(open(paths["data.csv"], newline="")))
     assert "force_n" in rows[0]
     vals = [float(r["force_n"]) for r in rows if r["force_n"] != ""]

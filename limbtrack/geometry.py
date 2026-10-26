@@ -144,6 +144,7 @@ HARRINGTON_SIDEWAYS = (0.33, 7.3)     # mm = a * PW + b
 HARRINGTON_DOWN = (0.30, 10.9)        # mm = a * PW + b
 
 DERIVED_KINDS = {"hip_centre_frontal": ("tested_asis", "other_asis")}     # kind -> the keys of its definition that name tracked dots
+DERIVED_OPTIONAL = {"hip_centre_frontal": ("knee",)}     # kind -> keys naming a dot that is used when it is tracked, never required (0.19.0)
 
 
 def pelvic_width_mm(tested_xy, other_xy, px_per_mm):
@@ -155,14 +156,15 @@ def pelvic_width_mm(tested_xy, other_xy, px_per_mm):
     return pw_px / px_per_mm if pw_px > 1e-9 else None
 
 
-def hip_centre_frontal(tested_xy, other_xy, px_per_mm):
+def hip_centre_frontal(tested_xy, other_xy, px_per_mm, knee_xy=None):
     """The hip joint centre of the tested side in a frontal picture, as an image position (x, y), or None.
 
     `tested_xy`, `other_xy`: the ASIS on the tested side and on the other side (pixels). `px_per_mm`: the picture's scale at the
-    pelvis (from the ruler). The pelvis axes are taken from the two ASIS themselves: "sideways" runs along the line from the other
-    ASIS to the tested ASIS, "down" is square to it on the side of the picture's bottom, so a tilted camera or a tilted pelvis
-    does not change the result in the pelvis' own frame. See the note above for the equation and its status."""
-    axes = pelvis_axes(tested_xy, other_xy)
+    pelvis (from the ruler). `knee_xy`: the knee dot of the tested leg, or None. The pelvis axes are taken from the two ASIS
+    themselves: "sideways" runs along the line from the other ASIS to the tested ASIS, "down" is square to it on the side of the
+    knee (without the knee: of the picture's bottom), so a tilted camera, a tilted pelvis or a participant lying on the side does
+    not change the result in the pelvis' own frame. See the note above for the equation and its status."""
+    axes = pelvis_axes(tested_xy, other_xy, knee_xy)
     if axes is None or not (px_per_mm and px_per_mm > 0 and math.isfinite(px_per_mm)):
         return None
     u, v, width_px = axes
@@ -173,37 +175,48 @@ def hip_centre_frontal(tested_xy, other_xy, px_per_mm):
     return float(c[0]), float(c[1])
 
 
-def pelvis_axes(tested_xy, other_xy):
+def pelvis_axes(tested_xy, other_xy, knee_xy=None):
     """The pelvis' own frame in a frontal picture, from the two ASIS: (u, v, width_px). u = the unit vector from the other ASIS to
-    the tested one ("sideways", towards the tested side), v = square to it on the side of the picture's bottom ("down"), width_px =
-    the distance between the two ASIS in pixels. None when the two are at the same place. Used by the hip centre and by the
-    engine's check that the frontal dots were not swapped, so the two always agree on which way is down."""
+    the tested one ("sideways", towards the tested side), v = square to it ("down") on the side of the knee when `knee_xy` is given
+    and off the line between the ASIS, else on the side of the picture's bottom; width_px = the distance between the two ASIS in
+    pixels. None when the two are at the same place.
+
+    The knee is what makes this work for a participant lying on the side (P20, 2026-10-22): the line between the ASIS is then
+    upright in the picture, the picture's bottom is sideways along the body, and until 0.19.0 the hip centre was put on the head
+    side of the pelvis in 3 of 4 such trials. Used by the hip centre and by the engine's frontal label checks."""
     t, o = np.asarray(tested_xy, float), np.asarray(other_xy, float)
     width = float(np.hypot(*(t - o)))
     if width <= 1e-9:
         return None
     u = (t - o) / width
     v = np.array([-u[1], u[0]])
+    if knee_xy is not None:
+        side = float(np.dot(np.asarray(knee_xy, float) - t, v))
+        if abs(side) > 1e-6 * width:
+            return u, (v if side > 0 else -v), width
     return u, (v if v[1] >= 0 else -v), width
 
 
-_DERIVED_COMPUTE = {"hip_centre_frontal": hip_centre_frontal}    # kind -> f(the positions of its input dots, in DERIVED_KINDS order, px_per_mm)
+_DERIVED_COMPUTE = {"hip_centre_frontal": hip_centre_frontal}    # kind -> f(the positions of its input dots, in DERIVED_KINDS order,
+                                                                 # px_per_mm, <optional key>_xy=... for each DERIVED_OPTIONAL key)
 
 
 def derived_input_dots(spec):
-    """The tracked dots a computed point is made from (empty for an unknown kind)."""
+    """The tracked dots a computed point is made from (empty for an unknown kind). Optional dots (DERIVED_OPTIONAL) are not among them."""
     keys = DERIVED_KINDS.get(spec.get("kind"), ())
     return [spec[k] for k in keys if k in spec]
 
 
 def compute_derived(derived, xy, px_per_mm):
-    """name -> (x, y) of every computed point of `derived` (name -> definition) whose dots are all in `xy` and whose scale is known."""
+    """name -> (x, y) of every computed point of `derived` (name -> definition) whose dots are all in `xy` and whose scale is known.
+    An optional dot of the definition is passed when it is in `xy` (tracked), else None."""
     out = {}
     for name, spec in derived.items():
         compute = _DERIVED_COMPUTE.get(spec.get("kind"))
         points = [xy.get(n) for n in derived_input_dots(spec)]      # the same dots that are clicked for it (AngleDef.needs)
         if compute is not None and points and all(q is not None for q in points):
-            p = compute(*points, px_per_mm)
+            extra = {f"{k}_xy": xy.get(spec[k]) for k in DERIVED_OPTIONAL.get(spec.get("kind"), ()) if k in spec}
+            p = compute(*points, px_per_mm, **extra)
             if p is not None:
                 out[name] = p
     return out
