@@ -72,40 +72,44 @@ def where(win, name):
 
 
 def test_a_pass_works_while_the_video_is_being_processed(running):
-    """The operator clicks each dot where it is now (the old mark follows the sticker); the clicks arrive between pictures that the video
-    thread is tracking. Afterwards every dot is marked, the video went on, and the position can be locked again."""
+    """The operator clicks each dot where it is now (read off the old marks just before D, which the press removes); the clicks arrive
+    between pictures that the video thread is processing. Afterwards every dot is marked, the video went on, and the position can be
+    locked again."""
     app, win, live, pump, tmp = running
     e = win.engine
     live.btn_lock.click()
     assert pump(lambda: e.locked, 5) and live.btn_lock.isChecked()
     frames0 = e.frame_index
+    spots = {name: where(win, name) for name in e.test.dots}                           # where the stickers are (the old marks follow them)
     QTest.keyClick(live, Qt.Key_D)
     assert live._pass and live.btn_redo_dots.text() == "Stop (D)"
+    assert not e.locked and not live.btn_lock.isChecked()                              # the lock went with the old dots, at the press
     for name in list(e.test.dots):
         assert live._arm == name
-        x, y = where(win, name)
+        x, y = spots[name]
         live.view.clicked.emit(x + 2, y + 2)
-        pump(lambda: False, 0.05)                                                     # the video thread keeps tracking meanwhile
+        pump(lambda: False, 0.05)                                                     # the video thread keeps processing meanwhile
     assert not live._pass and live._arm is None
-    assert not e.locked and not live.btn_lock.isChecked()                              # released by the first dot marked again
+    assert not e.locked and not live.btn_lock.isChecked()
     assert pump(lambda: e.frame_index > frames0 + 5, 10)                               # and the video went on
     assert set(e.dot_status().values()) - {"off"} == {"ok"}
     live.btn_lock.click()
     assert pump(lambda: e.locked, 5) and live.btn_lock.isChecked()
 
 
-def test_stopping_a_pass_half_way_while_playing_keeps_every_dot_tracking(running):
+def test_stopping_a_pass_half_way_while_playing_keeps_the_marked_dot_tracking_and_leaves_the_rest_unmarked(running):
     app, win, live, pump, tmp = running
     e = win.engine
     names = list(e.test.dots)
-    QTest.keyClick(live, Qt.Key_D)
     x, y = where(win, names[0])
-    live.view.clicked.emit(x + 2, y + 2)                                               # one dot marked again ...
+    QTest.keyClick(live, Qt.Key_D)                                                     # every dot is removed ...
+    live.view.clicked.emit(x + 2, y + 2)                                               # ... one is marked again ...
     QTest.keyClick(live, Qt.Key_F4)                                                    # ... then stop
     assert not live._pass and live._arm is None
     f0 = e.frame_index
     assert pump(lambda: e.frame_index > f0 + 10, 10)
-    assert set(e.dot_status().values()) - {"off"} == {"ok"}                            # nothing was lost by stopping
+    status = e.dot_status()
+    assert status[names[0]] == "ok" and all(status[n] == "unmarked" for n in names[1:])        # the rest stays unmarked, none comes back by itself
 
 
 def test_during_a_real_recording_the_bar_and_all_its_keys_do_nothing(running):

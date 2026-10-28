@@ -3,6 +3,36 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.23.0 - 2026-10-28
+
+### Redo all and the dot keys remove the old dots; a privacy check at every change of position
+- **Why:** asked on 2026-10-28: "the re dot [needs] to remove all existing dots and the hot key needs to remove the existing version of that
+  dot as well. Make a check for privacy for each position change."
+- **Redo all (D) removes every dot and the lock at once** (`Engine.reset_dots`), then asks for the dots one after the other as before. This
+  turns round the choice of 0.18.1, which kept the old dots tracking until each was replaced so that stopping half way or a wrong key lost
+  nothing. Now a wrong D press loses all the marks (as the *Clear all dots and start again* button always did); the gain is that no old dot
+  lingers on the picture or holds a sticker. *Stop (D)* ends the asking, the dots not marked yet stay unmarked, and the line says how many.
+  A skipped dot stays unmarked.
+- **A dot's button or number key (1-9) removes that dot's old mark at once** (`Engine.clear_dot`, `TrackerSet.clear`), then waits for the
+  click; pressing it again cancels and the dot stays removed. The same in a pass for a dot marked earlier in it. The lock stays on a single
+  dot (as decided in 0.12.0: re-locking after drift would hide the drift). A click that misses leaves the dot removed and waiting. Clicking
+  straight on a dot with nothing armed still moves that dot in place, as before.
+- **Privacy at every change of position:** when the test or the target changes (plan list, position drop-down, N/B, F2/F3, the boxes), the
+  'I looked: nothing identifies the participant' tick is cleared, the Privacy chip turns amber *Privacy: recheck*, the section shows the button
+  *Privacy checked at this position*, the line says what to look at, and **recording is refused** (with the Privacy section opened) until the
+  picture has been looked at again: the button, the tick, or drawing a crop or a mask counts; clearing does not. The same position again
+  (trial 2 and 3) asks nothing; a position change that is refused (recording) or restored from memory asks nothing. A new camera starts the
+  whole privacy step afresh as before.
+- **Saved:** `meta.json` `privacy.checked` (how, test, target, time of the last look) and `privacy.checked_for_this_position` (true only
+  when the look was for the position of this trial), so a trial can be shown to have been looked at. The session log has *privacy to be
+  checked again* and *privacy checked again*, and *dot removed*. The existing geometry check (a dot at the crop edge or inside a mask)
+  is unchanged and still refuses recording.
+- **Not changed:** tracking, angles, force, the CSV, Review. `Engine.start_remarking` is gone (nothing used it any more).
+- **Tests:** `tests/test_mark_again.py` rewritten for the new behaviour (29 tests), one test in `tests/test_pinned_bar.py` and the recording fixture of `tests/test_reference_live.py` brought up to date; `tests/test_privacy_position.py` (14 tests, window, engine
+  and a real recording).
+  The real recording caught a mistake of mine before it shipped: the first version stored the look in an attribute that had the
+  same name as an existing engine method, which stopped every recording with an error; renamed.
+
 ## 0.22.0 - 2026-10-28
 
 ### A second zero level: the participant relaxed in the strap

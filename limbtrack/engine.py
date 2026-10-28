@@ -37,7 +37,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.22.0"
+SOFTWARE_VERSION = "0.23.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -159,7 +159,8 @@ class Engine:
         self.privacy_masks = []      # rectangles blacked out in the saved videos (tracking and the CSV still use the full picture)
         self._privacy_mirror = False # the mirror setting the crop and masks were drawn under
         self._privacy_hits = {}      # dot -> frames in which it was near the crop edge or inside a mask while recording
-        self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
+        self._privacy_look = None    # the operator's last "I looked at the picture of this position" (note_privacy_check; 0.23.0)
+        self.save_overlay = True    # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.recording_first = True  # while recording the window does less, so more pictures are tracked and saved (gui.py; 0.21.0)
         self._relaxed_for_trial = False   # the force's relaxed level was taken for the position being recorded (set when a trial starts; 0.22.0)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
@@ -551,16 +552,22 @@ class Engine:
             if self.rec is None:
                 self.scale.reset()
 
-    def start_remarking(self):
-        """The operator is marking every dot again while the old dots keep tracking (LiveTab 'Redo all'): the locked position no longer
-        describes the participant, and what was worked out from the old dots (smoothed angles, the facing check) is forgotten, as when
-        the dots are cleared. Nothing is cleared: a dot that is not marked again keeps its tracker."""
+    def clear_dot(self, name):
+        """Take one marked dot away before it is marked again (LiveTab: a dot's button or number key): it is neither tracked nor drawn
+        until it is clicked, so the old version cannot linger on the picture or hold a sticker. Returns True if there was a mark.
+        The lock is kept on purpose: marking the dot again must show any drift, not hide it."""
         with self.lock:
             self._forbid_while_recording("the marked dots")
-            self._facing_bad_frames, self.facing_detected = 0, None
+            if name not in self.trackers.trackers:
+                return False
+            was_marked = self.trackers.trackers[name].initialised
+            self.trackers.clear(name)
+            self._last_states.pop(name, None)
+            self._trails.pop(name, None)
+            self._trail_open.pop(name, None)
+            self._forget_rigid_reference(name)
             self._forget_angle_averages()
-            self._hist.clear()
-            self.unlock_position()
+            return was_marked
 
     def mark_dot(self, name, x, y, replacing=()):
         """Operator clicked a dot on the live image. On failure, `mark_problem` says why (None = no dot found there).
@@ -1180,6 +1187,7 @@ class Engine:
         self._reset_dots_core()
         self.scale.reset()
         self._privacy_crop, self._privacy_masks = None, []      # drawn on the old picture: no longer valid
+        self._privacy_look = None
         self._notice = (text + ": mark the dots (and the ruler) again. The privacy crop and masks were cleared.", t)
 
     # Distances that hold for any body posture (upright, seated, lying) and either leg: (code, longer pair, shorter pair, what is wrong,
@@ -1453,6 +1461,13 @@ class Engine:
         with self.lock:
             self.privacy_crop, self.privacy_masks = None, []
 
+    def note_privacy_check(self, how):
+        """The operator looked at the picture of the position the participant is in now and says the privacy set-up (crop, masks, or
+        nothing to hide) is right for it. Saved with every trial, which says whether it was checked for ITS position (0.23.0)."""
+        with self.lock:
+            self._privacy_look = {"how": how, "test": self.test.key, "target": self.target,
+                                   "taken": datetime.now().isoformat(timespec="seconds")}
+
     def privacy_problem(self):
         """Why recording must not start with the present crop and masks (empty or None if all is well)."""
         with self.lock:
@@ -1498,9 +1513,12 @@ class Engine:
         size = None
         if self._last_gray is not None:
             size = [int(self._last_gray.shape[1]), int(self._last_gray.shape[0])]
+        check = self._privacy_look
         return {"crop_xywh": list(self._privacy_crop) if self._privacy_crop else None,
                 "masks_xywh": [list(m) for m in self._privacy_masks],
                 "full_picture_size": size,
+                "checked": dict(check) if check else None,
+                "checked_for_this_position": bool(check) and (check["test"], check["target"]) == (self.test.key, self.target),
                 "meaning": "Only the cropped part of the picture is saved to raw.mp4 and overlay.mp4; the masks are black in the saved "
                            "videos. Tracking ran on the full picture, and all pixel positions in the CSV are in the FULL picture "
                            "(add nothing, subtract nothing). Review pads a cropped video back to full size."}

@@ -365,6 +365,10 @@ class TrackerSet:
         else:
             self.enabled.discard(name)
 
+    def clear(self, name):
+        """Forget one dot: a fresh tracker, so it has to be marked again (it stays switched on)."""
+        self.trackers[name] = DotTracker(name, self.kind)
+
     def init_dot(self, name, gray, x, y):
         return self.trackers[name].init_at(gray, x, y)
 

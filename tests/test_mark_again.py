@@ -1,6 +1,6 @@
-"""Redo all (0.18.1): every dot is marked again, one after the other in the order asked, while the old dots keep tracking until each is
-replaced. Nothing changes before the first click; the lock is released at the first dot marked again; a dot can be skipped (its own
-button) or taken out of turn (another dot's button); a recording, a break or a stopped camera ends the pass without touching any dot."""
+"""Redo all (0.18.1, changed in 0.23.0): every dot AND the lock are removed at once, then the dots are marked one after the other in the
+order asked. A dot can be skipped (its own button: it stays unmarked) or taken out of turn (another dot's button); a recording, a break
+or a stopped camera ends the pass. A dot's own button or number key outside a pass removes that one dot at once (the lock stays)."""
 import os
 import time
 from pathlib import Path
@@ -69,32 +69,38 @@ def move_the_participant(win, frames=3):
 
 
 # ------------------------------------------------------------------------------------------------ start, stop, nothing changes
-def test_it_asks_for_the_first_dot_and_changes_nothing_yet(win):
+def test_it_removes_every_dot_and_the_lock_at_once_and_asks_for_the_first(win):
     live, e = win.live, win.engine
     names = list(e.active_dots)
-    assert e.lock_position()
-    before = {n: pos(win, n) for n in names}
+    live.btn_lock.click()                                                           # the real Lock button, not only the engine
+    assert e.locked and live.btn_lock.isChecked()
     live.btn_redo_dots.click()
     assert live._pass == names and live._arm == names[0] and live._pass_total == len(names)
     assert f"1 of {len(names)}" in live.instruction.text() and "skips it, D stops" in live.instruction.text()
-    assert e.locked and live.btn_redo_dots.text() == "Stop (D)"                   # the lock stays until a dot has really been marked again
-    assert all(np.allclose(before[n], pos(win, n)) for n in names)
+    assert not e.locked and not live.btn_lock.isChecked() and live.btn_redo_dots.text() == "Stop (D)"
+    assert set(e.dot_status().values()) - {"off"} == {"unmarked"} and not e._last_states        # no old dot lingers, before any click
     assert live.chips[names[0]].styleSheet() == DOT_CHIP_STYLE["armed"]
-    assert live.chips[names[1]].styleSheet() == DOT_CHIP_PENDING["ok"] and "dashed" in DOT_CHIP_PENDING["ok"]    # still to do
+    assert live.chips[names[1]].styleSheet() == DOT_CHIP_PENDING["unmarked"] and "dashed" in DOT_CHIP_PENDING["unmarked"]    # still to do
     assert "still to be marked again" in live.chips[names[1]].toolTip()
     assert live.lm_buttons[names[0]].text() == "Skip"
 
 
-def test_pressing_it_again_stops_and_nothing_was_lost(win):
+def test_the_old_dots_are_gone_from_the_next_picture(win):
+    live, e = win.live, win.engine
+    live.btn_redo_dots.click()
+    res = e.process(render(PTS, seed=4), 0.5)
+    assert not res.dots                                                             # nothing is tracked or drawn until it is clicked
+
+
+def test_pressing_it_again_stops_and_the_dots_stay_removed(win):
     live, e = win.live, win.engine
     assert e.lock_position()
-    before = {n: pos(win, n) for n in e.active_dots}
     live.btn_redo_dots.click()
     live.btn_redo_dots.click()
     assert not live._pass and live._arm is None and live.btn_redo_dots.text() == "Redo all (D)"
-    assert e.locked and all(np.allclose(before[n], pos(win, n)) for n in e.active_dots)
-    assert "keep their old marks" in live.instruction.text()
-    assert all(live.chips[n].styleSheet() == DOT_CHIP_STYLE["ok"] for n in e.active_dots)
+    assert not e.locked and set(e.dot_status().values()) - {"off"} == {"unmarked"}
+    assert "stay unmarked" in live.instruction.text()
+    assert all(live.chips[n].styleSheet() == DOT_CHIP_STYLE["unmarked"] for n in e.active_dots)
 
 
 def test_without_a_camera_or_during_a_break_it_does_not_start(win):
@@ -118,7 +124,7 @@ def test_a_pass_marks_every_dot_at_its_new_place_in_order_and_releases_the_lock(
     live.btn_redo_dots.click()
     for i, n in enumerate(names):
         assert live._arm == n and live._pass == names[i:]
-        assert e.locked == (i == 0)                                                 # still locked until the first dot is marked again
+        assert not e.locked                                                         # the lock went with the old dots, at the press
         live.on_click(*(MOVED[n] + 2))
         assert not e.locked
     assert not e.locked and not live.btn_lock.isChecked()
@@ -128,41 +134,34 @@ def test_a_pass_marks_every_dot_at_its_new_place_in_order_and_releases_the_lock(
     assert set(e.dot_status().values()) - {"off"} == {"ok"}
 
 
-def test_the_lock_is_kept_until_the_first_dot_has_really_been_marked_again(win):
+def test_a_click_that_finds_no_dot_leaves_the_dot_waiting_and_removed(win):
     live, e = win.live, win.engine
     names = list(e.active_dots)
-    assert e.lock_position()
     live.btn_redo_dots.click()
     live.on_click(5.0, 5.0)                                                         # a click that finds no dot
-    assert e.locked and live._arm == names[0] and "Still waiting" in live.instruction.text() and "skip it" in live.instruction.text()
+    assert live._arm == names[0] and "Still waiting" in live.instruction.text() and "skip it" in live.instruction.text()
+    assert e.dot_status()[names[0]] == "unmarked"
     live.on_click(*(PTS[names[0]] + 2))
-    assert not e.locked
+    assert e.dot_status()[names[0]] == "ok"
 
 
-def test_what_was_worked_out_from_the_old_dots_is_forgotten_at_the_first_dot(win):
+def test_what_was_worked_out_from_the_old_dots_is_forgotten_at_the_press(win):
     live, e = win.live, win.engine
     for i in range(1, 8):
         e.process(render(PTS, seed=i), i / 30)
     assert e._filters and e._ref_avg
     live.btn_redo_dots.click()
-    live.on_click(*(PTS[live._arm] + 2))
     assert not e._filters and not e._ref_avg and e.facing_detected is None
 
 
 # ------------------------------------------------------------------------------------------------ the old marks do not get in the way
-def test_an_old_mark_that_sits_on_a_sticker_does_not_stop_it_being_marked_in_a_pass(win):
+def test_an_old_mark_cannot_hold_a_sticker_once_the_pass_has_started(win):
     live, e = win.live, win.engine
     a, b = list(e.active_dots)[:2]
     assert not e.mark_dot(a, *(PTS[b] + 2)) and "already marked" in (e.mark_problem or "")        # the usual guard, outside a pass
-    assert e.mark_dot(a, *(PTS[b] + 2), replacing=[b])                                           # b is about to be marked again
-    live.btn_redo_dots.click()
-    assert e.mark_dot(a, *(PTS[a] + 2))                                                          # put a back for the pass
-    t = e.trackers.trackers[b]
-    t.x, t.y = PTS[a][0], PTS[a][1]                                                              # b has slipped onto a's sticker
-    live.on_click(*(PTS[a] + 2))                                                                 # a is marked again: not refused
-    assert live._pass[0] == b and np.allclose(pos(win, a), PTS[a], atol=2.5)
-    live.on_click(*(PTS[b] + 2))                                                                 # now b, at its own sticker
-    assert np.allclose(pos(win, b), PTS[b], atol=2.5)
+    live.btn_redo_dots.click()                                                                    # every old mark is gone now
+    live.on_click(*(PTS[b] + 2))                                                                  # a is asked for; this click is on b's sticker
+    assert live._pass[0] == b and np.allclose(pos(win, a), PTS[b], atol=2.5)                      # accepted: nothing old holds the sticker
 
 
 def test_a_wrong_click_in_a_pass_is_caught_when_the_other_dot_is_marked_and_can_be_fixed(win):
@@ -182,26 +181,35 @@ def test_a_wrong_click_in_a_pass_is_caught_when_the_other_dot_is_marked_and_can_
 
 
 # ------------------------------------------------------------------------------------------------ skip and jump
-def test_the_button_of_the_dot_that_is_asked_for_skips_it_and_it_keeps_its_mark(win):
+def test_the_button_of_the_dot_that_is_asked_for_skips_it_and_it_stays_unmarked(win):
     live, e = win.live, win.engine
     names = list(e.active_dots)
-    before = pos(win, names[0])
     live.btn_redo_dots.click()
     live.chips[names[0]].click()                                                    # the chip, or the row's button: the same
     assert live._arm == names[1] and live._pass == names[1:] and "Skipped" in live.instruction.text()
-    assert np.allclose(pos(win, names[0]), before) and e.dot_status()[names[0]] == "ok"
+    assert e.dot_status()[names[0]] == "unmarked"
     live.lm_buttons[names[1]].click()                                               # and the button in the Dots section
     assert live._arm == names[2]
 
 
-def test_skipping_every_dot_ends_the_pass_and_keeps_the_lock(win):
+def test_skipping_every_dot_ends_the_pass_and_says_that_none_is_marked(win):
     live, e = win.live, win.engine
     assert e.lock_position()
     live.btn_redo_dots.click()
     for _ in range(len(e.active_dots)):
         live.chips[live._arm].click()
-    assert not live._pass and live._arm is None and e.locked
-    assert "handled" in live.instruction.text()
+    assert not live._pass and live._arm is None and not e.locked
+    assert set(e.dot_status().values()) - {"off"} == {"unmarked"}
+    assert "dots are not marked" in live.instruction.text()
+
+
+def test_a_pass_that_marks_them_all_says_so(win):
+    live, e = win.live, win.engine
+    live.btn_redo_dots.click()
+    for _ in range(len(e.active_dots)):
+        live.on_click(*(PTS[live._arm] + 2))
+    assert not live._pass and "marked" in live.instruction.text() and "lock" in live.instruction.text().lower()
+    assert "not marked" not in live.instruction.text()
 
 
 def test_another_dots_button_takes_that_dot_next_and_the_pass_goes_on_from_the_first_to_do(win):
@@ -283,17 +291,20 @@ def test_starting_the_ruler_marking_ends_a_pass_and_a_waiting_dot(win):
 
 
 # ------------------------------------------------------------------------------------------------ the engine's part
-def test_the_engine_releases_the_lock_only_and_refuses_during_a_recording(win):
+def test_the_engine_takes_one_dot_away_keeps_the_lock_and_refuses_during_a_recording(win):
     e = win.engine
     names = list(e.active_dots)
     assert e.lock_position()
     before = {n: pos(win, n) for n in names}
-    e.start_remarking()
-    assert not e.locked and set(e.dot_status().values()) - {"off"} == {"ok"}          # no dot was forgotten
-    assert all(np.allclose(before[n], pos(win, n)) for n in names)
+    assert e.clear_dot(names[2])
+    assert e.locked and e.dot_status()[names[2]] == "unmarked" and names[2] not in e._last_states
+    assert all(np.allclose(before[n], pos(win, n)) for n in names if n != names[2])    # no other dot was touched
+    assert not e.clear_dot(names[2])                                                   # nothing left to take away
+    res = e.process(render(PTS, seed=5), 0.4)                                          # (a locked position with a dot missing is not a crash)
+    assert names[2] not in res.dots and names[0] in res.dots
     e.rec = object()
     with pytest.raises(RuntimeError, match="Stop recording"):
-        e.start_remarking()
+        e.clear_dot(names[0])
 
 
 def test_replacing_is_only_what_the_caller_names(win):
@@ -305,10 +316,8 @@ def test_replacing_is_only_what_the_caller_names(win):
 
 
 # ------------------------------------------------------------------------------------------------ what ends a pass
-def test_a_break_a_recording_or_a_stopped_camera_ends_the_pass_and_touches_no_dot(win):
+def test_a_break_a_recording_or_a_stopped_camera_ends_the_pass_and_marks_no_dot(win):
     live, e = win.live, win.engine
-    names = list(e.active_dots)
-    before = {n: pos(win, n) for n in names}
     for how in ("break", "recording", "camera"):
         live.btn_redo_dots.click()
         assert live._pass
@@ -324,17 +333,16 @@ def test_a_break_a_recording_or_a_stopped_camera_ends_the_pass_and_touches_no_do
         live._rec_started = None
         live.worker = RunningCamera()
         live.update_dot_rows()
-    assert all(np.allclose(before[n], pos(win, n)) for n in names)
+    assert set(e.dot_status().values()) - {"off"} == {"unmarked"}                    # (removed at the first press, none marked since)
 
 
 def test_a_click_during_a_recording_does_nothing_in_a_pass(win):
     live, e = win.live, win.engine
     names = list(e.active_dots)
-    before = pos(win, names[0])
     live.btn_redo_dots.click()
     e.rec = object()
     live.on_click(*(MOVED[names[0]] + 2))
-    assert np.allclose(pos(win, names[0]), before) and "recording" in live.instruction.text().lower()
+    assert e.dot_status()[names[0]] == "unmarked" and "recording" in live.instruction.text().lower()
 
 
 def test_another_test_clear_all_or_a_new_colour_ends_the_pass(win):
@@ -372,14 +380,40 @@ def test_the_pass_does_not_start_when_no_landmark_is_in_use(win):
     assert not live._pass and "No landmark" in live.instruction.text()
 
 
-def test_a_single_dot_outside_a_pass_still_keeps_the_lock_and_cancels_with_its_button(win):
+def test_a_single_dots_button_removes_that_dot_at_once_and_keeps_the_lock(win):
     live, e = win.live, win.engine
-    a = list(e.active_dots)[1]
+    names = list(e.active_dots)
+    a = names[1]
     assert e.lock_position()
+    before = {n: pos(win, n) for n in names}
     live.chips[a].click()
     assert live._arm == a and live.lm_buttons[a].text() == "Cancel" and not live._pass
+    assert e.dot_status()[a] == "unmarked" and a not in e._last_states               # the old version is gone before the click
+    assert e.locked and all(np.allclose(before[n], pos(win, n)) for n in names if n != a)
     live.on_click(*(PTS[a] + 3))
-    assert e.locked and live._arm is None                                            # as before 0.18.1
+    assert e.locked and live._arm is None and e.dot_status()[a] == "ok"
     live.chips[a].click()
-    live.chips[a].click()
-    assert live._arm is None
+    live.chips[a].click()                                                            # pressed again while it waits: cancelled
+    assert live._arm is None and e.dot_status()[a] == "unmarked" and "stays removed" in live.instruction.text()
+
+
+def test_the_number_key_removes_the_old_dot_at_once_and_a_wrong_click_leaves_it_removed(win):
+    live, e = win.live, win.engine
+    names = list(e.active_dots)
+    live.redo_dot_number(3)                                                           # the hot key of the third dot
+    assert live._arm == names[2] and e.dot_status()[names[2]] == "unmarked"
+    assert not e.process(render(PTS, seed=6), 0.5).dots.get(names[2])                 # not on the next picture either
+    live.on_click(5.0, 5.0)                                                           # a click that finds no dot: still gone, still waiting
+    assert live._arm == names[2] and e.dot_status()[names[2]] == "unmarked"
+    live.on_click(*(PTS[names[2]] + 2))
+    assert e.dot_status()[names[2]] == "ok" and np.allclose(pos(win, names[2]), PTS[names[2]], atol=2.5)
+
+
+def test_pressing_the_button_of_a_dot_marked_earlier_in_the_pass_takes_it_away_again(win):
+    live, e = win.live, win.engine
+    a, b = list(e.active_dots)[:2]
+    live.btn_redo_dots.click()
+    live.on_click(*(PTS[a] + 2))                                                      # a is marked, b is asked for
+    assert e.dot_status()[a] == "ok" and live._arm == b
+    live.chips[a].click()                                                             # a again, out of turn
+    assert live._arm == a and e.dot_status()[a] == "unmarked"

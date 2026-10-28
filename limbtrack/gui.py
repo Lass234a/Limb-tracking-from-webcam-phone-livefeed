@@ -431,7 +431,8 @@ class LiveTab(QWidget):
         self._arm = None                     # the landmark whose Re-mark button was pressed: the next click on the picture marks it
         self._pass = []                      # 'Redo all': the dots still to be marked again, in order (empty = no pass); _arm is one of them
         self._pass_total = 0                 # how many dots the pass began with
-        self._pass_unlocked = False          # the first dot of the pass has been marked again: the lock was released
+        self._priv_pos = (self.engine.test.key, self.engine.target)   # the position the privacy set-up was last looked at for (0.23.0)
+        self._priv_recheck = False           # the position changed since: the picture must be looked at again before the next recording
         self._auto_text = IDLE_TEXT          # the last instruction the program wrote itself (a message from elsewhere is not overwritten by it)
         self._first_todo = None              # the step the strip says to do next
         self._beeps_tested = False           # the beeps were played this session without an error (not remembered: every session)
@@ -593,7 +594,8 @@ class LiveTab(QWidget):
         self.chips = {}
         self.lm_info = QLabel()
         self.lm_info.setWordWrap(True)
-        lm_hint = QLabel("To redo ONE dot, press its Re-mark button and then click that dot on the video. The other dots stay as they are.")
+        lm_hint = QLabel("To redo ONE dot, press its Re-mark button (or its number key): its old mark is removed at once, then click that dot "
+                         "on the video. The other dots stay as they are.")
         lm_hint.setWordWrap(True)
         lm = QWidget()
         lml = QVBoxLayout(lm)
@@ -814,6 +816,15 @@ class LiveTab(QWidget):
         self.chk_priv_ok.setToolTip("For a picture that needs no crop or mask. It only tells the step list that you have looked; it changes "
                                     "nothing in the saved files. Not remembered: it is asked again every session, because the picture changes.")
         pvl.addWidget(self.chk_priv_ok)
+        self.chk_priv_ok.toggled.connect(lambda on: on and self.confirm_privacy("looked: nothing identifies the participant"))
+        self.btn_priv_again = QPushButton("Privacy checked at this position")
+        self.btn_priv_again.setToolTip("Shown after every change of position. The participant has moved, so look at the picture again: is "
+                                       "the crop still round the leg, and does nothing identify the participant? Recording is refused "
+                                       "until you press this (or draw the crop or a mask again, or tick the box above).")
+        self.btn_priv_again.setStyleSheet("font-weight: bold; color: #d97706;")
+        self.btn_priv_again.clicked.connect(self.confirm_privacy_here)
+        self.btn_priv_again.setVisible(False)
+        pvl.addWidget(self.btn_priv_again)
         pvl.addWidget(self.chk_overlay)
         pvl.addWidget(self.chk_rec_first)
         pvl.addWidget(self.folder_label)
@@ -1012,11 +1023,10 @@ class LiveTab(QWidget):
             b.setFixedWidth(34)
         self.pos_combo.setFocusPolicy(Qt.NoFocus)
         self.btn_redo_dots = QPushButton("Redo all (D)")              # the last cell of the dot buttons (rebuild_dot_chips)
-        self.btn_redo_dots.setToolTip("Redo all dots: click the dots on the video one after the other, in the order asked. The old dots keep "
-                                      "tracking until each is replaced, so nothing changes if you stop (press it again).\nThe lock is "
-                                      "released at the first dot you mark again. A dot's own button skips it (while this runs) or marks "
-                                      "only that dot (when it does not).\nTo forget every dot first, use 'Clear all dots and start "
-                                      "again' in the Dots section.")
+        self.btn_redo_dots.setToolTip("Redo all dots: every marked dot and the lock are removed at once, then click the dots on the video "
+                                      "one after the other, in the order asked. Pressing it again (now Stop) ends the asking; the dots "
+                                      "not marked yet stay unmarked.\nA dot's own button (or number key) skips it while this runs, and "
+                                      "when it does not run it removes that one dot and waits for your click.")
         self.btn_redo_dots.setFocusPolicy(Qt.NoFocus)
         self.btn_redo_dots.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.btn_redo_dots.setMinimumWidth(40)
@@ -1052,6 +1062,7 @@ class LiveTab(QWidget):
         self.participant.textChanged.connect(self._on_participant_text)
         self.target_spin.valueChanged.connect(lambda _: self.refresh_plan())
         self.target_spin.valueChanged.connect(lambda _: self.update_reference_box())    # the target is part of the readings' position
+        self.target_spin.valueChanged.connect(self._privacy_position_changed)
         plan_box = QGroupBox("Session plan (click the next position)")
         plan_l = QVBoxLayout(plan_box)
         plan_l.addWidget(self.plan)
@@ -1243,6 +1254,7 @@ class LiveTab(QWidget):
                             else ("todo", f"{pid}?") if unconfirmed else ("todo", "Participant")),
             "camera": ("done" if running else "todo", "Camera"),
             "privacy": (("off", "Privacy") if not running else ("todo", "Privacy: fix") if priv_problem
+                        else ("todo", "Privacy: recheck") if self._priv_recheck
                         else ("done", "Privacy") if shaped or priv_checked else ("todo", "Privacy")),
             "position": ("done", f"Position {target}" if e.target is not None else "Position"),
             "dots": ("off" if not running else "done" if ready else "todo", f"Dots {n_marked}/{len(names)}"),
@@ -1268,7 +1280,8 @@ class LiveTab(QWidget):
         acc.set_summary("privacy", ("crop" + (" + masks" if e.privacy_masks else "") if e.privacy_crop else
                                     f"{len(e.privacy_masks)} mask(s)" if e.privacy_masks else
                                     "whole picture, checked" if priv_checked else "not set")
-                        + (", PROBLEM" if priv_problem else ""))
+                        + (", PROBLEM" if priv_problem else ", CHECK AGAIN (new position)" if self._priv_recheck else ""))
+        self.btn_priv_again.setVisible(self._priv_recheck)
         acc.set_summary("position", f"{e.test.label}, {target}")
         acc.set_summary("checklist", f"{sum(cb.isChecked() for cb in self.camera_checks.values())}/{len(self.camera_checks)} ticked")
         acc.set_summary("dots", (f"{n_marked}/{len(names)} marked, {kind_name}" if running else f"camera not started, {kind_name}")
@@ -1318,6 +1331,9 @@ class LiveTab(QWidget):
                     f"participant, or type the new code.")
         if step == "participant" and privacy.check_participant_id(self.participant.text().strip()) is None and not self.engine.tested_leg:
             return f"Choose the tested (dominant) leg of {self.participant.text().strip()} in the Participant section."
+        if step == "privacy" and self._priv_recheck:
+            return ("The position changed: look at the picture again. Is the crop still round the leg, and does nothing identify the "
+                    "participant? Then press 'Privacy checked at this position' (or draw the crop or mask again).")
         return STEP_HINT[step]
 
     def _participant_unconfirmed(self):
@@ -1536,6 +1552,7 @@ class LiveTab(QWidget):
         self.rebuild_landmarks()
         self.rebuild_reference_fields()
         self.refresh_plan()
+        self._privacy_position_changed()                        # (the target box was set with its signals blocked)
 
     # ------------------------------------------------- reference readings (a hand instrument, typed in)
     def rebuild_reference_fields(self):
@@ -1817,7 +1834,7 @@ class LiveTab(QWidget):
         status = self.engine.dot_status()
         free = self._rec_started is None and self.worker is not None and not self.engine.paused
         if self._pass:
-            if not free:                                      # a recording, a break or no camera ends the pass (its dots keep their marks)
+            if not free:                                      # a recording, a break or no camera ends the pass (no dot is marked or removed by it)
                 self._stop_marking()
             else:
                 self._pass = [n for n in self._pass if status.get(n, "off") != "off"]      # a dot switched off in the middle is not done
@@ -1858,8 +1875,8 @@ class LiveTab(QWidget):
                 chip.setEnabled(s != "off" and free)
 
     def arm_dot(self, name):
-        """The button of one landmark: the next click on the picture marks that dot (again) and leaves every other dot alone.
-        It stays waiting until the dot has been found, so a click that missed can simply be repeated."""
+        """The button (or number key) of one landmark: its old mark is removed at once, and the next click on the picture marks that dot
+        again; every other dot is left alone. It stays waiting until the dot has been found, so a click that missed can simply be repeated."""
         btn = self.lm_buttons.get(name)
         if self.worker is None or self.engine.rec is not None or self.engine.paused:
             if btn is not None:
@@ -1868,34 +1885,48 @@ class LiveTab(QWidget):
                      else "Dots cannot be marked during a recording or a break.")
             return
         self._leave_ruler_marking()
+        title = self.engine.test.dot_title(name)
         if self._pass:                                        # in the middle of 'Redo all': its own dot is skipped, another one is taken next
             if name == self._arm:
                 self._pass.remove(name)
-                self._pass_next(f"Skipped: {self.engine.test.dot_title(name)} keeps its old mark.")
+                self._pass_next(f"Skipped: the {title} dot is not marked.")
             else:
+                self._take_away(name)                         # (a dot marked earlier in this pass is taken away again)
                 self._arm = name
                 self.update_dot_rows()
-                self.say(f"Click the {self.engine.test.dot_title(name)} dot on the video.", 8.0)
+                self.say(f"Click the {title} dot on the video.", 8.0)
             return
-        self._arm = None if self._arm == name else name
+        if self._arm == name:                                 # pressed again while it waits: the click is no longer asked for
+            self._arm = None
+            self.update_dot_rows()
+            self.say(f"Cancelled. The {title} dot stays removed: press its button to mark it.", 8.0)
+            return
+        self._take_away(name)
+        self._arm = name
         self.update_dot_rows()
-        self.say(f"Click the {self.engine.test.dot_title(name)} dot on the video." if self._arm else "Cancelled: no dot will be changed.", 8.0)
+        self.say(f"Click the {title} dot on the video.", 8.0)
 
-    # ------------------------------------------------- 'Redo all': every dot marked again, the old ones tracking until replaced
+    def _take_away(self, name):
+        """The old mark of one dot goes before it is marked again (the engine keeps the lock, see Engine.clear_dot)."""
+        if self.engine.clear_dot(name):
+            self.note("dot removed", name)
+
+    # ------------------------------------------------- 'Redo all': every dot removed, then marked one after the other
     def _stop_marking(self):
-        """Nothing waits for a click any more: neither one dot nor a pass (the dots not marked again keep their marks)."""
-        self._arm, self._pass, self._pass_total, self._pass_unlocked = None, [], 0, False
+        """Nothing waits for a click any more: neither one dot nor a pass (a dot that was not marked stays unmarked)."""
+        self._arm, self._pass, self._pass_total = None, [], 0
 
     def toggle_mark_again(self):
-        """Redo all (D): the next clicks on the video mark every dot again, one after the other in the order asked, while the old dots keep
-        tracking until each is replaced. Nothing changes before the first click, so pressing it again (now Stop) is free. The lock is
-        released at the first dot that is marked again (the participant has been moved); a dot can be skipped (press its button) or taken
-        out of turn (press another dot's button)."""
+        """Redo all (D): every marked dot and the lock are removed at once (the participant has been moved, so no old mark may linger on
+        the picture), then the next clicks on the video mark the dots one after the other in the order asked. A dot can be skipped (press
+        its button: it stays unmarked) or taken out of turn (press another dot's button). Pressing it again (now Stop) ends the asking."""
         if self._pass:
             self._stop_marking()
             self.note("marking all dots again stopped")
             self.update_dot_rows()
-            self.say("Stopped. The dots not marked again keep their old marks.", 6.0)
+            left = self.engine.next_dot_to_mark()
+            self.say("Stopped. " + ("All the dots are marked." if left is None else "The dots not marked yet stay unmarked: use their "
+                                                                                    "buttons or number keys."), 6.0)
             return
         names = list(self.engine.active_dots)
         if self.worker is None or self.engine.rec is not None or self.engine.paused:
@@ -1906,17 +1937,16 @@ class LiveTab(QWidget):
             self.say("No landmark is switched on: there is no dot to mark.")
             return
         self._leave_ruler_marking()
-        self._pass, self._pass_total, self._pass_unlocked, self._arm = names, len(names), False, names[0]
-        self.note("marking all dots again started")
+        self.engine.reset_dots()                              # every old mark and the lock go now, before the first click
+        self.btn_lock.setChecked(False)
+        self._pass, self._pass_total, self._arm = names, len(names), names[0]
+        self.note("marking all dots again started", "all dots removed")
         self.update_dot_rows()
+        self.refresh_view()
         self.say(self._instruction_text(), 8.0)
 
     def _pass_done(self, name):
-        """The dot `name` was marked again in a pass: the first one releases the lock, then the next dot is asked for."""
-        if not self._pass_unlocked:
-            self._pass_unlocked = True
-            self.engine.start_remarking()
-            self.btn_lock.setChecked(False)
+        """The dot `name` was marked again in a pass: the next dot is asked for."""
         if name in self._pass:
             self._pass.remove(name)
         self._pass_next("")                                   # (the dot's button turning green says it was marked)
@@ -1925,10 +1955,13 @@ class LiveTab(QWidget):
         """Wait for the next dot still to be marked again, or finish."""
         if not self._pass:
             total = self._pass_total
+            unmarked = [n for n, s in self.engine.dot_status().items() if s == "unmarked"]
             self._stop_marking()
-            self.note("marking all dots again finished")
+            self.note("marking all dots again finished", f"{len(unmarked)} not marked" if unmarked else "")
             self.update_dot_rows()
-            self.say(f"{lead} All {total} dots handled. Set the position, then lock it.".strip(), 8.0)
+            tail = (f"All {total} dots marked. Set the position, then lock it." if not unmarked
+                    else f"{len(unmarked)} of {total} dots are not marked: use their buttons or number keys.")
+            self.say(f"{lead} {tail}".strip(), 8.0)
             return
         self._arm = self._pass[0]
         self.update_dot_rows()
@@ -2214,6 +2247,7 @@ class LiveTab(QWidget):
             self._last_source = {"kind": "stream", "address": source}
         self._remember()
         self.chk_priv_ok.setChecked(False)                # 'I looked' was about the previous picture
+        self._priv_recheck = False                        # (the whole privacy step is asked afresh for a new picture)
         self.engine.reset_dots()
         self.clear_scale()
         self.btn_lock.setChecked(False)
@@ -2786,6 +2820,39 @@ class LiveTab(QWidget):
             ok, msg = False, str(e)
         self.say(("Crop set." if kind == "crop" else "Mask added.") if ok else msg, 6.0)
         self.update_privacy_label()
+        if ok:                                                # (drawing it meant looking at the picture of this position)
+            self.confirm_privacy("crop drawn" if kind == "crop" else "mask added")
+
+    def _privacy_position_changed(self, *_):
+        """The participant is in another position (another test or target), so the picture is not the one the privacy set-up was looked at
+        on: the crop may no longer cover the leg, and a face may have come into view. The 'I looked' tick is cleared and recording is
+        refused until the picture has been looked at again (0.23.0). The same position again, trial after trial, asks nothing."""
+        e = self.engine
+        old, self._priv_pos = self._priv_pos, (e.test.key, e.target)
+        if old == self._priv_pos or self._restoring:
+            return
+        self._priv_recheck = True
+        if self.chk_priv_ok.isChecked():
+            self.chk_priv_ok.setChecked(False)                # ('I looked' was about the previous position)
+        self.note("privacy to be checked again", f"{e.test.key} {'' if e.target is None else format(e.target, 'g')}".strip())
+        self.update_steps()
+
+    def confirm_privacy(self, how):
+        """The operator looked at the picture of this position and says the privacy set-up is right for it (saved with the next trials)."""
+        self.engine.note_privacy_check(how)
+        if self._priv_recheck:
+            self._priv_recheck = False
+            e = self.engine
+            self.note("privacy checked again", f"{e.test.key} {'' if e.target is None else format(e.target, 'g')} ({how})".strip())
+        self.update_steps()
+
+    def confirm_privacy_here(self):
+        """The button shown after a change of position. With a crop or masks it says they are still right; without, it is the same as
+        ticking 'I looked: nothing identifies the participant' (the step list wants one of the two)."""
+        if self.engine.privacy_crop or self.engine.privacy_masks or self.chk_priv_ok.isChecked():
+            self.confirm_privacy("looked: the crop and masks are still right")
+        else:
+            self.chk_priv_ok.setChecked(True)                 # (its toggled signal confirms)
 
     def clear_privacy(self):
         self._priv_kind = None
@@ -3004,6 +3071,14 @@ class LiveTab(QWidget):
                 self.btn_rec.setChecked(False)
                 QMessageBox.warning(self, "Cannot record", "The video file has already ended, so nothing would be recorded. "
                                     "Step back with the Left arrow key or open the file again.")
+                return
+            if self._priv_recheck:
+                self.btn_rec.setChecked(False)
+                QMessageBox.warning(self, "Privacy", "The position changed since the privacy set-up was last looked at. Look at the picture "
+                                    "again: is the crop still round the leg, and does nothing identify the participant?\n\nThen press "
+                                    "'Privacy checked at this position' in the Privacy section (or draw the crop or a mask again), "
+                                    "and record.")
+                self.open_step("privacy")
                 return
             id_problem = privacy.check_participant_id(self.participant.text().strip())
             if id_problem:

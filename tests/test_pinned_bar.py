@@ -295,16 +295,16 @@ def test_the_buttons_are_off_during_a_break_and_without_a_camera(win):
 
 
 # ------------------------------------------------------------------------------------------------ redo all dots
-def test_redo_all_starts_a_pass_that_changes_nothing_until_the_first_click(win):
+def test_redo_all_starts_a_pass_that_removes_every_dot_and_the_lock(win):
     """What a pass does dot by dot is in test_mark_again.py; here: the bar's button starts and stops it."""
     live = win.live
     mark_all(win)
     assert win.engine.lock_position()
     live.btn_redo_dots.click()
     assert live._pass == list(win.engine.active_dots) and live._arm == live._pass[0] and live.btn_redo_dots.text() == "Stop (D)"
-    assert win.engine.locked and set(win.engine.dot_status().values()) - {"off"} == {"ok"}          # nothing changed yet
+    assert not win.engine.locked and set(win.engine.dot_status().values()) - {"off"} == {"unmarked"}     # the old dots went at the press
     live.btn_redo_dots.click()
-    assert not live._pass and live._arm is None and live.btn_redo_dots.text() == "Redo all (D)" and win.engine.locked
+    assert not live._pass and live._arm is None and live.btn_redo_dots.text() == "Redo all (D)" and not win.engine.locked
 
 
 # ------------------------------------------------------------------------------------------------ keys

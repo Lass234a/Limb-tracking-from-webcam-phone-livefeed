@@ -164,6 +164,7 @@ def recordable(win, monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
     win.live.worker = RunningCamera()
     win.live.participant.setText("P01")
+    win.live.confirm_privacy_here()                                            # the look at the picture that the change of position asked for (0.23.0)
     yield win, shown
     if win.engine.rec is not None:
         win.engine.stop_trial()
