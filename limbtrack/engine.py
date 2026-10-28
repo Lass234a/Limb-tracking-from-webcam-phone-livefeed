@@ -37,7 +37,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.20.0"
+SOFTWARE_VERSION = "0.21.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -98,6 +98,7 @@ class Engine:
     facing_right = _FrozenWhileRecording("which way the participant faces")
     mirror = _FrozenWhileRecording("the mirror setting")
     save_overlay = _FrozenWhileRecording("whether the overlay video is saved")
+    recording_first = _FrozenWhileRecording("'recording first'")
     camera_setup = _FrozenWhileRecording("the camera set-up checklist")
     privacy_crop = _FrozenWhileRecording("the privacy crop")
     privacy_masks = _FrozenWhileRecording("the privacy masks")
@@ -159,6 +160,7 @@ class Engine:
         self._privacy_mirror = False # the mirror setting the crop and masks were drawn under
         self._privacy_hits = {}      # dot -> frames in which it was near the crop edge or inside a mask while recording
         self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
+        self.recording_first = True  # while recording the window does less, so more pictures are tracked and saved (gui.py; 0.21.0)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._legs = {}              # participant code -> the tested leg, 'right' / 'left' (see the tested_leg property; 0.20.0)
@@ -1527,8 +1529,10 @@ class Engine:
                                   "max": round(float(gaps.max()), 1)},
             "loop_fps": round(1000.0 / float(gaps.mean()), 2),
             "process_share_of_interval": round(float(proc.mean() / gaps.mean()), 3),
+            "recording_first": self.recording_first,
             "meaning": "process_ms = this program's work per frame (tracking, drawing, saving). If it is much smaller than the frame "
-                       "interval, the computer kept up and the camera or phone delivered fewer frames than asked for.",
+                       "interval, the computer kept up and the camera or phone delivered fewer frames than asked for. recording_first: "
+                       "the window showed at most 10 pictures a second and refreshed its trace and panel once a second while recording.",
         }
 
     def _process(self, frame, t, source_frame=None):

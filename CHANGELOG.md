@@ -3,6 +3,46 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.21.0 - 2026-10-27
+
+### Recording first: the window does less while recording, so more pictures are tracked and saved
+- **Why:** asked on 2026-10-27 whether a lower load cell sample rate would raise the frame rate. It would not: the force work per picture
+  is about 2 ms at 1000 Hz and 1.1 ms at 100 Hz (a picture has 33 ms at 30 per second), and P20 (2026-10-22) ran at 14-23 and at 30
+  pictures per second with the same 1000 Hz. Replaying a P11 trial (hip extension 45, 12:50:03; 7 dots) through the real window as a
+  phone stream (30 pictures per second, simulated force with 10 minutes of history, automatic MVIC on, beeps off; laptop on battery,
+  Windows 'Balanced') showed where the time goes: the program's own work was 25 ms per picture without the window and 42-61 ms with it.
+  Only one Python thread works at a time, so the window's work is taken from the tracking: the trace (5 redraws a second, about 40 ms
+  each), the status panel (5 a second, 16-30 ms each) and the picture (converted, about 5 ms, and painted, about 6 ms, for every picture).
+- **What:** new tick box *Recording first: fewer pictures on screen* (Privacy section, under *Also save the overlay video*;
+  **on by default**, remembered). While recording: at most 10 pictures a second on the screen, the trace redrawn once a second, the
+  status panel in full once a second (its first refresh of a recording in full, so the settings are greyed out at once; the recording
+  line, the automatic stop and *NO VIDEO* still every 0.2 s). **Every picture is still
+  tracked and saved**, and the overlay video is the same. Before and after a recording nothing changes. It cannot be changed during a
+  recording; `meta.json` `pipeline_timing.recording_first` says whether it was on.
+- **Measured** (the same replay, off and on in turn, 30 s recordings; pictures saved per second, the program's work per picture, and the
+  95th percentile of the time between saved pictures):
+
+  | Laptop | Off | On |
+  |---|---|---|
+  | on battery, nothing else running (3 + 3 runs) | 23.2 per s (21.8-25.5), 39 ms, 74 ms | **27.6** per s (26.2-28.6), 31 ms, 44 ms |
+  | 16 busy programs alongside (2 + 2 runs) | 13.2 per s (12.6-13.7), 67 ms, 151 ms | **26.8** per s (26.3-27.4), 33 ms, 49 ms |
+
+  Final code, once more: 21.4 off, 28.5 on. The old code before the change: 15.1, 17.5 and 21.5 per s (the laptop on battery varies
+  from run to run; the off/on pairs were taken in turn for that reason). The screen showed 9-10 pictures a second while recording.
+- **Tried and left out:** Windows priority above normal while recording. With 16 busy programs: 26.8 pictures per second with it, 26.4
+  without, so no measurable gain.
+- **Not changed:** the tracking, the angles, the force (all 1000 samples per second were saved however slow the pictures were) and the
+  saved files, apart from the new `meta.json` field.
+- **Seen in the replay, not changed:** (1) with the dot colour on *Auto*, the trochanter mark on the first replayed picture slid onto the
+  black underwear edge and then onto the iliac crest dot; on *Black* (used now) it was right. (2) In the twice-compressed replay video
+  the weak strap dot (quality 0.6-0.8) was lost from about 14 s on in most runs, and more often the more pictures were tracked (without the
+  window: every picture, 502 of 1140 lost; every other picture, 1 of 570). In the real trial it was never lost.
+- **Not tried:** the real DroidCam and DAQ. Check `pipeline_timing.loop_fps` and `recording_first` in `meta.json` of the next real trial.
+- Tests: new `tests/test_recording_first.py` (8). Full suite: 972 passed, 1 skipped, 4 failed; the 4 showed that the controls were
+  greyed out only at the first full panel refresh (up to 1 s into a recording) and that the label was too long for the panel. Both fixed;
+  then every test that opens the window (41 files, the 4 included) was run again: 449 passed. Replay scripts and results:
+  `audit/evidence/SPEED_2026-10-27/`.
+
 ## 0.20.0 - 2026-10-26
 
 ### Made compatible with the protocol draft of 2026-10-20 and SOP v0.18 (review: `audit/SOP_vs_APP_2026-10-26.md`)

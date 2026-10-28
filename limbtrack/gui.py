@@ -80,6 +80,16 @@ def bgr_to_qimage(img):
     return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
+# 'Recording first' (Engine.recording_first, 0.21.0): while recording, the window does less, because its work shares Python with the
+# tracking. Replaying a P11 trial through the window (2026-10-27, on battery): 25 ms of work per picture without the window, 52 ms with it.
+SHOWN_EVERY_S_RECORDING = 0.1      # at most 10 pictures a second on the screen (every picture is still tracked and saved)
+TRACE_MS, TRACE_MS_RECORDING = 200, 1000      # the trace: 5 redraws a second, once a second while recording
+PANEL_TICKS_RECORDING = 5          # the status panel in full every 5th tick (once a second); the recording line, the automatic stop
+                                   # and the 'no video' warning every tick
+# (Windows priority above normal while recording was tried as part of it and left out: with 16 busy programs alongside, 26.8 pictures/s
+# with it, 26.4 without.)
+
+
 TRIALS_PER_POSITION = 2     # the session plan counts saved trials against this number
 
 
@@ -249,6 +259,7 @@ class VideoWorker(QThread):
         self._stop = False
         self._cmds = []
         self._cmd_lock = threading.Lock()
+        self._shown_t = None     # picture time of the last picture sent to the screen
 
     def stop(self):
         self._stop = True
@@ -271,7 +282,11 @@ class VideoWorker(QThread):
             frame = cv2.flip(frame, 1)          # before tracking, recording and drawing: everything sees the flipped picture
         res = self.engine.process(frame, t, cam.position)
         self.at_end = False
-        self.frame_ready.emit(bgr_to_qimage(res.overlay))
+        held_back = (self.engine.rec is not None and self.engine.recording_first and self._shown_t is not None
+                     and 0 <= t - self._shown_t < SHOWN_EVERY_S_RECORDING - 0.005)   # 'recording first': tracked and saved, not shown
+        if not held_back:
+            self._shown_t = t
+            self.frame_ready.emit(bgr_to_qimage(res.overlay))
         if cam.is_file:
             self.position.emit(cam.position + 1, cam.frame_count)
 
@@ -659,6 +674,13 @@ class LiveTab(QWidget):
         self.chk_overlay.setToolTip("The overlay video has the angles and trails drawn on it. Switching it off makes recording lighter on the "
                                     "computer; the Review tab can still draw the same picture from the raw video and the CSV, and can export it later.")
         self.chk_overlay.toggled.connect(self._set_overlay_saving)
+        self.chk_rec_first = QCheckBox("Recording first: fewer pictures on screen")
+        self.chk_rec_first.setChecked(True)
+        self.chk_rec_first.setToolTip("While recording, the screen shows at most 10 pictures a second and the trace and this panel are refreshed "
+                                      "once a second. Every picture is still tracked and saved, so more pictures per second are saved on a slow or "
+                                      "busy laptop (P11 replay on battery: 23 -> 28 per second; with other programs busy: 13 -> 27). Nothing changes "
+                                      "before or after a recording.")
+        self.chk_rec_first.toggled.connect(self._set_recording_first)
         self.btn_rec = QPushButton("Start recording  (R)")
         self.btn_rec.setCheckable(True)
         self.btn_rec.clicked.connect(self.toggle_record)
@@ -793,6 +815,7 @@ class LiveTab(QWidget):
                                     "nothing in the saved files. Not remembered: it is asked again every session, because the picture changes.")
         pvl.addWidget(self.chk_priv_ok)
         pvl.addWidget(self.chk_overlay)
+        pvl.addWidget(self.chk_rec_first)
         pvl.addWidget(self.folder_label)
         pvl.addWidget(self.btn_folder)
         self.update_privacy_label()
@@ -903,7 +926,8 @@ class LiveTab(QWidget):
         self._trace_items = []
         self.trace_timer = QTimer(self)
         self.trace_timer.timeout.connect(self.update_trace)
-        self.trace_timer.start(200)              # 5 redraws a second: each costs the window thread, and with it the picture thread
+        self.trace_timer.start(TRACE_MS)         # 5 redraws a second: each costs the window thread, and with it the picture thread
+        self._panel_tick = 0                     # 'recording first': ticks of the status panel since its last full refresh
 
         # --- force: a load cell through a DAQ, sampled on its own thread (limbtrack/force.py)
         self.force_source = None
@@ -1319,6 +1343,7 @@ class LiveTab(QWidget):
             "mirror": self.chk_mirror.isChecked(), "smoothing": self.chk_smooth.isChecked(),
             "landmarks_disabled": sorted(e.disabled_dots),
             "trails": self.chk_trails.isChecked(), "overlay": self.chk_overlay.isChecked(),
+            "recording_first": self.chk_rec_first.isChecked(),
             "stream": self.stream_box.text().strip(),
             "force": {"kind": self.force_kind.currentData(), "device": self.force_dev.currentText().strip(),
                       "channel": self.force_chan.currentText(), "wiring": self.force_term.currentData(),
@@ -1375,6 +1400,7 @@ class LiveTab(QWidget):
             part(lambda: self.target_spin.setValue(self.target_spin.minimum() if s["target"] is None else float(s["target"])))
             part(lambda: self.chk_trails.setChecked(bool(s["trails"])))
             part(lambda: self.chk_overlay.setChecked(bool(s["overlay"])))
+            part(lambda: self.chk_rec_first.setChecked(bool(s["recording_first"])))      # (a session from before 0.21.0: stays on)
             part(lambda: self.stream_box.setText(str(s.get("stream", ""))))
             f = s.get("force") or {}
             part(lambda: self._pick(self.force_kind, f["kind"]))
@@ -1429,7 +1455,7 @@ class LiveTab(QWidget):
         for sig in (self.test_combo.currentIndexChanged, self.kind_combo.currentIndexChanged, self.facing_combo.currentIndexChanged,
                     self.leg_combo.currentIndexChanged,
                     self.target_spin.valueChanged, self.tol_spin.valueChanged, self.ntol_spin.valueChanged, self.chk_mirror.toggled,
-                    self.chk_smooth.toggled, self.chk_trails.toggled, self.chk_overlay.toggled, self.chk_cues.toggled,
+                    self.chk_smooth.toggled, self.chk_trails.toggled, self.chk_overlay.toggled, self.chk_rec_first.toggled, self.chk_cues.toggled,
                     self.cue_push_spin.valueChanged, self.chk_auto_mvic.toggled, self.auto_thr_spin.valueChanged,
                     self.auto_len_spin.valueChanged, self.chk_auto_stop.toggled, self.auto_stop_spin.valueChanged,
                     self.force_kind.currentIndexChanged, self.force_dev.currentTextChanged,
@@ -2015,6 +2041,21 @@ class LiveTab(QWidget):
             self.engine.save_overlay = bool(on)
         except RuntimeError as e:
             self._revert_check(self.chk_overlay, self.engine.save_overlay, e)
+
+    def _set_recording_first(self, on):
+        try:
+            self.engine.recording_first = bool(on)
+        except RuntimeError as e:
+            self._revert_check(self.chk_rec_first, self.engine.recording_first, e)
+
+    def _start_recording_view(self):
+        """'Recording first' (0.21.0): the trace once a second while recording (the picture: VideoWorker._show; the panel: refresh_status)."""
+        if self.engine.recording_first:
+            self.trace_timer.setInterval(TRACE_MS_RECORDING)
+            self._panel_tick = 0
+
+    def _end_recording_view(self):
+        self.trace_timer.setInterval(TRACE_MS)
 
     def on_mirror_toggled(self, on):
         self.engine.mirror = bool(on)
@@ -2980,6 +3021,7 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", str(e))
                 return
             self._rec_started = time.perf_counter()
+            self._start_recording_view()
             self.note("recording started", f"{self.participant.text().strip()} {self.engine.test.key} {self.engine.target if self.engine.target is not None else ''}".strip())
             self.refresh_plan()
             self._marker_counts = {"start": 0, "end": 0, "other": 0}
@@ -2990,6 +3032,7 @@ class LiveTab(QWidget):
                 self.toggle_pause()
         else:
             self.btn_rec.setChecked(False)
+            self._end_recording_view()
             n = self.engine.rec.frames if self.engine.rec is not None else None
             duration = time.perf_counter() - self._rec_started if self._rec_started is not None else 0.0
             due = self.engine.seconds_to_auto_stop()
@@ -3169,6 +3212,11 @@ class LiveTab(QWidget):
 
     def refresh_status(self):
         recording = self._rec_started is not None
+        if recording and self.engine.recording_first:
+            self._panel_tick += 1                        # 'recording first': the rest of the panel once a second, the first tick of a
+            if (self._panel_tick - 1) % PANEL_TICKS_RECORDING:     # recording in full (it greys out what must not change)
+                self._refresh_recording()
+                return
         self.update_force_box()
         self.update_reference_box(recording)
         self._show_cleared_pelvis_facts()            # (the engine clears them when a recording ends with another participant code)
@@ -3183,6 +3231,7 @@ class LiveTab(QWidget):
         self.facing_combo.setStyleSheet("background-color: #fcd34d;" if self.engine.facing_mismatch else "")
         self.facing_combo.setToolTip(self.engine.facing_message() if self.engine.facing_mismatch else "")
         self.chk_overlay.setEnabled(not recording)
+        self.chk_rec_first.setEnabled(not recording)
         for w in (*self.camera_checks.values(), self.camera_model):
             w.setEnabled(not recording)
         for w in (self.test_combo, self.kind_combo, self.facing_combo, self.leg_combo, self.tape_spin, self.chk_wall, self.target_spin,
@@ -3193,6 +3242,19 @@ class LiveTab(QWidget):
         self.suggest.setEnabled(not recording and not main_three_point)
         for w in (self.chk_tp, self.chk_tp_main, self.chk_tp_flex, *self.tp_combos):
             w.setEnabled(not recording)
+        self._refresh_recording()
+        self.update_camera_info()
+        self.update_scale_label()
+        self.update_steps()
+        if time.monotonic() < self._say_until:
+            return
+        if self.worker is None and self.instruction.text() not in (self._auto_text, IDLE_TEXT, ""):
+            return                    # a message that was left when the camera ended: it stays until something replaces it
+        self._auto_text = self._instruction_text()
+        self.instruction.setText(self._auto_text)
+
+    def _refresh_recording(self):
+        """The recording line, the automatic stop and the 'no video' warning (every tick of the status timer)."""
         if self._rec_started is not None and self.engine.rec is None:       # the engine ended the recording itself
             reason = self.engine.last_stop_reason
             self.toggle_record(force_stop=True)
@@ -3225,15 +3287,6 @@ class LiveTab(QWidget):
                     text += "\n" + self._marker_msg[0]
                 self.rec_label.setText(text)
                 self.rec_label.setStyleSheet("")
-        self.update_camera_info()
-        self.update_scale_label()
-        self.update_steps()
-        if time.monotonic() < self._say_until:
-            return
-        if self.worker is None and self.instruction.text() not in (self._auto_text, IDLE_TEXT, ""):
-            return                    # a message that was left when the camera ended: it stays until something replaces it
-        self._auto_text = self._instruction_text()
-        self.instruction.setText(self._auto_text)
 
     def shutdown(self):
         if self.btn_rec.isChecked():
