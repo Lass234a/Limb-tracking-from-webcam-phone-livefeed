@@ -960,6 +960,14 @@ class LiveTab(QWidget):
                                        "and whenever the strap hangs differently. The zero is forgotten when the program closes. The volts of "
                                        "every recording are saved as they are, so a wrong zero can be corrected afterwards in Review.")
         self.btn_force_zero.clicked.connect(self.zero_force)
+        self.btn_force_relax = QPushButton("Zero 2: relaxed in the strap  (X)")
+        self.btn_force_relax.setToolTip("The second zero level (0.22.0). First Zero (Z) with the strap hanging free. Then the participant gets into the "
+                                        "position, relaxed, the strap taut, not pushing: press this. It takes 2 s of signal as the tension that is "
+                                        "there before the push, for THIS participant, test and target (take it again for the next position). "
+                                        "Newtons stay the total force from the first zero; the read-out and Review also give the force ABOVE the "
+                                        "relaxed level. Refused while the signal still drifts, so wait until the tension has settled. A new Zero "
+                                        "clears it.")
+        self.btn_force_relax.clicked.connect(self.relax_force)
         self.btn_force_cal = QPushButton("Re-calibrate with a known weight...")
         self.btn_force_cal.setToolTip("For this session only: the result is not saved for the next one.")
         self.btn_force_cal.clicked.connect(self.calibrate_force)
@@ -978,6 +986,7 @@ class LiveTab(QWidget):
         fcf.addRow(self.btn_force)
         fcf.addRow(self.force_label)
         fcf.addRow(self.btn_force_zero)
+        fcf.addRow(self.btn_force_relax)
         fcf.addRow(self.btn_force_cal)
         fcf.addRow(self.force_info)
         self.chk_force_skip = QCheckBox("No force today (angles only)")
@@ -1138,6 +1147,7 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_E), self, activated=self.btn_end_mark.click)
         QShortcut(QKeySequence(Qt.Key_M), self, activated=self.btn_mark.click)
         QShortcut(QKeySequence(Qt.Key_Z), self, activated=self.btn_force_zero.click)
+        QShortcut(QKeySequence(Qt.Key_X), self, activated=self.btn_force_relax.click)
         QShortcut(QKeySequence(Qt.Key_G), self, activated=self.btn_ref_stamp.click)
         QShortcut(QKeySequence(Qt.Key_D), self, activated=self.btn_redo_dots.click)
         QShortcut(QKeySequence(Qt.Key_N), self, activated=self.btn_pos_next.click)
@@ -2530,6 +2540,7 @@ class LiveTab(QWidget):
         if src is None:
             return
         before = src.calibration.offset_v if src.calibration.zero_v is not None else None
+        had_relaxed = src.calibration.relaxed_v is not None
         why = src.zero()
         self.note("force zero refused" if why else "force zeroed", why or "")
         if why:
@@ -2537,7 +2548,27 @@ class LiveTab(QWidget):
         else:
             cal = src.calibration
             moved = "" if before is None or not cal.has_slope else f" (moved {(cal.offset_v - before) * cal.n_per_v:+.1f} N from the last zero)"
-            self._force_msg = f"Zero set: {cal.offset_v:+.4f} V is now 0 N{moved}." + self._zero_quality_note(cal)
+            self._force_msg = (f"Zero set: {cal.offset_v:+.4f} V is now 0 N{moved}." + self._zero_quality_note(cal)
+                               + (" The relaxed level was cleared: take it again (X) with the participant relaxed in the strap." if had_relaxed else ""))
+        self.update_force_box()
+
+    def relax_force(self):
+        """The second zero level (0.22.0): the tension with the participant relaxed in the strap, for this position."""
+        src = self.force_source
+        if src is None:
+            return
+        why = src.relax(self.engine.relaxed_key())
+        self.note("force relaxed level refused" if why else "force relaxed level taken", why or "")
+        if why:
+            self._force_msg = why
+        else:
+            cal = src.calibration
+            n, se = cal.relaxed_n, cal.relaxed_se_v
+            where = f"{n:+.1f} N above the zero ({cal.relaxed_v:+.4f} V)" if n is not None else f"{cal.relaxed_v:+.4f} V"
+            self._force_msg = (f"Relaxed level set: {where}, good to about {se * 1000:.1f} mV." if se is not None else f"Relaxed level set: {where}.")
+            if n is not None and n < -2.0:
+                self._force_msg += (" That is BELOW the zero: was the zero taken with the strap pulled or the cell loaded? Zero again (Z) with the "
+                                    "strap hanging free, then take the relaxed level.")
         self.update_force_box()
 
     @staticmethod
@@ -2580,6 +2611,7 @@ class LiveTab(QWidget):
         self.btn_force.setEnabled(not recording)
         self.btn_force.setText("Disconnect" if connected else "Connect")
         self.btn_force_zero.setEnabled(connected and not recording)
+        self.btn_force_relax.setEnabled(connected and not recording)
         self.btn_force_cal.setEnabled(connected and not recording)
         if not connected and self.chk_auto_mvic.isChecked() and not recording:
             self.chk_auto_mvic.setChecked(False)                  # the automatic markers need the force
@@ -2601,11 +2633,18 @@ class LiveTab(QWidget):
                 info, warn = src.error, True
             else:
                 v, n = src.latest_volts(), src.latest_newtons()
-                self.force_label.setText("Force: waiting..." if v is None else f"Force {n:.1f} N   ({v:+.3f} V)" if n is not None
+                rel = self.engine.relaxed_here()                # the second zero level, when it was taken for this position
+                above = f"\nabove relaxed {n - rel.relaxed_n:.1f} N" if rel is not None and rel.relaxed_n is not None and n is not None else ""
+                self.force_label.setText("Force: waiting..." if v is None else f"Force {n:.1f} N   ({v:+.3f} V)" + above if n is not None
                                          else f"Force {v:+.4f} V")
                 cal = src.calibration
                 if cal.calibrated:
                     info = f"{cal.n_per_v:.2f} N per volt ({cal.method}), zero {cal.offset_v:+.4f} V set {cal.when[11:16]}."
+                    if rel is not None and rel.relaxed_n is not None:
+                        info += f"\nRelaxed level {rel.relaxed_n:+.1f} N above the zero, set {rel.relaxed_when[11:16]} for this position."
+                    elif cal.relaxed_v is not None:
+                        info += (f"\nThe relaxed level ({cal.relaxed_when[11:16]}) is for another position or participant ({cal.relaxed_for}): "
+                                 "take it again (X) for this one.")
                     reg = find_regression(cal.regression_id)
                     if reg is not None:
                         sd100 = 2 * float(reg.sd_newton(100 * GRAVITY))
@@ -2616,7 +2655,8 @@ class LiveTab(QWidget):
                     info = "No load cell calibration found: values are volts. Zero with nothing on the sensor, then calibrate with a known weight."
                 if self._force_msg:
                     info = self._force_msg + "\n" + info
-                    warn = not self._force_msg.startswith(("Zero set", "Calibrated"))        # a done zero is news, not a warning
+                    warn = (not self._force_msg.startswith(("Zero set", "Calibrated", "Relaxed level set"))        # a done zero is news, not a warning
+                            or "BELOW" in self._force_msg)
         if info != self.force_info.text():
             self.force_info.setText(info)
         self.force_info.setStyleSheet("color: #d97706; font-weight: bold;" if warn else "")

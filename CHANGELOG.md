@@ -3,6 +3,36 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.22.0 - 2026-10-28
+
+### A second zero level: the participant relaxed in the strap
+- **Why:** asked on 2026-10-28 for "an extra level of zeroing the force measuring for accounting for relaxing tension". The first zero is the
+  strap with nothing on it. With the participant in the position and relaxed the strap is already under some tension (the weight of the
+  leg, the tone of the muscles), so "0 N" and "relaxed" are not the same level. Until now that tension was only found afterwards from the
+  recording (the median 3.0-0.5 s before the push, 0.20.0), which fails when the strap was loaded before the push (P11 12:41) and which the
+  operator could not see during the session.
+- **What:** new button *Zero 2: relaxed in the strap (X)* under *Zero (Z)* in the Force box. It takes 2 s of signal (`RELAXED_SECONDS`;
+  the same noise limit as the zero, the same 10 mV drift limit, so it is refused while the strap or the leg is still settling) and keeps it
+  beside the zero (`ForceCalibration.relaxed_v`, `relaxed_n`, `relaxed_se_v`, `relaxed_when`, `relaxed_for`). It needs the zero first. It
+  belongs to one participant, test and target (`Engine.relaxed_key`): in another position it is not used and the Force box says so. A new
+  Zero clears it (the set-up changed). Not remembered between sessions, like the zero.
+- **Live:** the Force read-out gets a second line *above relaxed X N*, and the picture header (also in the saved overlay video) reads
+  *Force 312 N (+0.593 V) above relaxed 140 N* when a relaxed level is valid for the position.
+- **Saved:** every `meta.json` has `force.relaxed` (volts, newtons above the zero, noise, taken, taken_for, `this_trial`, meaning) and the
+  relaxed fields inside `force_setup.calibration`. **The newtons of the trial, `force_peak`, the volts and everything else are unchanged:
+  the newtons stay the total force from the first zero** (the AnyBody rule of 2026-10-26: one of rest or modelled gravity, never both).
+- **Review and exports:** the force text gets *relaxed (Zero 2)* and *peak above relaxed* beside *rest before*, and says whether the rest in
+  the recording was higher or lower than the relaxed level taken before (the tension that eased or built up). New columns at the end of the
+  per-trial `_summary.csv`: `force_relaxed_level`, `force_peak_above_relaxed`; in the session sheet: `force_relaxed`, `force_peak_above_relaxed`
+  (blank when none was taken for the trial). Newtons are worked out from the saved volts with the zero now in force, so a zero recalculated in
+  Review carries the relaxed level along. Trials from before 0.22.0 are read as before.
+- **Not changed:** the automatic rest (`force_rest`, `force_peak_above_rest`), the 10 % check (total peak), the auto MVIC threshold, the
+  SOP/protocol text (when to press Zero 2 is a group decision: the proposal is after the participant is in position and before Record).
+- **Tests:** `tests/test_force_relaxed.py` (14 tests: the reading, refused without a zero or while drifting, cleared by a new zero, a real
+  recording through the engine, another position not used, Review and the sheet, and the real window with the X key). The full suite
+  found one thing: the first label of the button (45 characters) was longer than the panel allows (`test_no_label_in_the_panel_is_too_long_for_it`,
+  42), so it was shortened.
+
 ## 0.21.0 - 2026-10-27
 
 ### Recording first: the window does less while recording, so more pictures are tracked and saved

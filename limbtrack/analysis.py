@@ -284,7 +284,7 @@ def trial_checks(tr, t0=None, t1=None):
 SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "test_key", "target_deg", "software_version", "window",
                    "window_start_s", "window_end_s",
                    "pictures_per_s", "force_unit", "force_peak", "force_t_peak_s", "force_plateau", "force_rest", "force_rest_s",
-                   "force_peak_above_rest", "force_onset_s",
+                   "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
                    "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
                    "checks_to_look_at", "repeatability_pct_same_position", "third_trial_needed",
@@ -313,6 +313,7 @@ def session_row(tr):
     if fs is not None:
         row.update(force_unit=fs["unit"], force_peak=fs["peak"], force_t_peak_s=fs["t_peak_s"], force_plateau=fs["plateau_mean"],
                    force_rest=fs["rest_mean"], force_rest_s=fs["rest_seconds"], force_peak_above_rest=fs["peak_minus_rest"],
+                   force_relaxed=fs["relaxed"], force_peak_above_relaxed=fs["peak_minus_relaxed"],
                    angle_at_peak_force_deg=fs["main_angle_at_peak_deg"], hum_pct_of_peak=fs["mains_hum_pct_of_peak"])
         ft = force_timing(tr, *win)
         if ft is not None:

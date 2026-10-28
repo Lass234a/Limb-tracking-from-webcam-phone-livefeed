@@ -37,7 +37,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.21.0"
+SOFTWARE_VERSION = "0.22.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -161,6 +161,7 @@ class Engine:
         self._privacy_hits = {}      # dot -> frames in which it was near the crop edge or inside a mask while recording
         self.save_overlay = True     # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.recording_first = True  # while recording the window does less, so more pictures are tracked and saved (gui.py; 0.21.0)
+        self._relaxed_for_trial = False   # the force's relaxed level was taken for the position being recorded (set when a trial starts; 0.22.0)
         self.mirror = False          # flip the image left-right before anything else (applied by the video thread)
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._legs = {}              # participant code -> the tested leg, 'right' / 'left' (see the tested_leg property; 0.20.0)
@@ -697,6 +698,28 @@ class Engine:
         if f is None:
             f = self._filters[name] = MovingAverage(SMOOTHING_WINDOW_S)
         return f(raw, t)
+
+    # ------------------------------------------------- the relaxed force level (the second zero level; 0.22.0)
+    def relaxed_key(self):
+        """What a relaxed level is good for: this position of this participant. The tension in the strap differs with every position
+        (the leg hangs differently), so a level taken in another position is not used."""
+        test, target, who = self.reference_position()
+        return f"{who or '-'} | {test} | {'-' if target is None else format(target, 'g')}"
+
+    def relaxed_here(self):
+        """The force calibration when it holds a relaxed level taken for the present position, else None."""
+        cal = self.force.calibration if self.force is not None else None
+        return cal if cal is not None and cal.relaxed_v is not None and cal.relaxed_for == self.relaxed_key() else None
+
+    def _relaxed_meta(self):
+        cal = self.force.calibration
+        if cal.relaxed_v is None:
+            return None
+        return {"volts": cal.relaxed_v, "newtons_above_zero": cal.relaxed_n, "noise_v": cal.relaxed_noise_v, "se_v": cal.relaxed_se_v,
+                "taken": cal.relaxed_when, "taken_for": cal.relaxed_for, "this_trial": bool(self._relaxed_for_trial),
+                "meaning": "the signal with the participant relaxed in the strap before the trial, on top of the zero (the strap with nothing on "
+                           "it). Used only when this_trial is true (taken for this participant, test and target). The newtons of the trial are "
+                           "NOT changed by it: they are the total force from the zero; 'above relaxed' is a second number beside them."}
 
     # ------------------------------------------------- reference readings (a hand instrument, typed in; 0.16.0)
     def reference_keys(self):
@@ -1301,7 +1324,9 @@ class Engine:
         if n is None:
             return [f"Force {v:+.3f} V (press Zero for newtons)" if f.calibration.has_slope else f"Force {v:+.3f} V (not calibrated)"]
         peak = self._force_stats["peak"] if self._force_active and self._force_stats and not math.isnan(self._force_stats["peak"]) else None
-        return [f"Force {n:.0f} N ({v:+.3f} V)" + (f"   peak {peak:.0f} N" if peak is not None else "")]
+        rel = self.relaxed_here()
+        above = f"   above relaxed {n - rel.relaxed_n:.0f} N" if rel is not None and rel.relaxed_n is not None else ""
+        return [f"Force {n:.0f} N ({v:+.3f} V)" + above + (f"   peak {peak:.0f} N" if peak is not None else "")]
 
     def _take_force(self, t):
         """Hand the force samples that came in since the last picture to the recording (all remaining ones when t is None).
@@ -1365,6 +1390,7 @@ class Engine:
                      "over the last 20 s, so the alignment is good to a few milliseconds (the smallest USB and driver delay). The MVIC "
                      "start marker is an independent check.",
             "units": "volts are always saved; newtons need a calibration (zero and a known load), otherwise they are blank",
+            "relaxed": self._relaxed_meta(),
         })
         return out
 
@@ -1695,6 +1721,7 @@ class Engine:
             self._arm_auto_mvic()
             self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
+            self._relaxed_for_trial = self.relaxed_here() is not None     # (needs rec_info: the key reads the trial's own participant)
             if self.reference.has_data() and self.reference_for_this_position():
                 self.reference.claim(self.reference_position(), bind=True)   # from now on this participant's (also if typed before a code)
             if self._pelvis_owner is None and (self.tape_pelvic_width_mm is not None or self.wall_posture):

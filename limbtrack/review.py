@@ -239,6 +239,22 @@ class Trial:
         rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
         return float(np.percentile(smooth_signal(self.force_v, rate, 0.1), 2)), "the resting level of the recording (no zero was taken)"
 
+    def relaxed_level(self, unit):
+        """(level in `unit`, note): the relaxed level the operator took with Zero 2 (0.22.0), as the force reads it, or (NaN, note) when
+        there is none for this trial. Newtons are worked out from the saved volts with the zero and slope now in force_cal, so a zero
+        recalculated in Review carries it along. A level taken for another position or participant is not used."""
+        r = (self.meta.get("force") or {}).get("relaxed")
+        if not r or r.get("volts") is None:
+            return math.nan, ""
+        if not r.get("this_trial"):
+            return math.nan, f"A relaxed level was taken for another position ({r.get('taken_for')}), so it is not used for this trial."
+        if unit == "V":
+            return float(r["volts"]), ""
+        c = self.force_cal or {}
+        if not c.get("n_per_v"):
+            return math.nan, ""
+        return (float(r["volts"]) - float(c.get("offset_v") or 0.0)) * float(c["n_per_v"]), ""
+
     def has_force(self):
         return self.force_t is not None and len(self.force_t) > 0
 
@@ -373,6 +389,7 @@ class Trial:
                 i = int(np.argmin(np.abs(self.t - (tw[k] + picture_delay))))
                 vals = self.deg[main.name][i:i + 1]
             angle = float(np.nanmean(vals)) if vals.size and not np.all(np.isnan(vals)) else math.nan
+        relaxed, relaxed_note = self.relaxed_level(unit)
         hum = self.force_hum()
         vpeak = float(np.nanmax(yv[m]))
         vrest = float(np.nanmean(yv[rm])) if rm.any() else float(np.nanpercentile(yv, 10))
@@ -380,6 +397,9 @@ class Trial:
         return {"unit": unit, "peak": float(yw[k]), "t_peak_s": float(tw[k]), "plateau_mean": plateau, "rest_mean": rest,
                 "rest_seconds": rest_s, "rest_basis": rest_basis, "rest_note": rest_note,
                 "peak_minus_rest": float(yw[k]) - rest if not math.isnan(rest) else math.nan,
+                "relaxed": relaxed, "relaxed_note": relaxed_note,                      # Zero 2 (0.22.0): the tension taken with the participant relaxed
+                "peak_minus_relaxed": float(yw[k]) - relaxed if not math.isnan(relaxed) else math.nan,
+                "rest_minus_relaxed": rest - relaxed if not (math.isnan(rest) or math.isnan(relaxed)) else math.nan,
                 "raw_peak": float(np.nanmax(raw[m])), "smoothing_s": self.force_smooth_s,
                 "mains_hum_v": hum, "mains_hum_pct_of_peak": hum_pct,
                 "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle, "picture_delay_s": picture_delay,
@@ -1299,6 +1319,14 @@ class ReviewTab(QWidget):
                  f"                      ({fs['rest_basis']}, {fs['rest_seconds']:.1f} s of force)"]
         if fs["rest_note"]:
             lines.append("  " + fs["rest_note"])
+        if not math.isnan(fs["relaxed"]):
+            ease = fs["rest_minus_relaxed"]
+            lines += [f"  relaxed (Zero 2)    {fmt(fs['relaxed'], d)}      peak above relaxed {fmt(fs['peak_minus_relaxed'], d)}",
+                      "                      (taken with the participant relaxed in the strap, before the trial)"
+                      + ("" if math.isnan(ease) else f"; the rest before the push was {abs(ease):.{d}f} {u} "
+                         f"{'higher' if ease > 0 else 'lower'} than that")]
+        elif fs["relaxed_note"]:
+            lines.append("  " + fs["relaxed_note"])
         if fs["smoothing_s"] > 0:
             lines.append(f"  raw single-sample max {fmt(fs['raw_peak'], d)}   (a noisy single sample overstates the peak)")
         lines += ["", f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg"
@@ -1476,7 +1504,7 @@ class ReviewTab(QWidget):
             fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
             fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg",
                       "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note", "force_smoothing_ms", "force_mains_hum_pct_of_peak",
-                      "force_raw_peak", "force_regression_id", "force_peak_95pct_n"]
+                      "force_raw_peak", "force_regression_id", "force_peak_95pct_n", "force_relaxed_level", "force_peak_above_relaxed"]
             cal = self.trial.force_cal or {}
             reg = self.trial.regression
             peak_ci = (COVERAGE * float(reg.sd_newton(fs["peak"])) if reg is not None and fs is not None and fs["unit"] == "N"
@@ -1484,7 +1512,7 @@ class ReviewTab(QWidget):
             fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"],
                       fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note,
                       fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"],
-                      reg.id if reg is not None else "", peak_ci]
+                      reg.id if reg is not None else "", peak_ci, fs["relaxed"], fs["peak_minus_relaxed"]]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))

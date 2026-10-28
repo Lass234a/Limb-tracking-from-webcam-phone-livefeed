@@ -46,6 +46,8 @@ MAX_DRIFT_V = 0.01                # the first and the second half of a reading m
                                   # bias the zero (a person leaning on the rig, a settling strap), and averaging does not remove it
 HUM_NOTE_V = 0.01                 # a zero taken with at least this much 50 Hz hum is reported with a note about the charger and outlet
 ZERO_SECONDS = 1.0                # the zero is the mean of this much signal (a multiple of 20 ms, so the 50 Hz hum averages out exactly)
+RELAXED_SECONDS = 2.0             # the relaxed level (0.22.0) is the mean of this much: a strap still settling or a leg still relaxing drifts
+                                  # more than MAX_DRIFT_V over 2 s and is refused, so the reading is only taken once the tension has settled
 
 
 
@@ -100,6 +102,14 @@ class ForceCalibration:
     zero_noise_v: float = None         # spread of the signal (mains hum taken out) in the window the zero was taken from
     zero_hum_v: float = None           # 50 Hz hum amplitude in that window (it averages out of the zero)
     zero_se_v: float = None            # how well the zero is known: noise / sqrt(samples), in volts
+    # 0.22.0: the second zero level. The first zero is the strap with nothing on it (0 N). The relaxed level is the signal with the participant
+    # in the position and relaxed, the strap taut: the tension that is there before any push. It is kept apart from the zero: the newtons
+    # stay the total force from the first zero, and "above relaxed" is a second number beside them. A new zero clears it (the set-up changed).
+    relaxed_v: float = None            # volts at the relaxed level (None: not taken)
+    relaxed_noise_v: float = None      # spread of the signal (mains hum taken out) in the window it was taken from
+    relaxed_se_v: float = None         # how well the relaxed level is known: noise / sqrt(samples), in volts
+    relaxed_when: str = ""
+    relaxed_for: str = ""              # the position it was taken for (participant | test | target): the tension differs with every position
 
     @classmethod
     def load_cell(cls, regression=None):
@@ -130,6 +140,24 @@ class ForceCalibration:
         self.zero_se_v = float(noise_v) / math.sqrt(samples) if noise_v is not None and samples else None
         self.when = datetime.now().isoformat(timespec="seconds")
         self.method = "zero only" if not self.has_slope else self.method
+        self.clear_relaxed()                                     # a relaxed level belongs to the zero it was taken after
+
+    def set_relaxed(self, volts, noise_v=None, samples=None, for_what=""):
+        """The signal with the participant relaxed in the strap (the zero must have been taken before)."""
+        self.relaxed_v = float(volts)
+        self.relaxed_noise_v = None if noise_v is None else float(noise_v)
+        self.relaxed_se_v = float(noise_v) / math.sqrt(samples) if noise_v is not None and samples else None
+        self.relaxed_when = datetime.now().isoformat(timespec="seconds")
+        self.relaxed_for = for_what
+
+    def clear_relaxed(self):
+        self.relaxed_v = self.relaxed_noise_v = self.relaxed_se_v = None
+        self.relaxed_when = self.relaxed_for = ""
+
+    @property
+    def relaxed_n(self):
+        """The relaxed tension in newtons above the zero, or None when it is not taken or the force is not calibrated."""
+        return float(self.to_newton(self.relaxed_v)) if self.relaxed_v is not None and self.calibrated else None
 
     @property
     def zero_se_n(self):
@@ -353,7 +381,7 @@ class ForceSource:
         _, v = self.samples_between(now - seconds, now + 1.0)
         return float(v.std()) if v.size > 1 else None
 
-    def _steady_mean(self, seconds):
+    def _steady_mean(self, seconds, hint="Keep the sensor still and the load constant while it measures."):
         """(mean volts, None) of the last `seconds`, or (None, reason) when there is too little or the signal is not steady.
 
         Steady means: no drift (the two halves agree within MAX_DRIFT_V) and little noise (the spread without the 50 Hz hum is within
@@ -375,10 +403,10 @@ class ForceSource:
         self.last_reading = {"mean_v": float(v.mean()), "noise_v": noise, "hum_v": hum, "drift_v": drift, "samples": int(v.size)}
         if abs(drift) > MAX_DRIFT_V:
             return None, (f"The signal is not steady: it moved {drift * 1000:+.0f} mV during the {seconds:g} s (limit {MAX_DRIFT_V * 1000:.0f} mV). "
-                          f"Keep the sensor still and the load constant while it measures.")
+                          + hint)
         if noise > MAX_STEADY_SD_V:
             return None, (f"The signal is not steady enough: it wobbles {noise * 1000:.0f} mV over {seconds:g} s (limit {MAX_STEADY_SD_V * 1000:.0f} mV, "
-                          f"the 50 Hz mains hum not counted). Keep the sensor still and the load constant while it measures.")
+                          f"the 50 Hz mains hum not counted). " + hint)
         return float(v.mean()), None
 
     def zero(self, seconds=ZERO_SECONDS):
@@ -388,6 +416,18 @@ class ForceSource:
             return why
         r = self.last_reading
         self.calibration.set_zero(v, noise_v=r["noise_v"], hum_v=r["hum_v"], samples=r["samples"])
+        return None
+
+    def relax(self, for_what="", seconds=RELAXED_SECONDS):
+        """Take the present signal as the 'relaxed in the strap' level (0.22.0): the participant in the position, relaxed, the strap taut,
+        not pushing. Needs the zero first. Returns None if done, else the reason it was not (nothing is changed then)."""
+        if self.calibration.zero_v is None:
+            return "Press Zero (Z) first, with no pull on the strap. The relaxed level is measured on top of that zero."
+        v, why = self._steady_mean(seconds, hint="Ask the participant to stay relaxed and still, with the strap taut, and wait a moment.")
+        if why:
+            return why
+        r = self.last_reading
+        self.calibration.set_relaxed(v, noise_v=r["noise_v"], samples=r["samples"], for_what=for_what)
         return None
 
     def calibrate(self, mass_kg, seconds=2.0):
