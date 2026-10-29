@@ -21,10 +21,13 @@ track unless the saved track was wrong (look at the video yourself in Review for
 """
 import argparse
 import csv
+import hashlib
 import importlib.util
 import json
+import os
 import statistics
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
@@ -147,12 +150,77 @@ def compare(track, rows, i0, dot, tol, masks):
             "p95_dist_px": round(float(np.percentile(dist, 95)), 3) if dist else None}
 
 
+def code_signature(candidate):
+    """Changes whenever the tracker code (or this script) changes, so cached numbers are never reused for different code."""
+    h = hashlib.sha1()
+    for p in sorted((HERE.parent / "limbtrack").glob("*.py")) + [Path(__file__)] + ([Path(candidate)] if candidate else []):
+        h.update(p.name.encode())
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def trial_signature(meta_path, meta, tol, code_sig):
+    """Changes whenever the trial's files, the tolerance or the code change."""
+    folder = Path(meta_path).parent
+    parts = [code_sig, repr(tol)]
+    for p in [Path(meta_path)] + [folder / v for v in (meta.get("files") or {}).values()]:
+        try:
+            st = p.stat()
+            parts.append(f"{st.st_size}:{st.st_mtime_ns}")
+        except OSError:
+            parts.append("missing")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def process_trial(job):
+    """One trial through every version. Runs in a worker process. Returns (label, report rows, printed line)."""
+    label, mp, i0, candidate, tol_factor = job
+    versions = {"current": base_tracker}
+    if candidate:
+        versions["candidate"] = load_tracker(candidate)
+    meta, rows, _ = read_trial(mp)
+    info = {"trial": label, "test": meta.get("test"), "target": meta.get("target_deg", meta.get("target")),
+            "software": meta.get("software_version"), "frames": len(rows)}
+    pv = meta.get("privacy") or {}
+    crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
+    full = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
+    masks = [tuple(m) for m in pv.get("masks_xywh") or []]
+    dots = dots_of(rows)
+    video = Path(mp).parent / meta["files"]["raw.mp4"]
+    report, tracks = [], {}
+    for vname, mod in versions.items():
+        tracks[vname], failed, diam = replay(mod, meta, rows, video, dots, i0, crop, full, masks)
+        for d in dots:
+            res = compare(tracks[vname][d], rows, i0, d, tol_factor * diam[d], masks)
+            report.append({**info, "version": vname, "dot": d, "marked_at_frame": i0, "init_failed": d in failed, **res})
+    if "candidate" in versions:             # the two versions against each other
+        for d in dots:
+            a, b = tracks["current"][d], tracks["candidate"][d]
+            moved = sum(1 for p, q in zip(a, b) if not p[2] and not q[2] and np.hypot(p[0] - q[0], p[1] - q[1]) > 2.0)
+            report.append({**info, "version": "current_vs_candidate", "dot": d, "marked_at_frame": i0,
+                           "differs": moved, "replay_lost_saved_ok": sum(1 for p, q in zip(a, b) if not p[2] and q[2]),
+                           "saved_lost_replay_found": sum(1 for p, q in zip(a, b) if p[2] and not q[2])})
+    return label, report, f"{label} {info['test']} {len(rows)} frames, {len(dots)} dots done"
+
+
+def read_key(path):
+    """The T-numbers handed out by earlier runs: a trial keeps its number when more recordings are added."""
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            return {r["meta_file"]: r["trial"] for r in csv.DictReader(fh)}
+    except OSError:
+        return {}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("recordings", nargs="?", default=str(HERE.parent / "recordings"))
     ap.add_argument("--candidate", help="path to another version of tracker.py to compare with the one in this folder")
     ap.add_argument("--out", default="replay_report.csv", help="the numbers (safe to share)")
     ap.add_argument("--key", default="replay_key.csv", help="which T-number is which trial (keep private)")
+    ap.add_argument("--cache", default="replay_cache.json", help="numbers of trials already replayed (same code, same files: not run again)")
+    ap.add_argument("--no-cache", action="store_true", help="replay every trial again")
+    ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="trials replayed at the same time (default: processors - 1)")
     ap.add_argument("--tol", type=float, default=0.75, help="positions within this x the dot's diameter count as the same (default 0.75)")
     ap.add_argument("--max-trials", type=int, default=0, help="stop after this many trials (0 = all)")
     args = ap.parse_args()
@@ -161,52 +229,67 @@ def main():
     if not metas:
         print(f"No *_meta.json found under {args.recordings}")
         return 1
-    versions = {"current": base_tracker}
-    if args.candidate:
-        versions["candidate"] = load_tracker(args.candidate)
-    report, key, tno = [], [], 0
+
+    # Pass 1 (quick): which trials can be replayed, and what T-number each has. Old numbers are kept, new ones come after them.
+    old = read_key(args.key)
+    used = {int(v[1:]) for v in old.values() if v[1:].isdigit()}
+    nxt = max(used, default=0) + 1
+    code_sig = code_signature(args.candidate)
+    plan = []                               # (label, meta path, i0, signature)
     for mp in metas:
-        if args.max_trials and tno >= args.max_trials:
+        if args.max_trials and len(plan) >= args.max_trials:
             break
         meta, rows, why = read_trial(mp)
-        label = f"T{tno + 1:02d}"
-        info = {"trial": label, "test": meta.get("test"), "target": meta.get("target_deg", meta.get("target")),
-                "software": meta.get("software_version"), "frames": len(rows) if rows else 0}
         if rows is None:
-            print(f"{label} skipped: {why}")
+            print(f"skipped one trial: {why}")
             continue
-        pv = meta.get("privacy") or {}
-        crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
-        full = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
-        masks = [tuple(m) for m in pv.get("masks_xywh") or []]
-        dots = dots_of(rows)
-        i0 = start_frame(rows, dots)
+        i0 = start_frame(rows, dots_of(rows))
         if i0 is None:
-            print(f"{label} skipped: no frame where every dot is marked")
+            print("skipped one trial: no frame where every dot is marked")
             continue
-        tno += 1
-        key.append({"trial": label, "meta_file": str(mp)})
-        folder = mp.parent
-        video = folder / meta["files"]["raw.mp4"]
-        tracks = {}
-        for vname, mod in versions.items():
-            tracks[vname], failed, diam = replay(mod, meta, rows, video, dots, i0, crop, full, masks)
-            for d in dots:
-                res = compare(tracks[vname][d], rows, i0, d, args.tol * diam[d], masks)
-                report.append({**info, "version": vname, "dot": d, "marked_at_frame": i0, "init_failed": d in failed, **res})
-        if "candidate" in versions:         # the two versions against each other
-            for d in dots:
-                a, b = tracks["current"][d], tracks["candidate"][d]
-                moved = sum(1 for p, q in zip(a, b) if not p[2] and not q[2] and np.hypot(p[0] - q[0], p[1] - q[1]) > 2.0)
-                report.append({**info, "version": "current_vs_candidate", "dot": d, "marked_at_frame": i0,
-                               "differs": moved, "replay_lost_saved_ok": sum(1 for p, q in zip(a, b) if not p[2] and q[2]),
-                               "saved_lost_replay_found": sum(1 for p, q in zip(a, b) if p[2] and not q[2])})
-        print(f"{label} {info['test']} {len(rows)} frames, {len(dots)} dots done")
+        label = old.get(str(mp))
+        if label is None:
+            label = f"T{nxt:02d}"
+            nxt += 1
+        plan.append((label, mp, i0, trial_signature(mp, meta, args.tol, code_sig)))
+
+    cache = {}
+    if not args.no_cache:
+        try:
+            cache = json.loads(Path(args.cache).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+    results, todo = {}, []
+    for label, mp, i0, sig in plan:
+        hit = cache.get(label)
+        if hit and hit.get("sig") == sig:
+            results[label] = hit["report"]
+        else:
+            todo.append((label, mp, i0, args.candidate, args.tol))
+    print(f"{len(plan)} trials: {len(results)} unchanged (from cache), {len(todo)} to replay"
+          f"{f' on {min(args.jobs, len(todo))} processes' if len(todo) > 1 else ''}")
+
+    sigs = {label: sig for label, _, _, sig in plan}
+    def done(label, report, line):
+        results[label] = report
+        cache[label] = {"sig": sigs[label], "report": report}
+        print(line, flush=True)
+    if args.jobs > 1 and len(todo) > 1:
+        with ProcessPoolExecutor(max_workers=min(args.jobs, len(todo))) as pool:
+            for fut in as_completed([pool.submit(process_trial, j) for j in todo]):
+                done(*fut.result())
+    else:
+        for j in todo:
+            done(*process_trial(j))
+
+    report = [r for label, _, _, _ in plan for r in results.get(label, [])]
     if not report:
         print("Nothing to compare.")
         return 1
-    cols = sorted({k for r in report for k in r}, key=lambda c: ["trial", "test", "target", "software", "frames", "version", "dot"].index(c)
-                  if c in ("trial", "test", "target", "software", "frames", "version", "dot") else 99)
+    if not args.no_cache:
+        Path(args.cache).write_text(json.dumps({l: cache[l] for l, *_ in plan}), encoding="utf-8")
+    first = ["trial", "test", "target", "software", "frames", "version", "dot"]
+    cols = sorted({k for r in report for k in r}, key=lambda c: (first.index(c) if c in first else 99, c))
     with open(args.out, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
@@ -214,9 +297,10 @@ def main():
     with open(args.key, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["trial", "meta_file"])
         w.writeheader()
-        w.writerows(key)
-    print(f"\nSummary per version (all dots, all trials):")
-    for vname in list(versions) + (["current_vs_candidate"] if "candidate" in versions else []):
+        w.writerows({"trial": label, "meta_file": str(mp)} for label, mp, _, _ in plan)
+    versions = ["current"] + (["candidate", "current_vs_candidate"] if args.candidate else [])
+    print("\nSummary per version (all dots, all trials):")
+    for vname in versions:
         rs = [r for r in report if r["version"] == vname]
         tot = {k: sum(int(r.get(k) or 0) for r in rs) for k in ("agree", "differs", "replay_lost_saved_ok", "saved_lost_replay_found")}
         print(f"  {vname:22s} {tot}")
