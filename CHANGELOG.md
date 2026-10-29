@@ -3,6 +3,28 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## Not yet a version - Auto dot colour read on the dot itself (TRK-03 follow-up)
+
+### Marking: the Auto colour is decided within 4 px of the click
+- **Why:** replaying the saved trials through the tracker (`tools/replay_compare.py`) showed dots that were marked on the wrong thing at the
+  first picture. Auto compared the strongest white-dot and black-dot filter response within 8 px of the click (`MARKING_PEAK_BOX_PX`). A
+  bright skin highlight or a dark edge a few pixels away could answer more strongly than the dot itself; the dot was then marked as white
+  (or black) and the tracker snapped to the wrong blob 6-15 px away, or failed to mark. P01/P02 T14 and T23 trochanter: white 203 against
+  black 198 within 8 px, but white 23 against black 198 right at the click.
+- **What changed:** `DotTracker.init_at` reads the two responses within `MARKING_KIND_BOX_PX` (4 px) of the click. When they are within
+  `MARKING_KIND_TIE` (10 %) of each other there, or neither reaches `MIN_CONTRAST`, the old rule (strongest within the marking box, a tie goes
+  to white) decides. An explicit white or black setting is not touched. Nothing after the marking changed: how a dot is followed, lost and
+  taken back is the same.
+- **Measured** by replaying the 43 older trials: dots at the marking picture that were more than 3 px off or not marked: 9 before, 6 now;
+  T06 trochanter, T14 trochanter, T15 epicondyle, T15 trochanter and T23 trochanter are marked on the dot (0.0-0.1 px). About 980 more
+  frames agree with the saved track and about 660 fewer frames lose a dot; no dot got worse. The 126 pilot trials (P01, P02, `dot_kind` black)
+  replay with identical numbers. `tests/test_marking.py` has two new tests (a bright speck beside a black dot, a dark speck beside a white
+  dot); both fail on the old rule. `golden_tracking.npz` is unchanged.
+- **Not tried:** on the real rig. **Not decided:** a version number (`SOFTWARE_VERSION` is still 0.26.0), and whether the marking should
+  also warn when white and black answer almost equally (within `MARKING_KIND_TIE`).
+- **Looked at and left out:** letting a lost dot be looked for at its segment length from a partner dot, or where its neighbours moved. On the
+  pilot trials both put a dot on the machine in the background (T22, T24, T86, T125); the replay and benchmark tools are in `tools/`.
+
 ## 0.26.0 - 2026-10-29
 
 ### Fixes and after-trial checks from the pilot sessions P01 and P02

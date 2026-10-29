@@ -192,8 +192,10 @@ class DotTracker:
             return float(near.max()) if near.size else 0.0
 
         if self.auto:
-            # Auto: whichever of white-dot / black-dot filtering responds more strongly near the click
-            # (a tie goes to white). Decided anew on every click and kept only if the marking succeeds.
+            # Auto: whichever of white-dot / black-dot filtering responds more strongly right at the click (within
+            # MARKING_KIND_BOX_PX). When the two are within MARKING_KIND_TIE of each other there, or neither reaches
+            # MIN_CONTRAST, whichever responds more strongly within the marking box (a tie goes to white).
+            # Decided anew on every click and kept only if the marking succeeds.
             enh_w, enh_b = self._enhance(roi, MARKING_KERNEL_DIAM, "white"), self._enhance(roi, MARKING_KERNEL_DIAM, "black")
             bk = MARKING_KIND_BOX_PX
 

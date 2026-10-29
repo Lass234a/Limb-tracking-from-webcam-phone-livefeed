@@ -4,6 +4,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import cv2  # noqa: E402
 import pytest  # noqa: E402
 
 from limbtrack.engine import Engine  # noqa: E402
@@ -37,6 +38,30 @@ def test_auto_picks_the_right_colour_for_a_click_near_the_dot(kind):
         assert t.init_at(gray, cx + 2, cy + 2)
         assert t.kind == kind, name
         assert abs(t.x - cx) < 0.6 and abs(t.y - cy) < 0.6, name
+
+
+def test_a_bright_highlight_beside_a_black_dot_does_not_make_auto_choose_white():
+    """Pilot P01/P02 replay (T14, T23 trochanter): a bright skin highlight 6-8 px from a black dot answered the white-dot filter more
+    strongly than the dot answered the black-dot filter, so Auto marked the dot as white and snapped 10-15 px away. The colour is read
+    on the dot itself (within MARKING_KIND_BOX_PX of the click)."""
+    cx, cy = PTS["trochanter"]
+    img = render(PTS, kind="black", seed=0, dot_gain=0.5)
+    cv2.circle(img, (int(round(cx)) + 7, int(round(cy)) - 6), 3, (255, 255, 255), -1)
+    t = DotTracker("trochanter", "auto")
+    assert t.init_at(to_gray(img), cx + 1, cy + 1) is True
+    assert t.kind == "black"
+    assert abs(t.x - cx) < 0.6 and abs(t.y - cy) < 0.6
+
+
+def test_a_dark_speck_beside_a_white_dot_does_not_make_auto_choose_black():
+    """The same the other way round: a dark speck 8 px from a white dot must not decide the colour."""
+    cx, cy = PTS["trochanter"]
+    img = render(PTS, kind="white", seed=0)
+    cv2.circle(img, (int(round(cx)) + 8, int(round(cy))), 3, (0, 0, 0), -1)
+    t = DotTracker("trochanter", "auto")
+    assert t.init_at(to_gray(img), cx + 1, cy + 1) is True
+    assert t.kind == "white"
+    assert abs(t.x - cx) < 0.6 and abs(t.y - cy) < 0.6
 
 
 def test_re_marking_decides_the_colour_again_in_auto_mode():
