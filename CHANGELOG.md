@@ -33,7 +33,7 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
   45 deg; the ASIS gives an arm 60+ px longer; `"asis"` switches the pivot), no ruler = no pull and the header says why, the extra dots change
   no angle, the recording (CSV, meta, a covered anchor leaves the pull blank), Review's `derived_tracks`, the torque from a hip centre and no
   stand-in. Brought up to date: `test_strap_dots.py`, `test_protocol_table2.py` (the frontal tests now offer the dots), `test_protocol_validation.py`
-  (+2 cases). Version 0.25.0.
+  (+2 cases). Version 0.25.0. Full suite on the pushed code: 1048 passed, 1 skipped, 0 failed (30 min).
 - **Not tried:** a real frontal trial with a strap and an anchor on a person (where the strap sits on the leg in the front view is not
   written in the SOP: 9.7 describes the sagittal tests); the torque of a frontal trial against a hand calculation; whether the ruler, which
   is at the depth of the ASIS in these tests, is also the right scale at the depth of the strap. The hip-centre constants are still unchecked
