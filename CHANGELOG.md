@@ -16,7 +16,9 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
   to white) decides. An explicit white or black setting is not touched. Nothing after the marking changed: how a dot is followed, lost and
   taken back is the same. The two new numbers are written into every `meta.json` under `tracker_settings.image_preparation`
   (`marking_kind_box_px`, `marking_kind_tie`), like every other tracking number; `tests/test_tracker_settings.py` checks them.
-- **Measured** by replaying the 43 older trials: dots at the marking picture that were more than 3 px off or not marked: 9 before, 6 now;
+- **Measured** by replaying the 43 older trials (`tools/replay_compare.py`, column `marking_offset_px`): of 243 dots, the ones marked more
+  than 3 px from the saved position at the first picture, or not marked at all: 12 before, 7 now (an earlier version of this text said "9
+  before, 6 now": that came from a check that sought the picture in the mp4 instead of reading it in order, which is not exact);
   T06 trochanter, T14 trochanter, T15 epicondyle, T15 trochanter and T23 trochanter are marked on the dot (0.0-0.1 px). About 980 more
   frames agree with the saved track and about 660 fewer frames lose a dot; no dot got worse. The 126 pilot trials (P01, P02, `dot_kind` black)
   replay with identical numbers. `tests/test_marking.py` has two new tests (a bright speck beside a black dot, a dark speck beside a white
