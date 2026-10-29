@@ -376,7 +376,10 @@ def test_only_what_the_test_takes_a_reading_for_is_accepted(tmp_path):
         eng.set_reference(instrument="ruler")
     with pytest.raises(ValueError):
         eng.set_reference(resolution_deg=0.0)
-    assert [k for k, _ in eng.reference_keys()] == ["knee", "hip", "ankle"]
+    assert [k for k, _ in eng.reference_keys()] == ["knee", "hip"]          # (0.24.0: no ankle in the knee test)
+    squat = Engine(TESTS, recordings_dir=tmp_path / "squat")
+    squat.set_test("belt_squat")                                              # the tests with the foot still take an ankle reading
+    assert [k for k, _ in squat.reference_keys()] == ["knee", "hip", "ankle"]
 
 
 def test_the_stamp_needs_angles_to_keep_and_no_break(tmp_path):

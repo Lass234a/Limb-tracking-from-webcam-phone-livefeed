@@ -261,9 +261,11 @@ average, one 50~Hz mains cycle, so hum is not counted as force; the highest sing
 \subsection{Resting force}\label{sec:rest}
 The \textbf{push} begins where the smoothed force was last within 10~\% of its rise above the low level before it (the 10th percentile
 of the force before it passed half of its peak). The \textbf{resting force} is the \emph{median of the force from 3.0 to 0.5~s before the
-push}. With less than 0.5~s of force before the push there is no resting force; with less than 2.5~s, or with a spread (SD) above 10~\% of
-the rise (the strap was loaded or moving), \lt{} says so after the trial and in Review. The angle at rest is taken from the same stretch.
-The participant therefore rests in the strap for at least 3~s after Record. Export columns: \code{force\_rest}, \code{force\_rest\_s} (seconds
+push}. With less than 0.5~s of force before the push there is no resting force; with a spread (SD) above 10~\% of the rise (the strap was
+loaded or moving), \lt{} says so after the trial and in Review. Since 0.24.0 a short rest is no longer reported: the resting force is taken
+\emph{before} the trial, with the participant relaxed in the strap in the position, by pressing Zero~2 (X); \lt{} reminds about it after every
+change of position (a reminder, not a stop; Section~\ref{sec:reminders}) \tbd{group: Zero 2 replaces the SOP's 3~s of rest after Record}.
+The angle at rest is taken from the same stretch. Export columns: \code{force\_rest}, \code{force\_rest\_s} (seconds
 of rest), \code{force\_peak\_above\_rest}. (Until 0.19.0 the resting force was the second before the window \emph{force above half of
 peak}, which holds about half of the ramp: on the trials of 2026-10-15 the peak above rest came out 6--16~\% too low.)
 
@@ -286,12 +288,30 @@ written to the session log (\code{session\_log.csv}):
 \begin{itemize}
 \item \textbf{No force rise:} the force moved less than 60~N between the MVIC markers (strap not on the load cell, amplifier off, cable out).
 \item \textbf{CHECK DOTS} / \textbf{CHECK LABELS} in some pictures (a tracker jumped, or two dots swapped labels).
-\item \textbf{Rest:} less than 3~s at rest before the push, or the force was not steady before it (Section~\ref{sec:rest}).
+\item \textbf{Rest:} the force was not steady before the push (Section~\ref{sec:rest}). A short rest is not reported any more.
 \item \textbf{10~\% check (SOP 10.6):} all saved trials of the same participant, test and target are compared. The total peak force is
   used (the export's \code{force\_peak}); the spread is $(\max-\min)/\text{mean}$. Two trials more than 10~\% apart: \emph{THIRD TRIAL
   NEEDED} (and \code{3rd!} in the plan). Three trials: judged on the closest two; none within 10~\%: note it in the deviation log. The
   peak above rest is shown beside it for information.
 \end{itemize}
+
+\section{Reminders instead of stops, and the dots of each test}\label{sec:reminders}
+Since 0.24.0 the steps run Camera, Force, Markers, Participant, Position, Privacy, Ruler, Dots, Lock, Record. After every change of
+position (and at the first look, for privacy) rows appear under the instruction line, each with the buttons that answer it:
+\begin{itemize}
+\item \textbf{Privacy:} \emph{No face} (key V), \emph{Mask}, \emph{Crop}; an amber banner across the live picture (never in a saved video).
+\item \textbf{Ruler:} \emph{Fine}, or \emph{Redo} (key C, also the \emph{Ruler (C)} button beside the position).
+\item \textbf{Resting force:} \emph{Zero 2} (key X), or \emph{Not here}.
+\end{itemize}
+They do not stop Record. What was still open when Record was pressed is written to the session log and to \code{meta.json}
+(\code{reminders\_open\_at\_start}); a trial recorded with the privacy not looked at again, the position not locked, a doubtful main angle or
+the force not zeroed says so with its warnings after it is saved. Still stopping a recording: no video, paused, a participant code that is not
+P01\dots, notes that could identify someone, a crop that does not fit the picture; and the quick questions \emph{same participant?} and
+\emph{which leg?}.
+
+\textbf{Dots of each test.} The foot (the 5th metatarsal base and head, and the ankle angle) is tracked only in the ankle tests and the belt
+squat \tbd{group: the foot and belt-squat analysis may move to post}; the knee and hip tests use the five dots iliac crest, trochanter,
+epicondyle, fibular head and malleolus. One word per test in \code{protocol.json} brings the foot back.
 
 \section{Recording, files and privacy}
 Each trial is saved in \code{recordings/<code>/} as \code{<code>\_<NN>\_<test>\_<target>deg\_T<n>\_<date>-<time>} plus the file
@@ -435,19 +455,20 @@ Step & Text \\
   from the strap dot to the anchor dot) in cm. Check that both dots are tracked before recording. Frontal tests: no moment arm; measure the
   ASIS-to-strap distance with a tape and write it on the session sheet. \\
 9.10 & Zero the load cell (Z) with the strap slack and the chain hanging in the test direction; zero again after any restart of \lt{}.
-  Then attach the strap. After Record, the participant rests relaxed in the strap for at least 3~s before TL gives the cue (the record
-  beep is the signal): \lt{} takes the resting force as the median force from 3.0 to 0.5~s before the push and says after the trial when
-  the rest was shorter or not steady. Both the total force and the force minus the resting force are exported; which one AnyBody gets
+  Then attach the strap. With the participant in position and relaxed in the strap, press Zero~2 (X): this is the resting force of the
+  position (\lt{} reminds about it after every change of position; it does not stop Record) \tbd{group: replaces the 3~s of rest after
+  Record}. \lt{} also finds the rest in the recording (the median force from 3.0 to 0.5~s before the push) and says after the trial when
+  the force was not steady. Both the total force and the force minus the resting force are exported; which one AnyBody gets
   follows Part~A, Section~\ref{sec:anybody}. \\
 9.11 & (unchanged; \lt{} does not require the tested joint to be within tolerance to lock, so a set-up a few degrees beyond the target
   can be locked). \\
 10.1 & DR checks that \emph{Mark the MVIC automatically from the force} is on and presses Record while the participant is at rest. \\
-10.2--10.3 & TL gives the verbal cue with \lt{}'s beeps: ``Ready'' after the record beep and 3~s of rest, ``build up'' (two rising beeps
+10.2--10.3 & TL gives the verbal cue with \lt{}'s beeps: ``Ready'' after the record beep \tbd{the 3~s of rest after Record is replaced by the resting force, Zero 2}, ``build up'' (two rising beeps
   follow when the ramp is seen), ``max, push, push, push'' from the long beep (a tick every second), ``and relax'' on the two falling beeps.
   TL watches for compensation (trunk lean, pelvic tilt, lifting off the support). \\
 10.4 & The recording stops by itself 2~s after the end marker. DR reads the record line and the message: \emph{no force rise} $\rightarrow$
   check chain, load cell and amplifier and repeat; \emph{CHECK DOTS} or \emph{CHECK LABELS} $\rightarrow$ mark the dot again (its number
-  key, or D for all) and repeat; \emph{not at rest for 3~s} $\rightarrow$ note it (repeat if the resting force is needed). A trial with lost
+  key, or D for all) and repeat; \emph{force not steady before the push} $\rightarrow$ note it (repeat if the resting force is needed). A trial with lost
   dots or a clear compensation is repeated. If the hold is outside $\pm$5\dg, this is noted, and the set-up is adjusted before the next
   trial. \\
 10.6 & After the second trial \lt{} gives the 10~\% check of the position (total peak force, spread over the mean of the two). \emph{THIRD
@@ -465,13 +486,15 @@ Step & Text \\
 Test order & Rows 12--15: Hip abduction, hip 0\dg: abduction 0\dg, 20\dg. Hip adduction, hip 0\dg: at abduction 0\dg, 20\dg{} (\lt{}
   shows the abduction angle). Rows 20--21: Belt squat: knee flexion 90\dg, 60\dg. Delete the TBD on the order (\code{protocol.json}
   follows it since 0.20.0) and on adduction 20 (20\dg{} abduction, decided 2026-10-26). \\
-Definitions & \emph{Resting force}: median force from 3.0 to 0.5~s before the push, with the participant relaxed in the strap.
+Definitions & \emph{Resting force}: the strap force with the participant relaxed in the position (Zero~2, taken before the trial) and, found in the
+  recording, the median force from 3.0 to 0.5~s before the push.
   \emph{Push}: where the force was last within 10~\% of its rise above the level before it. \emph{10~\% check}: spread of the peak forces
   of one position over their mean (SOP 10.6). \emph{Tested leg}: the dominant leg, chosen per participant in \lt{}. \emph{limbtrack}: the
   group's camera-based tracking program (\ltversion). \\
 Related documents & \lt{} \ltversion{} documentation: README.md, FEATURES.md, SETUP\_AND\_VALIDATION.md, PELVIS\_LANDMARK.md, and this
   document. \\
-Revision & v0.19, 2026-10-26: updated to \lt{} \ltversion: tested leg per participant, resting force 3.0--0.5~s before the push, 10~\%
+Revision & Text of 2026-10-29: resting force by Zero~2 instead of the 3~s of rest, reminders instead of stops, foot dots only in
+  the ankle tests (Section~\ref{sec:reminders}); the rest of this document still follows 0.20.0. v0.19, 2026-10-26: updated to \lt{} \ltversion: tested leg per participant, resting force 3.0--0.5~s before the push, 10~\%
   check after each trial, test order and adduction at abduction 0/20\dg{} in \code{protocol.json}, belt squat 90/60\dg{} (proposal
   accepted), settings checklist (Table~C1), zero versus resting force for AnyBody, Notes without names, new recordings folder, position
   and trial number in the file names. \\

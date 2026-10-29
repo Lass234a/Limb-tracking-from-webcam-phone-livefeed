@@ -16,7 +16,7 @@ TESTS = load_protocol(ROOT / "protocol.json")
 
 def locked_refs(tmp_path, smoothing):
     eng = Engine(TESTS, recordings_dir=tmp_path)
-    eng.set_test("knee_extension")
+    eng.set_test("belt_squat")                                                # (two neighbours: hip and ankle; the knee test has no foot since 0.24.0)
     eng.set_smoothing(smoothing)
     p = leg_points(hip_flex=90, knee_flex=70, ankle_df=5, pelvic_tilt=3)
     eng.process(render(p, seed=0, noise=6.0), 0.0)

@@ -23,7 +23,7 @@ from limbtrack.tracker import TrackerSet, to_gray  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
 THREE = ("trochanter", "epicondyle", "malleolus")          # the dots on your video
-OTHERS = ["iliac_crest", "fibular_head", "mt5_base", "mt5_head"]
+OTHERS = ["iliac_crest", "fibular_head"]            # (the foot dots of the screenshot are not in the knee test since 0.24.0)
 
 
 def engine(tmp_path, pts, only_three=True, facing="right"):

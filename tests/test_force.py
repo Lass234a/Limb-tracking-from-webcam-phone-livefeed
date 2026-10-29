@@ -241,7 +241,8 @@ def test_review_reports_the_peak_force_and_the_angle_at_the_peak(tmp_path):
     hold = tr.force_summary(float(first.min()), float(first.max()))
     assert hold["plateau_mean"] == pytest.approx(400.0, rel=0.03)
     # the resting force is taken from 3.0-0.5 s before the push (0.20.0); this short recording may have less than 0.5 s before it
-    assert hold["rest_mean"] < 300.0 if hold["rest_mean"] == hold["rest_mean"] else "not known" in hold["rest_note"]
+    rest = hold["rest_mean"]
+    assert rest != rest or rest < 300.0                    # (NaN: less than 0.5 s of force before the push; since 0.24.0 nothing is said about a short rest)
     assert tr.force_summary(100.0, 101.0) is None                                    # a window with no samples
 
 

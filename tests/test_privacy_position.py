@@ -1,6 +1,7 @@
 """Privacy at every change of position (0.23.0): the participant has moved, so the picture is looked at again before the next recording.
-The 'I looked' tick is cleared, the step list asks again, recording is refused until it has been looked at, and every trial says whether
-privacy was checked for ITS position (meta.json privacy.checked_for_this_position)."""
+The 'I looked' tick is cleared, the step list asks again, and every trial says whether privacy was checked for ITS position
+(meta.json privacy.checked_for_this_position). Since 0.24.0 this is a SOFT reminder: very visible (amber chip, a row with its buttons, a banner on
+the picture), but recording is not refused; the trial says that it was recorded while the question was open (tests/test_reminders.py)."""
 import json
 import math
 import os
@@ -82,7 +83,7 @@ def test_a_new_target_clears_the_look_and_asks_again(win):
     another_target(live)
     live.update_steps()
     assert live._priv_recheck and not live.chk_priv_ok.isChecked()
-    assert state(live) in ("todo", "next") and "recheck" in live.strip.chips["privacy"].text()
+    assert state(live) == "check" and "recheck" in live.strip.chips["privacy"].text()        # a soft reminder: amber, never 'the next step'
     assert "CHECK AGAIN" in live.accordion.sections["privacy"].summary and not live.btn_priv_again.isHidden()
     assert "position changed" in live._hint("privacy") and STEP_HINT["privacy"] not in live._hint("privacy")
     assert len(live.btn_priv_again.text()) <= 42                                      # (the panel's label rule)
@@ -93,7 +94,7 @@ def test_a_new_test_asks_again_too(win):
     live.chk_priv_ok.setChecked(True)
     live._pick(live.test_combo, other_test(live))
     live.update_steps()
-    assert live._priv_recheck and state(live) in ("todo", "next")
+    assert live._priv_recheck and state(live) == "check"
 
 
 def test_a_crop_that_was_drawn_does_not_count_for_the_next_position(win):
@@ -152,18 +153,6 @@ def test_a_position_change_that_the_engine_refuses_asks_nothing(win):
     live.update_steps()
     assert not live._priv_recheck and live.chk_priv_ok.isChecked()                       # (nothing moved: the look still stands)
 
-
-def test_recording_is_refused_until_the_picture_has_been_looked_at(win, monkeypatch):
-    live = win.live
-    warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
-    live.participant.setText("P01")
-    live.chk_priv_ok.setChecked(True)
-    another_target(live)
-    live.btn_rec.click()
-    assert warnings and "position changed" in warnings[-1] and "Privacy checked at this position" in warnings[-1]
-    assert win.engine.rec is None and not live.btn_rec.isChecked()
-    assert live.accordion.current() == "privacy"                                         # the button to press is in front of you
 
 
 def test_a_restored_session_asks_nothing(win):
@@ -242,6 +231,24 @@ def test_a_trial_says_that_privacy_was_checked_for_its_position(real):
     live.btn_rec.click()
     meta = json.loads(next((tmp / "recordings").rglob("*_meta.json")).read_text())
     assert meta["privacy"]["checked_for_this_position"] is True and meta["privacy"]["checked"]["how"].startswith("looked")
+
+
+def test_recording_is_not_refused_when_the_picture_was_not_looked_at_again_but_the_trial_says_so(real):
+    """0.24.0: soft. (Until 0.23.0 the position change refused Record until a button was pressed.)"""
+    window, live, warnings, pump, tmp = real
+    live.chk_priv_ok.setChecked(True)
+    another_target(live)
+    assert live._priv_recheck
+    live.btn_rec.click()
+    assert window.engine.rec is not None and not warnings, warnings                       # it recorded; nothing popped up to stop it
+    assert pump(lambda: window.engine.rec.frames > 5)
+    live.btn_rec.click()
+    meta = json.loads(next((tmp / "recordings").rglob("*_meta.json")).read_text())
+    assert meta["privacy"]["checked_for_this_position"] is False                         # the look was for the previous position
+    assert any("not looked at again" in t for t in meta["reminders_open_at_start"])
+    assert any("Recorded while this was open" in w and "Privacy" in w for w in live._last_trial_warnings)    # said again once saved
+    log = (tmp / "recordings" / "session_log.csv").read_text(encoding="utf-8")
+    assert "recording started with reminders open" in log
 
 
 def test_a_trial_that_was_never_looked_at_says_so(real):

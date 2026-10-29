@@ -70,20 +70,21 @@ def test_only_left_and_right_repeat_while_held(setup):
         assert keys[QKeySequence(name).toString()] is False, name
 
 
-def test_record_asks_when_the_main_angle_cannot_be_measured(setup, monkeypatch):
+def test_record_does_not_ask_when_the_main_angle_cannot_be_measured_but_says_so_with_the_trial(setup, monkeypatch):
+    """P20 (2026-10-22): a plantarflexion trial was recorded with a foot dot lost and has no ankle angle. Until 0.23.0 Record asked Yes/No;
+    since 0.24.0 it records, writes the problem to meta.json and the session log, and repeats it with the trial's warnings."""
     app, win, asked, answer, pump, start_and_mark = setup
     start_and_mark()
     live = win.live
     live.btn_lock.click()
-    monkeypatch.setattr(win.engine, "main_angle_problem", lambda: "The Knee flexion cannot be measured right now: the lateral malleolus dot is not visible.")
-    answer["value"] = QMessageBox.No
+    problem = "The Knee flexion cannot be measured right now: the lateral malleolus dot is not visible."
+    monkeypatch.setattr(win.engine, "main_angle_problem", lambda: problem)
     live.btn_rec.click()
-    assert win.engine.rec is None and not live.btn_rec.isChecked()
-    assert asked and asked[-1][0] == "Main angle" and "Record anyway?" in asked[-1][1]
-    answer["value"] = QMessageBox.Yes
+    assert win.engine.rec is not None and not asked                      # no question, and the recording started
+    assert any(problem in t for t in win.engine.reminders_open)
+    assert pump(lambda: win.engine.rec is not None and win.engine.rec.frames > 5)
     live.btn_rec.click()
-    assert win.engine.rec is not None
-    live.btn_rec.click()
+    assert any(w.startswith("Recorded while this was open: " + problem) for w in live._last_trial_warnings)
 
 
 def test_no_question_when_the_main_angle_is_fine(setup):

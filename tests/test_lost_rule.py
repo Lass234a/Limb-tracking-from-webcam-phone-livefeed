@@ -185,7 +185,7 @@ def test_csv_has_blank_xy_while_a_dot_is_lost_and_review_still_opens(tmp_path):
     from limbtrack.review import Trial
 
     eng = Engine(load_protocol(ROOT / "protocol.json"), recordings_dir=tmp_path)
-    eng.set_test("knee_extension")
+    eng.set_test("belt_squat")                                            # (has the ankle; the knee test has no foot dots since 0.24.0)
     eng.target = 60.0
     eng.process(render(PTS, seed=0), 0.0)
     for n in eng.test.dots:

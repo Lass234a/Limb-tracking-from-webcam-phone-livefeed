@@ -5,7 +5,7 @@ strip that never scrolls, and the rest is a list of sections of which one is ope
 line what it is set to. Nothing here knows about cameras or angles: the window gives it widgets and states.
 """
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QGroupBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 HEADER_STYLE = ("QPushButton { text-align: left; padding: 7px 10px; font-weight: bold; border: 1px solid rgba(128,128,128,0.35);"
                 " border-radius: 4px; }"
@@ -15,8 +15,10 @@ CHIP_STYLES = {
     "todo": "color: #fbbf24; border: 1px solid #d97706; background: rgba(217,119,6,0.12);",
     "next": "color: #111; border: 2px solid #fbbf24; background: #fbbf24; font-weight: bold;",
     "off": "color: #9ca3af; border: 1px solid rgba(128,128,128,0.35); background: transparent;",
+    # a soft reminder (0.24.0): done, but look at it again; it never becomes 'the next step' and never stops a recording
+    "check": "color: #fbbf24; border: 1px dashed #d97706; background: rgba(217,119,6,0.12); font-weight: bold;",
 }
-MARKS = {"done": "✓ ", "todo": "", "next": "▶ ", "off": ""}
+MARKS = {"done": "✓ ", "todo": "", "next": "▶ ", "off": "", "check": "? "}
 
 
 class ElidedButton(QPushButton):
@@ -145,6 +147,52 @@ class Accordion(QWidget):
     def set_summary(self, key, text):
         if key in self.sections:
             self.sections[key].set_summary(text)
+
+
+class ReminderBar(QFrame):
+    """Soft reminders (0.24.0): one row each, with the buttons that answer it. Rows come and go as the window decides; the bar is
+    hidden when no row is open. Nothing here ever stops a recording: it only makes sure the operator has seen the question."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("reminders")
+        self.setStyleSheet("QFrame#reminders { border: 1px solid #d97706; border-radius: 4px; background: rgba(217,119,6,0.10); }")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(5, 2, 5, 2)
+        lay.setSpacing(2)
+        self.rows = {}                                       # key -> (row widget, label)
+        self.setVisible(False)
+
+    def add_row(self, key, buttons):
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(3)
+        label = QLabel()
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #d97706; font-weight: bold;")
+        h.addWidget(label, 1)
+        for b in buttons:
+            b.setFocusPolicy(Qt.NoFocus)                     # (a click must not take the keyboard from the letter keys)
+            b.setStyleSheet("padding: 2px 7px;")
+            h.addWidget(b)
+        row.setVisible(False)
+        self.layout().addWidget(row)
+        self.rows[key] = (row, label)
+
+    def set_row(self, key, text):
+        """Show the row with this text, or hide it when the text is empty."""
+        row, label = self.rows[key]
+        if text and label.text() != text:
+            label.setText(text)
+        if row.isHidden() == bool(text):
+            row.setVisible(bool(text))
+        want = any(not r.isHidden() for r, _ in self.rows.values())
+        if self.isHidden() == want:
+            self.setVisible(want)
+
+    def open_keys(self):
+        return [k for k, (r, _) in self.rows.items() if not r.isHidden()]
 
 
 class StepStrip(QWidget):

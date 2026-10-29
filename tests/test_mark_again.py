@@ -235,14 +235,14 @@ def test_a_number_key_works_in_a_pass_like_the_button(win):
 
 
 # ------------------------------------------------------------------------------------------------ other tests, other dots
-def test_a_pass_with_the_strap_and_anchor_dots_on_asks_for_all_nine(win):
+def test_a_pass_with_the_strap_and_anchor_dots_on_asks_for_all_seven(win):
     live = win.live
     for n in win.engine.test.all_dots:
         live.lm_checks[n].setChecked(True)
     live.update_dot_rows()
     live.btn_redo_dots.click()
-    assert live._pass == list(win.engine.test.all_dots) and len(live._pass) == 9 and live._arm == live._pass[0]
-    assert f"1 of 9" in live.instruction.text()
+    assert live._pass == list(win.engine.test.all_dots) and len(live._pass) == 7 and live._arm == live._pass[0]     # 5 leg dots (no foot) + strap + anchor
+    assert f"1 of 7" in live.instruction.text()
     assert all(not c.isHidden() for c in live.chips.values())
     live.btn_redo_dots.click()
     assert not live._pass

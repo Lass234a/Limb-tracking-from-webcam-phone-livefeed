@@ -16,10 +16,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TESTS = load_protocol(ROOT / "protocol.json")
 
 
-def mark(swap=(), side="right", hip=90.0, knee=70.0, rotate=0.0):
-    """Mark all dots on a synthetic leg; `swap` pairs of names get each other's position."""
+def mark(swap=(), side="right", hip=90.0, knee=70.0, rotate=0.0, test="belt_squat"):
+    """Mark all dots on a synthetic leg; `swap` pairs of names get each other's position. The belt squat has the foot dots (since 0.24.0 the
+    knee and hip tests do not)."""
     eng = Engine(TESTS, recordings_dir=ROOT / "tests" / "_out")
-    eng.set_test("knee_extension")
+    eng.set_test(test)
     eng.facing_right = side == "right"
     p = {k: v.copy() for k, v in leg_points(hip_flex=hip, knee_flex=knee, ankle_df=5, facing=side).items()}
     if rotate:                                              # a lying participant: the whole body turned about the picture centre
@@ -82,3 +83,11 @@ def test_lock_works_again_after_the_labels_are_corrected():
     for i in range(6):
         eng.process(img, 1.1 + i / 30)
     assert eng.marking_problems() == [] and eng.lock_position()
+
+
+def test_a_test_without_the_foot_has_no_foot_label_checks():
+    """0.24.0: the knee and hip tests have no foot dots, so a foot dot cannot be mislabelled there; the other checks still run."""
+    eng, res, _ = mark(test="knee_extension")
+    assert "mt5_base" not in eng.active_dots and eng.marking_problems() == []
+    eng, res, _ = mark(test="knee_extension", swap=(("epicondyle", "fibular_head"),))
+    assert eng.marking_problems() and eng.lock_position() is False

@@ -172,7 +172,9 @@ def test_unticked_the_recording_goes_on_and_the_setting_is_remembered(setup):
     again.close()
 
 
-def test_record_asks_before_recording_a_force_that_was_not_zeroed(setup):
+def test_record_no_longer_asks_about_a_force_that_was_not_zeroed_it_is_a_reminder(setup):
+    """Until 0.23.0 Record asked Yes/No (4 of the 11 trials of 2026-10-15 had volts but no newtons). Since 0.24.0 it is a soft reminder: no
+    question, written to the session log and meta.json, and said again with the trial's warnings (tests/test_reminders.py records a real one)."""
     app, win, warnings, questions, answer, pump, start_and_mark, tmp = setup
     live = win.live
     start_and_mark()
@@ -182,15 +184,11 @@ def test_record_asks_before_recording_a_force_that_was_not_zeroed(setup):
     try:
         win.engine.force = src
         live.force_source = src
-        answer["yes"] = False
-        live.btn_rec.click()
-        assert win.engine.rec is None and not live.btn_rec.isChecked()
-        assert questions and "not been zeroed" in questions[-1] and "no newtons" in questions[-1]
-        assert live.accordion.current() == "force"                               # the Force step is opened, with the Zero button
-        n = len(questions)
+        assert any("not been zeroed" in t and "no newtons" in t and in_file for t, in_file in live._open_reminders())
+        live.btn_rec.click()                                                     # (the video file itself refuses a force: the engine's own, old refusal)
+        assert win.engine.rec is None and not any("zeroed" in q for q in questions)      # ... but nobody asked about the zero
         src.calibration.zero_set = True
-        live.btn_rec.click()                                                     # zeroed: no question about it (the file refuses the force)
-        assert len(questions) == n and not any("zeroed" in q for q in questions[n:])
+        assert not any("zeroed" in t for t, _ in live._open_reminders())          # zeroed: nothing open about it
     finally:
         win.engine.force = None
         live.force_source = None

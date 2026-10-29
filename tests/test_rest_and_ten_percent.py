@@ -81,17 +81,20 @@ def test_a_strap_loaded_before_the_push_no_longer_hides_the_push(trial):
 
 
 @pytest.mark.parametrize("start, known, seconds", [(1.0, True, 0.6), (0.4, False, 0.0)])
-def test_a_short_rest_is_named_and_too_short_a_rest_gives_no_level(trial, start, known, seconds):
+def test_a_short_rest_is_no_longer_reported_and_too_short_a_rest_gives_no_level(trial, start, known, seconds):
+    """0.24.0: the SOP's 3 s of rest after Record is replaced by the resting force taken before the trial (Zero 2, with a reminder in the
+    Live tab). The numbers stay (level, seconds of rest, peak above rest) but nothing says "only X s at rest" any more."""
     t = np.arange(0.0, 12.0, 0.001)
     tr = with_force(trial, t, ramp(t, 20.0, start, 300.0))
     ri = tr.force_rest()
     assert ri["seconds"] == pytest.approx(seconds, abs=0.05)
+    assert ri["note"] == ""                                                      # no note about a short rest, however short
     if known:
-        assert ri["level"] == pytest.approx(20.0, abs=0.5) and "Only 1.1 s at rest" in ri["note"]
+        assert ri["level"] == pytest.approx(20.0, abs=0.5)
     else:
-        assert math.isnan(ri["level"]) and "not known" in ri["note"]
+        assert math.isnan(ri["level"])
         assert analysis.session_row(tr)["force_peak_above_rest"] != analysis.session_row(tr)["force_peak_above_rest"]   # NaN
-    assert any(lvl == "check" and ri["note"] in text for lvl, text in analysis.trial_checks(tr))
+    assert not any("at rest" in text or "resting force is not known" in text for _, text in analysis.trial_checks(tr))
 
 
 def test_review_says_where_the_rest_came_from(trial, tmp_path):
@@ -151,7 +154,7 @@ def test_after_a_trial_the_saved_trials_of_its_position_are_compared(tmp_path):
     assert res["n"] == 2 == count_trials(root, "P01", "knee_extension", 70.0)
     assert res["check"]["state"] == "third" and res["check"]["pct"] == pytest.approx(19.2, abs=2.0)
     assert res["trial"] == Path(b["meta.json"]).name[: -len("_meta.json")]
-    assert "rest" in res["rest_note"]                     # the simulated push begins about when Record is pressed: no 3 s at rest
+    assert "at rest" not in res["rest_note"]              # the simulated push begins about when Record is pressed, but since 0.24.0 a short rest is not reported
     # the same numbers as 'Export all trials of this participant'
     exported = [analysis.session_row(Trial(p)) for p in trial_metas(root, "P01", "knee_extension", 70.0)]
     analysis.repeatability(exported)

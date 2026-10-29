@@ -88,7 +88,7 @@ def test_readings_added_in_review_go_to_a_side_file_and_the_trial_files_are_unto
     tab = ReviewTab(tmp_path)
     tab.load(str(meta))
     dlg = ReferenceDialog(tab.trial, tab)
-    assert [k for k in dlg.boxes] == ["knee", "hip", "ankle"]
+    assert [k for k in dlg.boxes] == ["knee", "hip"]                      # (0.24.0: the knee test has no ankle)
     dlg.boxes["knee"].setText("58,5 59")
     dlg.instrument.setCurrentIndex(dlg.instrument.findData("inclinometer"))
     dlg.resolution.setCurrentIndex(dlg.resolution.findData(0.1))
@@ -163,11 +163,11 @@ def test_adding_a_reading_in_review_puts_only_that_reading_in_the_side_file(tmp_
     tab = ReviewTab(tmp_path)
     tab.load(str(first))
     dlg = ReferenceDialog(tab.trial, tab)
-    dlg.boxes["ankle"].setText("4")
+    dlg.boxes["hip"].setText("89")
     dlg._save()
-    assert list(reference.read_sidecar(first)["readings"]) == ["ankle"]
+    assert list(reference.read_sidecar(first)["readings"]) == ["hip"]
     rows = {r["key"]: r for r in Trial(first).reference_rows()}
-    assert rows["knee"]["source"] == "recorded with the trial" and rows["ankle"]["source"] == "added later in Review"
+    assert rows["knee"]["source"] == "recorded with the trial" and rows["hip"]["source"] == "added later in Review"
     assert reference.agreement(reference.collect_rows(tmp_path))["knee"]["n"] == 1
 
 

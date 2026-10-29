@@ -76,12 +76,19 @@ def test_the_required_neighbour_angle_is_judged_from_the_start_without_locking(t
         res = eng.process(render(p, seed=i), 0.1 + i / 30)
     hip = angle(res, "hip")
     assert not eng.locked and hip.reference == 90.0 and hip.raw_status == OK            # hip at 90: green before any lock
-    assert angle(res, "ankle").raw_status == INFO                                        # other neighbours still wait for Lock
+    assert [a.name for a in res.angles] == ["knee", "hip"]                               # (0.24.0: no ankle in the knee test)
 
     eng, p = make(tmp_path / "b", "knee_extension", hip_flex=70, knee_flex=70, ankle_df=5)
     for i in range(8):
         res = eng.process(render(p, seed=i), 0.1 + i / 30)
     assert angle(res, "hip").raw_status == OUT and angle(res, "hip").raw_deviation == pytest.approx(-20.0, abs=1.0)
+
+    eng, p = make(tmp_path / "c", "ankle_plantarflexion", hip_flex=0, knee_flex=0, ankle_df=0)
+    for i in range(8):
+        res = eng.process(render(p, seed=i), 0.1 + i / 30)
+    knee, hip = angle(res, "knee"), angle(res, "hip")
+    assert not eng.locked and knee.reference == 0.0 and knee.raw_status == OK            # the required straight knee: green before any lock
+    assert hip.raw_status == INFO                                                        # the other neighbour still waits for Lock
 
 
 def test_lock_does_not_overwrite_a_required_neighbour_angle(tmp_path):
@@ -90,9 +97,17 @@ def test_lock_does_not_overwrite_a_required_neighbour_angle(tmp_path):
         res = eng.process(render(p, seed=i), 0.1 + i / 30)
     assert eng.lock_position()
     res = eng.process(render(p, seed=9), 0.5)
-    hip, ankle = angle(res, "hip"), angle(res, "ankle")
+    hip = angle(res, "hip")
     assert hip.reference == 90.0 and hip.raw_status == OUT                                 # judged against the protocol, not against itself
-    assert ankle.reference == pytest.approx(5.0, abs=1.0) and ankle.raw_status == OK       # the others use the locked value as before
+
+    eng, p = make(tmp_path / "ankle", "ankle_plantarflexion", hip_flex=0, knee_flex=-6, ankle_df=0)       # the foot tests: knee 0 required
+    for i in range(8):
+        res = eng.process(render(p, seed=i), 0.1 + i / 30)
+    assert eng.lock_position()
+    res = eng.process(render(p, seed=9), 0.5)
+    knee, hip = angle(res, "knee"), angle(res, "hip")
+    assert knee.reference == 0.0 and knee.raw_status == OUT                                # 6 deg off the required straight knee
+    assert hip.reference == pytest.approx(0.0, abs=1.0) and hip.raw_status == OK           # the other neighbour uses the locked value as before
 
 
 def test_csv_and_meta_record_the_required_angle(tmp_path):

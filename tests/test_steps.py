@@ -1,6 +1,6 @@
 """The step chips, the one-line summaries and the panel moving on by itself: what the Live tab tells the operator to do next.
 
-The order of a session (limbtrack/gui.py STEPS): participant, camera, privacy, position, dots, ruler, lock, force, markers, record.
+The order of a session (limbtrack/gui.py STEPS, since 0.24.0): camera, force, markers, participant, position, privacy, ruler, dots, lock, record.
 """
 import os
 from pathlib import Path
@@ -65,59 +65,75 @@ def next_step(live):
     return next((k for k, s in states(live).items() if s == "next"), None)
 
 
-def test_the_steps_are_in_the_order_of_a_session_and_the_participant_comes_first():
+def test_the_steps_are_in_the_order_of_a_session_equipment_first_then_the_participant(win):
     keys = [k for k, _ in STEPS]
-    assert keys == ["participant", "camera", "privacy", "position", "dots", "ruler", "lock", "force", "markers", "record"]
+    assert keys == ["camera", "force", "markers", "participant", "position", "privacy", "ruler", "dots", "lock", "record"]
+    assert max(keys.index(k) for k in ("camera", "force", "markers")) < keys.index("participant")     # done before the participant arrives
     assert keys.index("participant") < keys.index("position")                      # the plan counts THIS participant's trials
-    assert keys.index("dots") < keys.index("ruler")                                # (the ruler dots are marked with the dot colour set under Dots)
+    assert keys.index("position") < keys.index("privacy")                          # privacy is looked at again at every position change
+    assert keys.index("ruler") < keys.index("dots")                                # 0.24.0: the ruler first (its colour is the one set under Dots)
     assert set(STEP_HINT) == set(keys)
+    numbers = {k: s.number for k, s in win.live.accordion.sections.items() if s.number}
+    assert [numbers[k] for k in ("camera", "force", "markers", "participant", "position", "privacy", "ruler", "dots", "record")] == \
+        [str(i) for i in range(1, 10)]                                              # the numbers in the panel follow the same order
 
 
-def test_at_the_start_the_participant_is_the_next_step_and_nothing_that_needs_the_picture_is_asked_for(win):
+def test_at_the_start_the_camera_is_the_next_step_and_nothing_that_needs_the_picture_is_asked_for(win):
     live = win.live
     live.update_steps()
-    assert states(live) == {"participant": "next", "camera": "todo", "privacy": "off", "position": "done", "dots": "off", "ruler": "off",
-                            "lock": "off", "force": "todo", "markers": "todo", "record": "off"}
-    assert live.accordion.current() == "participant"                              # the first thing to do is in front of you
+    assert states(live) == {"camera": "next", "force": "todo", "markers": "todo", "participant": "todo", "position": "done",
+                            "privacy": "off", "ruler": "off", "dots": "off", "lock": "off", "record": "off"}
+    assert live.accordion.current() == "camera"                                   # the first thing to do is in front of you
 
 
 def test_every_step_in_turn_becomes_the_next_one(win):
     live = win.live
+    live.update_steps()
+    live.worker = RunningCamera()
+    live.update_steps()
+    assert states(live)["camera"] == "done" and next_step(live) == "force"
+    live.chk_force_skip.setChecked(True)
+    live.update_steps()
+    assert states(live)["force"] == "done" and "No force" in live.strip.chips["force"].text() and next_step(live) == "markers"
+    live._beeps_tested = True                                                      # (the beeps are on, so they have to have been tried)
+    live.update_steps()
+    assert states(live)["markers"] == "done" and next_step(live) == "participant"
     live.participant.setText("P01")
     live.update_steps()
     assert states(live)["participant"] == "next" and live.strip.chips["participant"].text().endswith("P01: leg?")   # 0.20.0: the leg too
     assert "tested (dominant) leg of P01" in live._hint("participant")
     live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.update_steps()
-    assert states(live)["participant"] == "done" and "P01" in live.strip.chips["participant"].text() and next_step(live) == "camera"
-    live.worker = RunningCamera()
-    live.update_steps()
-    assert states(live)["camera"] == "done" and next_step(live) == "privacy"
+    assert states(live)["participant"] == "done" and "P01" in live.strip.chips["participant"].text() and next_step(live) == "privacy"
     live.chk_priv_ok.setChecked(True)                                              # nothing in the picture identifies anyone
     live.update_steps()
-    assert states(live)["privacy"] == "done" and next_step(live) == "dots" and "0/7" in live.strip.chips["dots"].text()
-    mark_all(win)
-    live.update_steps()
-    assert states(live)["dots"] == "done" and next_step(live) == "ruler" and states(live)["lock"] == "todo"
+    assert states(live)["privacy"] == "done" and next_step(live) == "ruler" and "0/5" in live.strip.chips["dots"].text()   # (no foot dots here)
     live.chk_ruler_skip.setChecked(True)
     live.update_steps()
-    assert states(live)["ruler"] == "done" and "No ruler" in live.strip.chips["ruler"].text() and next_step(live) == "lock"
+    assert states(live)["ruler"] == "done" and "No ruler" in live.strip.chips["ruler"].text() and next_step(live) == "dots"
+    mark_all(win)
+    live.update_steps()
+    assert states(live)["dots"] == "done" and next_step(live) == "lock"
     assert win.engine.lock_position()
     live.update_steps()
-    assert states(live)["lock"] == "done" and next_step(live) == "force"
-    live.chk_force_skip.setChecked(True)
-    live.update_steps()
-    assert states(live)["force"] == "done" and "No force" in live.strip.chips["force"].text() and next_step(live) == "markers"
-    live._beeps_tested = True                                                      # (the beeps are on, so they have to have been tried)
-    live.update_steps()
-    assert states(live)["markers"] == "done" and next_step(live) == "record" and states(live)["record"] == "next"
+    assert states(live)["lock"] == "done" and next_step(live) == "record" and states(live)["record"] == "next"
     assert live.strip.chips["record"].text().endswith("Record")
 
 
 def test_the_panel_moves_on_by_itself_when_a_step_is_finished_in_its_own_section(win):
     live = win.live
     live.update_steps()
-    assert live.accordion.current() == "participant"
+    assert live.accordion.current() == "camera"
+    live.worker = RunningCamera()
+    live.update_steps()
+    assert live.accordion.current() == "force"                                     # the camera runs: on to the next thing
+    live.chk_force_skip.setChecked(True)
+    live.update_steps()
+    assert live.accordion.current() == "markers"
+    live._beeps_tested = True
+    live.update_steps()
+    assert live.accordion.current() == "markers"                                   # the markers are tried out: the panel does not move on by itself
+    live.open_step("participant")
     live.participant.setText("P01")
     live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.update_steps()
@@ -125,22 +141,19 @@ def test_the_panel_moves_on_by_itself_when_a_step_is_finished_in_its_own_section
     live.participant.editingFinished.emit()                                        # Tab or a click into Notes: the box stays
     assert live.accordion.current() == "participant"
     live.participant.returnPressed.emit()                                          # Enter
-    assert live.accordion.current() == "camera"
-    live.worker = RunningCamera()
-    live.update_steps()
-    assert live.accordion.current() == "privacy"                                   # the camera runs: on to the next thing
+    assert live.accordion.current() == "privacy"
     live.chk_priv_ok.setChecked(True)
-    live.update_steps()
-    assert live.accordion.current() == "dots"
-    mark_all(win)
     live.update_steps()
     assert live.accordion.current() == "ruler"
     live.chk_ruler_skip.setChecked(True)
     live.update_steps()
+    assert live.accordion.current() == "dots"
+    mark_all(win)
+    live.update_steps()
     assert live.accordion.current() == "dots"                                      # Lock is the next step, and lives with the dots
     win.engine.lock_position()
     live.update_steps()
-    assert live.accordion.current() == "force"
+    assert live.accordion.current() == "record"
 
 
 def test_a_section_the_operator_opened_is_not_closed_behind_their_back(win):
@@ -149,7 +162,7 @@ def test_a_section_the_operator_opened_is_not_closed_behind_their_back(win):
     live.open_step("force")                                                        # they went to look at the force box
     live.worker = RunningCamera()
     live.update_steps()
-    assert live.accordion.current() == "force"                                     # the participant section was not the open one: leave it
+    assert live.accordion.current() == "force"                                     # the camera section was not the open one: leave it
 
 
 def test_clicking_a_chip_opens_its_section(win):
@@ -176,7 +189,7 @@ def test_the_privacy_chip_wants_a_crop_a_mask_or_a_look(win):
     live.participant.setText("P01")
     live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
     live.update_steps()
-    assert states(live)["privacy"] == "next" and "not set" in live.accordion.sections["privacy"].summary
+    assert states(live)["privacy"] == "todo" and "not set" in live.accordion.sections["privacy"].summary       # (the force comes first now)
     ok, _ = win.engine.set_privacy_rect("mask", 0, 0, 200, 200)                    # a black mask over a face
     assert ok
     live.update_steps()
@@ -267,17 +280,27 @@ def test_a_beep_that_could_not_be_played_does_not_count_as_tried(win):
 def test_the_instruction_follows_the_next_step(win):
     live = win.live
     live.refresh_status()
-    assert live.instruction.text() == STEP_HINT["participant"]
-    live.participant.setText("P01")
-    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
-    live.refresh_status()
     assert live.instruction.text() == STEP_HINT["camera"]
     live.worker = RunningCamera()
+    live.refresh_status()
+    assert live.instruction.text() == STEP_HINT["force"]
+    live.chk_force_skip.setChecked(True)
+    live._beeps_tested = True
+    live.refresh_status()
+    assert live.instruction.text() == STEP_HINT["participant"]
+    live.participant.setText("P01")
+    live.refresh_status()
+    assert "tested (dominant) leg of P01" in live.instruction.text()
+    live.leg_combo.setCurrentIndex(live.leg_combo.findData("right"))
+    live.refresh_status()
+    assert live.instruction.text() == STEP_HINT["privacy"]
     live.chk_priv_ok.setChecked(True)
+    live.refresh_status()
+    assert live.instruction.text() == STEP_HINT["ruler"]
+    live.chk_ruler_skip.setChecked(True)
     live.refresh_status()
     assert "dot on the video" in live.instruction.text()                            # the dot to click next, by name
     mark_all(win)
-    live.chk_ruler_skip.setChecked(True)
     live.refresh_status()
     assert "lock" in live.instruction.text().lower()
 
@@ -431,7 +454,7 @@ def test_a_participant_code_kept_from_last_time_counts_only_after_it_is_confirme
     assert live.leg_combo.currentData() == "left"
     live._participant_restored = "P07"                                              # what restore_session does with a code from the last session
     live.update_steps()
-    assert states(live)["participant"] == "next" and live.strip.chips["participant"].text().endswith("P07?")
+    assert states(live)["participant"] == "todo" and live.strip.chips["participant"].text().endswith("P07?")      # (the camera comes first now)
     assert "kept from the last session" in live.instruction.text() or "kept from the last session" in live._hint("participant")
     assert "press Enter to confirm" in live.accordion.sections["participant"].summary
     live.worker = RunningCamera()
@@ -441,6 +464,7 @@ def test_a_participant_code_kept_from_last_time_counts_only_after_it_is_confirme
     live.btn_rec.setChecked(True)
     live.toggle_record()                                                            # pressing Record asks first, and No means no recording
     assert answers and "P07" in answers[0] and win.engine.rec is None and not live.btn_rec.isChecked()
+    live.open_step("participant")                                                   # (restore_session opens it for a kept code: the camera is first now)
     assert live.btn_participant_ok.isVisibleTo(live) and "P07" in live.btn_participant_ok.text()    # a button for it, not only the Enter key
     live.btn_participant_ok.click()                                                 # yes, the same participant
     live.update_steps()

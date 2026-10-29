@@ -62,41 +62,41 @@
   },
 
   "tests": {
-    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative).",
+    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative). Since 0.24.0 the foot (the 'ankle' angle and its two dots mt5_base and mt5_head) is tracked only in the ankle tests and the belt squat, because foot tracking has been difficult and the knee and hip tests do not use the foot: to bring it back into a test, add \"ankle\" to that test's 'angles'.",
     "knee_extension": {
       "label": "Knee extension, hip 90 (MVIC)",
       "primary": "knee",
       "targets": [20, 70, 110],
       "neighbour_targets": {"hip": 90},
-      "angles": ["knee", "hip", "ankle"]
+      "angles": ["knee", "hip"]
     },
     "knee_flexion": {
       "label": "Knee flexion, hip 90 (MVIC)",
       "primary": "knee",
       "targets": [20, 90],
       "neighbour_targets": {"hip": 90},
-      "angles": ["knee", "hip", "ankle"]
+      "angles": ["knee", "hip"]
     },
     "hip_extension_k0": {
       "label": "Hip extension, knee straight (MVIC)",
       "primary": "hip",
       "targets": [0, 45],
       "neighbour_targets": {"knee": 0},
-      "angles": ["hip", "knee", "ankle"]
+      "angles": ["hip", "knee"]
     },
     "hip_extension_k90": {
       "label": "Hip extension, knee 90 (MVIC)",
       "primary": "hip",
       "targets": [0, 90],
       "neighbour_targets": {"knee": 90},
-      "angles": ["hip", "knee", "ankle"]
+      "angles": ["hip", "knee"]
     },
     "hip_flexion": {
       "label": "Hip flexion, knee 90 (MVIC)",
       "primary": "hip",
       "targets": [0, 90],
       "neighbour_targets": {"knee": 90},
-      "angles": ["hip", "knee", "ankle"]
+      "angles": ["hip", "knee"]
     },
     "hip_abduction": {
       "label": "Hip abduction, knee straight, camera in front (MVIC)",

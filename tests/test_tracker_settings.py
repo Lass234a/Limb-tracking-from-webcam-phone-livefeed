@@ -25,7 +25,7 @@ TESTS = load_protocol(ROOT / "protocol.json")
 def run(tmp):
     """150 frames: swinging knee, one dot hidden for 30 frames, another for 10."""
     eng = Engine(TESTS, recordings_dir=tmp)
-    eng.set_test("knee_extension")
+    eng.set_test("belt_squat")                      # (seven dots, as the knee test had until 0.23.0: the recorded reference stays valid)
     eng.target = 40.0
     p = leg_points(hip_flex=70, knee_flex=40, ankle_df=5)
     eng.process(render(p, seed=0), 0.0)

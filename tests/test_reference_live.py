@@ -42,7 +42,7 @@ def win(tmp_path):
 def test_the_section_is_in_the_panel_with_a_box_for_every_angle(win):
     live = win.live
     assert "reference" in live.accordion.sections
-    assert list(live.ref_fields) == ["knee", "hip", "ankle"]
+    assert list(live.ref_fields) == ["knee", "hip"]                                  # (0.24.0: no ankle box in the knee test)
     assert live.accordion.sections["reference"].summary == "none yet"
     assert "No reading yet" in live.ref_status.text()
 

@@ -23,7 +23,7 @@ def knee_at(i, start, speed_deg_per_frame, k0=40.0, k1=80.0):
 
 def run(hide, hide_frames, start=15, speed=4.0, radius=7.0, reverse=False, frames=45, end=80.0):
     eng = Engine(TESTS, recordings_dir=ROOT / "tests" / "_out")
-    eng.set_test("knee_extension")
+    eng.set_test("belt_squat")                           # (the test with the foot dots next to the malleolus; the knee test has none since 0.24.0)
     eng.target = 40.0
     p0 = leg_points(hip_flex=90, knee_flex=40.0, ankle_df=5)
     eng.process(render(p0, seed=0, dot_radius=radius), 0.0)

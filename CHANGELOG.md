@@ -3,6 +3,54 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.24.0 - 2026-10-29
+
+### A new order of the steps, soft reminders instead of hard stops, an easier ruler, and the foot only where the foot is used
+- **Why:** asked on 2026-10-29: "Participant faces" in tab 1 instead of the position tab; the ruler easier to redo, with a soft reminder at every
+  position change ("generally we want more soft reminders than hard ones"); the order Camera, Force, (Markers), then Participant, Position,
+  Ruler, Dots, Lock; the SOP's rest before a trial replaced by the resting force, which should get a soft warning; no foot tracking in
+  movements that do not involve the foot. The group may also move the foot and belt-squat analysis to post: that needs no change here
+  (`raw.mp4` and `data.csv` are saved for every trial).
+- **Questions answered the same day:** privacy becomes soft but really visible, and quick to answer; the three Record questions become soft;
+  the Privacy step goes after Position; the foot dots go in the knee and hip tests (the ankle tests and the belt squat keep them).
+- **Order of the steps:** Camera, Force, Markers, Participant, Position, Privacy, Ruler, Dots, Lock, Record (`STEPS` in `gui.py`; the numbers in
+  the panel follow it, 1-9). The equipment can be done before the participant arrives; privacy is after the position because it is looked at
+  again at every position change. The ruler now comes before the dots, so changing the dot colour afterwards clears the ruler too (the
+  ruler dots are followed in that colour); the line says so and the Ruler chip asks again.
+- **Participant faces** moved from *Position and angles* into the *Participant* section, under *Tested leg* (still hidden in the front-view tests).
+- **Soft reminders** (`panels.py` `ReminderBar`, new chip state `check`; `gui.py` `update_steps`, `_position_changed`, `_open_reminders`): rows
+  under the instruction line, each with the buttons that answer it, amber chips (never *the next step*), and nothing ever refuses Record:
+  - **Privacy** (at the first look and at every change of position): *No face (V)*, *Mask*, *Crop*, and a banner across the bottom of the live
+    picture (screen only, never in a saved video). The V key does the same as *No face*.
+  - **Ruler** (when one is marked and the position changed): *Fine* or *Redo (C)*.
+  - **Resting force** (force zeroed, dots marked, no Zero 2 for this position): *Zero 2 (X)* or *Not here*.
+  - The rows are hidden while recording.
+- **The Record questions are soft:** the privacy refusal (0.23.0) and the Yes/No questions *position not locked*, *main angle doubtful* and
+  *force not zeroed* are gone. What is open when Record is pressed goes to the session log (*recording started with reminders open*) and to
+  `meta.json` `reminders_open_at_start`, and what changes the file itself (privacy, lock, main angle, zero) is said again with the trial's
+  warnings once it is saved (*Recorded while this was open: ...*). **Still hard:** no video, paused, video file ended, an invalid
+  participant code, identifying notes, a crop that does not fit the picture or a dot at its edge, an unreadable reference reading; and the
+  two quick questions *same participant?* and *which leg?*.
+- **Ruler easier:** a *Ruler (C)* button on the Position row of the pinned bar and the C key redo it from any section (the old scale goes at
+  once; pressed again while it waits, it stops); the Ruler section has *Ruler still right at this position*.
+- **The resting force replaces the SOP's 3 s rest:** Review and the trial warnings no longer say "only X s at rest (the SOP asks for 3 s)".
+  The numbers stay (`force_rest`, `force_rest_s`, `force_peak_above_rest`) and so does the "force was not steady before the push" note. The
+  warning that replaces it is the Zero 2 reminder before the trial.
+- **Foot dots only in the ankle tests and the belt squat** (`protocol.json`): `ankle` is out of the angles of knee extension, knee flexion,
+  both hip extensions and hip flexion, so they have 5 dots instead of 7 (no `mt5_base`, `mt5_head`, no ankle angle). Old recordings are not
+  touched. To bring the foot back into a test, add `"ankle"` to that test's `angles`.
+- **Tests:** `tests/test_reminders.py` (18 tests, new). Brought up to date: `test_steps.py` (the order), `test_privacy_position.py` (soft, a real
+  recording that goes ahead), `test_between_trials.py` and `test_p20_checks_gui.py` (the Yes/No questions are reminders), `test_rest_and_ten_percent.py`
+  (no short-rest note), `test_keys.py`, `test_session_memory.py`, `test_mark_again.py`, `test_trace.py`, `test_three_point.py`, `test_reference*.py`,
+  `test_protocol_table2.py` (no ankle in the knee test). The tests that need the foot dots (`test_pipeline.py`, `test_label_checks.py`,
+  `test_landmarks.py`, `test_lost_rule.py`, `test_neighbour_swap.py`, `test_tracker_settings.py` with its recorded reference) now use the belt squat,
+  which has the same seven dots, so the numbers they pin did not change. A first full run after the change had 59 failures, all of this kind.
+  Second full run (40 min): 1027 passed, 1 skipped, 1 failed: a test of `test_force.py` that still expected the removed "not known" rest note on
+  a timing-dependent branch (fixed). After that fix `test_force.py` failed once more on a different test, a 1000 Hz sample-rate check of the
+  simulated force that depends on how busy the computer is; it passed on its own and in the next run of its file (26 passed).
+- **Not tried:** the real rig (DroidCam + load cell), Zero 2 with a person, real beeps, the new header on the real screen (checked only in
+  offscreen screenshots at 1366x768 and 1100x650, where it is no taller than before with no reminder open and about 66 px taller with all three).
+
 ## 0.23.0 - 2026-10-28
 
 ### Redo all and the dot keys remove the old dots; a privacy check at every change of position

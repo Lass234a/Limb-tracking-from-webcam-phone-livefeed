@@ -341,12 +341,9 @@ class Trial:
         sd = float(np.std(y[rm])) if rm.sum() > 1 else math.nan
         d = 3 if unit == "V" else 0
         notes = []
-        if seconds < REST_MIN_S:
-            notes.append(f"Only {seconds:.1f} s of force before the push, so the resting force is not known (the SOP asks for "
-                         f"{REST_FROM_S:g} s at rest in the strap after Record).")
-        elif seconds < REST_FULL_S - 0.05:
-            notes.append(f"Only {seconds + REST_TO_S:.1f} s at rest before the push (the SOP asks for {REST_FROM_S:g} s): the resting "
-                         f"force is taken from {seconds:.1f} s.")
+        # 0.24.0: no note about a short rest any more. The SOP's 3 s at rest after Record is replaced by the resting force taken before the
+        # trial (Zero 2, X), which the Live tab reminds about (softly); how long the rest in the recording was is still in `seconds`
+        # (export column force_rest_s) and is not hidden.
         if not math.isnan(level) and not math.isnan(sd) and sd > REST_UNSTEADY_FRACTION * abs(peak - level):
             notes.append(f"The force was not steady before the push (it varied by {sd:.{d}f} {unit}, SD): the strap was loaded or moving, "
                          "so the resting force is doubtful.")

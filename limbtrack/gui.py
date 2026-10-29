@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
 
 from . import privacy, reference, session_memory
 from .session_log import SessionLog
-from .panels import Accordion, Section, StepStrip
+from .panels import Accordion, ReminderBar, Section, StepStrip
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
 from .loadcell import GRAVITY, find_regression
@@ -35,20 +35,24 @@ BIG = "font-size: 15pt; font-weight: bold;"
 NOTE = "font-size: 11pt; font-weight: bold;"
 IDLE_TEXT = "Enter the participant code, then pick the camera and press Start camera."
 # The steps of a session, in the order they are done. The strip shows one chip each; the first one still to do is highlighted.
-STEPS = (("participant", "Participant"), ("camera", "Camera"), ("privacy", "Privacy"), ("position", "Position"), ("dots", "Dots"),
-         ("ruler", "Ruler"), ("lock", "Lock"), ("force", "Force"), ("markers", "Markers"), ("record", "Record"))
+STEPS = (("camera", "Camera"), ("force", "Force"), ("markers", "Markers"), ("participant", "Participant"), ("position", "Position"),
+         ("privacy", "Privacy"), ("ruler", "Ruler"), ("dots", "Dots"), ("lock", "Lock"), ("record", "Record"))
+# (0.24.0: the equipment first, which can be done before the participant arrives; then the participant and what depends on the position.
+# Privacy comes after the position because it is looked at again at every position change.)
 STEP_SECTION = {"participant": "participant", "camera": "camera", "privacy": "privacy", "position": "position", "dots": "dots",
                 "ruler": "ruler", "lock": "dots", "force": "force", "markers": "markers", "record": "record"}
-STEP_HINT = {"participant": "Enter the participant code (P01, ...). Code only, no names.",
+STEP_HINT = {"participant": "Enter the participant code (P01, ...), the tested leg and which side of the image they face. Code only, no names.",
              "camera": "Pick the camera and press Start camera.",
-             "privacy": "Draw a crop round the leg, black out anything that identifies, or tick that nothing does.",
+             "privacy": "Look at the picture: tick that no face is visible (V), or draw a crop round the leg or a black mask.",
              "position": "Pick the position in the session plan (or the test and target).",
              "dots": "Check the dot colour, then click each dot on the video, in the order asked.",
-             "ruler": "Hold the ruler at the joint, click its two dots (or tick that there is no ruler today).",
+             "ruler": "Hold the ruler at the joint, click its two dots (C), or tick that there is no ruler today.",
              "lock": "Put the participant in position, then press Lock position (Space).",
              "force": "Connect the force, then press Zero with no pull on the strap (Z), or tick that there is no force today.",
              "markers": "Switch the automatic markers and the beeps on, and try them (Test the beeps, Try it without recording).",
              "record": "Press Start recording (R)."}
+# painted across the bottom of the live picture (screen only) while nobody has said that no face is visible at this position
+PRIVACY_BANNER = "PRIVACY: look at the picture. Is any face visible? Press V if not, or draw a black mask."
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
 # The dots as small buttons in the pinned bar: a short name each (the full title is the tooltip) and a style per state.
 DOT_CHIP_NAMES = {"iliac_crest": "Crest", "trochanter": "Troch.", "epicondyle": "Epicond.", "fibular_head": "Fibula", "malleolus": "Malleol.",
@@ -156,6 +160,13 @@ class VideoView(QWidget):
         self._draw_mode = False
         self._drag = None                  # [x0, y0, x1, y1] while the mouse is down in draw mode
         self._crop, self._masks = None, []   # privacy shapes in image pixels (shown on the screen only)
+        self._banner = ""                  # a soft reminder painted across the bottom of the picture (screen only, never in a saved video)
+
+    def set_banner(self, text):
+        """A soft reminder across the bottom of the picture (screen only)."""
+        if text != self._banner:
+            self._banner = text
+            self.update()
 
     def set_draw_mode(self, on):
         self._draw_mode = bool(on)
@@ -215,6 +226,18 @@ class VideoView(QWidget):
                 p.setBrush(Qt.NoBrush)
                 p.setPen(QPen(QColor(250, 204, 21), 2, Qt.DashLine))
                 p.drawRect(QRectF(rect.left() + min(x0, x1) * s, rect.top() + min(y0, y1) * s, abs(x1 - x0) * s, abs(y1 - y0) * s))
+            if self._banner:
+                font = p.font()
+                font.setBold(True)
+                font.setPointSize(max(font.pointSize(), 11))
+                p.setFont(font)
+                height = 2.4 * p.fontMetrics().height()
+                bar = QRectF(rect.left(), rect.bottom() - height, rect.width(), height)      # (the top of the picture holds the test, the lock and the angles)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(251, 191, 36, 235)))
+                p.drawRect(bar)
+                p.setPen(QColor(17, 17, 17))
+                p.drawText(bar.adjusted(10, 0, -10, 0), Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWordWrap, self._banner)
 
     def mousePressEvent(self, e):
         if self._img is None or e.button() != Qt.LeftButton:
@@ -564,7 +587,6 @@ class LiveTab(QWidget):
         f.addRow("Suggested targets", self.suggest)
         f.addRow("Tolerance main joint", self.tol_spin)
         f.addRow("Tolerance other joints", self.ntol_spin)
-        f.addRow("Participant faces", self.facing_combo)
         f.addRow("ASIS to ASIS, tape", self.tape_spin)
         f.addRow(self.chk_wall)
         f.addRow(self.chk_smooth)
@@ -769,7 +791,9 @@ class LiveTab(QWidget):
         pf.addRow("Participant ID", self.participant)
         pf.addRow(self.btn_participant_ok)
         pf.addRow("Tested leg", self.leg_combo)
+        pf.addRow("Participant faces", self.facing_combo)        # (0.24.0: with the participant, not with the position)
         pf.addRow("Notes", self.notes)
+        self.participant_form = pf
         pf.addRow(self.key_hint)
         # markers and sound: set and tried before the first recording, not inside it
         mkb = QGroupBox("Markers and sound")
@@ -819,8 +843,9 @@ class LiveTab(QWidget):
         self.chk_priv_ok.toggled.connect(lambda on: on and self.confirm_privacy("looked: nothing identifies the participant"))
         self.btn_priv_again = QPushButton("Privacy checked at this position")
         self.btn_priv_again.setToolTip("Shown after every change of position. The participant has moved, so look at the picture again: is "
-                                       "the crop still round the leg, and does nothing identify the participant? Recording is refused "
-                                       "until you press this (or draw the crop or a mask again, or tick the box above).")
+                                       "the crop still round the leg, and does nothing identify the participant? Press this (V), or draw the "
+                                       "crop or a mask again, or tick the box above. A reminder only: since 0.24.0 it does not stop Record, "
+                                       "but each trial says whether the picture was looked at for its position.")
         self.btn_priv_again.setStyleSheet("font-weight: bold; color: #d97706;")
         self.btn_priv_again.clicked.connect(self.confirm_privacy_here)
         self.btn_priv_again.setVisible(False)
@@ -915,6 +940,13 @@ class LiveTab(QWidget):
         srow.addWidget(self.btn_ruler_clear)
         sf.addRow(srow)
         sf.addRow(self.scale_label)
+        self.btn_ruler_fine = QPushButton("Ruler still right at this position")
+        self.btn_ruler_fine.setToolTip("Shown after every change of position. Press it when the ruler and the camera have not moved: the "
+                                       "scale is still right. (Not needed to record; it is a reminder.)")
+        self.btn_ruler_fine.setStyleSheet("font-weight: bold; color: #d97706;")
+        self.btn_ruler_fine.clicked.connect(self.ruler_is_fine)
+        self.btn_ruler_fine.setVisible(False)
+        sf.addRow(self.btn_ruler_fine)
         self.chk_ruler_skip = QCheckBox("No ruler today (no lengths in cm)")
         self.chk_ruler_skip.setToolTip("Lengths in centimetres need a ruler in the picture; angles do not. Only tells the step list that you have "
                                        "decided. Not remembered: it is asked again every session.")
@@ -1045,8 +1077,46 @@ class LiveTab(QWidget):
         prow.addWidget(self.btn_pos_prev)
         prow.addWidget(self.pos_combo, 1)
         prow.addWidget(self.btn_pos_next)
+        self.btn_ruler_pin = QPushButton("Ruler (C)")                 # the ruler is redone often: one press from any section
+        self.btn_ruler_pin.setCheckable(True)                         # (checked while it waits for the two clicks)
+        self.btn_ruler_pin.setFocusPolicy(Qt.NoFocus)
+        self.btn_ruler_pin.setToolTip("Mark the ruler again: the old scale is removed at once, then click the ruler dot at each end of the "
+                                      "ruler on the video. Press again while it waits to stop.  (C)")
+        self.btn_ruler_pin.clicked.connect(self.redo_ruler)
+        prow.addWidget(self.btn_ruler_pin)
         qb.addLayout(prow)
         qb.addLayout(self.chip_grid)
+
+        # --- soft reminders (0.24.0): shown under the instruction when something should be looked at again (a position change, the
+        # resting force). Each row has the buttons that answer it. None of them ever stops Record.
+        self._ruler_recheck = False                      # the position changed since the ruler was last looked at
+        self._relax_dismissed = ""                       # the position for which 'Not here' was pressed on the resting-force reminder
+        self._soft_for_file = []                         # reminders open at Record that change what the trial's file holds (said again once it is saved)
+        self.reminders = ReminderBar()
+        self.btn_rem_ruler_fine = QPushButton("Fine")
+        self.btn_rem_ruler_fine.setToolTip("The ruler and the camera have not moved: the scale is still right at this position.")
+        self.btn_rem_ruler_fine.clicked.connect(self.ruler_is_fine)
+        self.btn_rem_ruler_redo = QPushButton("Redo (C)")
+        self.btn_rem_ruler_redo.clicked.connect(self.redo_ruler)
+        self.btn_rem_force = QPushButton("Zero 2 (X)")
+        self.btn_rem_force.setToolTip("Take the resting force for this position: the participant relaxed in the strap, the strap taut, not pushing.")
+        self.btn_rem_force.clicked.connect(lambda: self.btn_force_relax.click())
+        self.btn_rem_force_not = QPushButton("Not here")
+        self.btn_rem_force_not.setToolTip("No resting force at this position. The reminder stays away until the position changes.")
+        self.btn_rem_force_not.clicked.connect(self.relaxed_not_here)
+        self.btn_rem_priv_ok = QPushButton("No face (V)")
+        self.btn_rem_priv_ok.setToolTip("I looked at the picture: no face or anything else that identifies the participant is visible "
+                                        "(or the crop and masks are still right).")
+        self.btn_rem_priv_ok.clicked.connect(self.confirm_privacy_here)
+        self.btn_rem_priv_mask = QPushButton("Mask")
+        self.btn_rem_priv_mask.setToolTip("Drag a rectangle over a face (or anything else) on the video: it is black in the saved videos.")
+        self.btn_rem_priv_mask.clicked.connect(lambda: self.start_privacy_drawing("mask"))
+        self.btn_rem_priv_crop = QPushButton("Crop")
+        self.btn_rem_priv_crop.setToolTip("Drag a rectangle round the leg on the video: only that part is saved.")
+        self.btn_rem_priv_crop.clicked.connect(lambda: self.start_privacy_drawing("crop"))
+        self.reminders.add_row("privacy", [self.btn_rem_priv_ok, self.btn_rem_priv_mask, self.btn_rem_priv_crop])
+        self.reminders.add_row("ruler", [self.btn_rem_ruler_fine, self.btn_rem_ruler_redo])
+        self.reminders.add_row("force", [self.btn_rem_force, self.btn_rem_force_not])
         self.quick_bar = quick_bar
 
         # --- session plan: every position of the protocol with the trials already saved for this participant
@@ -1062,7 +1132,7 @@ class LiveTab(QWidget):
         self.participant.textChanged.connect(self._on_participant_text)
         self.target_spin.valueChanged.connect(lambda _: self.refresh_plan())
         self.target_spin.valueChanged.connect(lambda _: self.update_reference_box())    # the target is part of the readings' position
-        self.target_spin.valueChanged.connect(self._privacy_position_changed)
+        self.target_spin.valueChanged.connect(self._position_changed)
         plan_box = QGroupBox("Session plan (click the next position)")
         plan_l = QVBoxLayout(plan_box)
         plan_l.addWidget(self.plan)
@@ -1095,17 +1165,18 @@ class LiveTab(QWidget):
         head.setSpacing(6)
         head.addWidget(self.strip)
         head.addWidget(self.instruction)
+        head.addWidget(self.reminders)
         head.addLayout(quick)
         head.addWidget(self.quick_bar)
         self.accordion = Accordion()
-        for number, key, title, widgets in (("1", "participant", "Participant", [pc]),
-                                            ("2", "camera", "Camera", [src]),
-                                            ("3", "privacy", "Privacy and saved files", [pv]),
-                                            ("4", "position", "Position and angles", [plan_box, tg]),
-                                            ("5", "dots", "Dots, landmarks and lock", [mk]),
-                                            ("6", "ruler", "Ruler for centimetres", [sc]),
-                                            ("7", "force", "Force", [fc]),
-                                            ("8", "markers", "Markers and sound", [mkb]),
+        for number, key, title, widgets in (("1", "camera", "Camera", [src]),
+                                            ("2", "force", "Force", [fc]),
+                                            ("3", "markers", "Markers and sound", [mkb]),
+                                            ("4", "participant", "Participant", [pc]),
+                                            ("5", "position", "Position and angles", [plan_box, tg]),
+                                            ("6", "privacy", "Privacy and saved files", [pv]),
+                                            ("7", "ruler", "Ruler for centimetres", [sc]),
+                                            ("8", "dots", "Dots, landmarks and lock", [mk]),
                                             ("9", "record", "Record", [rc]),
                                             (None, "reference", "Reference reading (goniometer, inclinometer)", [rr]),
                                             (None, "checklist", "Camera set-up checklist (set once)", [cs]),
@@ -1161,6 +1232,8 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_X), self, activated=self.btn_force_relax.click)
         QShortcut(QKeySequence(Qt.Key_G), self, activated=self.btn_ref_stamp.click)
         QShortcut(QKeySequence(Qt.Key_D), self, activated=self.btn_redo_dots.click)
+        QShortcut(QKeySequence(Qt.Key_C), self, activated=self.btn_ruler_pin.click)
+        QShortcut(QKeySequence(Qt.Key_V), self, activated=self.confirm_privacy_if_open)
         QShortcut(QKeySequence(Qt.Key_N), self, activated=self.btn_pos_next.click)
         QShortcut(QKeySequence(Qt.Key_B), self, activated=self.btn_pos_prev.click)
         for number in range(1, 10):                       # 1..9: redo the dot with that number in the pinned bar
@@ -1243,8 +1316,23 @@ class LiveTab(QWidget):
         force_skipped, by_hand = self.chk_force_skip.isChecked(), self.chk_markers_hand.isChecked()
         auto_decided = self.chk_auto_mvic.isChecked() or by_hand or src is None          # without the force there is nothing to automate
         sound_decided = not self.chk_cues.isChecked() or self._beeps_tested
+        # The soft reminders (0.24.0): chips with the state 'check', and a row each under the instruction line. They are shown while
+        # nothing is recording, and none of them is ever 'the next step' or a reason to refuse Record.
+        if not ruler_set:
+            self._ruler_recheck = False                    # nothing left to look at again
+        rows = {}
+        if not recording and running:
+            if self._priv_recheck and not priv_problem:
+                rows["privacy"] = "Privacy: the position changed. Any face visible?"
+            elif not (shaped or priv_checked) and not priv_problem:
+                rows["privacy"] = "Privacy: is any face visible?"
+            if self._ruler_recheck and ruler_set:
+                rows["ruler"] = "Ruler: still right at this position?"
+            if (src is not None and zero_set and ready and id_ok and e.relaxed_here() is None
+                    and self._relax_dismissed != e.relaxed_key()):
+                rows["force"] = "Resting force: Zero 2 not taken here"
         if src is not None:
-            force_state = ("done", "Force zeroed") if zero_set else ("todo", "Force: zero")
+            force_state = (("check", "Force: Zero 2?") if "force" in rows else ("done", "Force zeroed")) if zero_set else ("todo", "Force: zero")
         elif force_skipped:
             force_state = ("done", "No force")
         else:
@@ -1254,12 +1342,12 @@ class LiveTab(QWidget):
                             else ("todo", f"{pid}?") if unconfirmed else ("todo", "Participant")),
             "camera": ("done" if running else "todo", "Camera"),
             "privacy": (("off", "Privacy") if not running else ("todo", "Privacy: fix") if priv_problem
-                        else ("todo", "Privacy: recheck") if self._priv_recheck
+                        else ("check", "Privacy: recheck") if self._priv_recheck
                         else ("done", "Privacy") if shaped or priv_checked else ("todo", "Privacy")),
             "position": ("done", f"Position {target}" if e.target is not None else "Position"),
             "dots": ("off" if not running else "done" if ready else "todo", f"Dots {n_marked}/{len(names)}"),
-            "ruler": (("off", "Ruler") if not running else ("done", "Ruler") if ruler_set
-                      else ("done", "No ruler") if ruler_skipped else ("todo", "Ruler")),
+            "ruler": (("off", "Ruler") if not running else ("check", "Ruler: check") if "ruler" in rows
+                      else ("done", "Ruler") if ruler_set else ("done", "No ruler") if ruler_skipped else ("todo", "Ruler")),
             "lock": ("off" if not ready else "done" if e.locked else "todo", "Lock"),
             "force": force_state,
             "markers": ("done" if auto_decided and sound_decided else "todo", "Markers"),
@@ -1270,6 +1358,15 @@ class LiveTab(QWidget):
         self._first_todo = first_todo
         for k, (state, label) in states.items():
             self.strip.set_state(k, "next" if k == first_todo else state, label, self._hint(k))
+        for key in self.reminders.rows:
+            self.reminders.set_row(key, rows.get(key, ""))
+        ruler_due = "ruler" in rows
+        if self.btn_ruler_fine.isHidden() == ruler_due:
+            self.btn_ruler_fine.setVisible(ruler_due)
+        pin_style = "font-weight: bold; color: #d97706;" if ruler_due else ""
+        if self.btn_ruler_pin.styleSheet() != pin_style:
+            self.btn_ruler_pin.setStyleSheet(pin_style)
+        self.view.set_banner(PRIVACY_BANNER if "privacy" in rows else "")      # on the picture itself: screen only, never in a saved video
         self.btn_participant_ok.setVisible(unconfirmed)
         if unconfirmed:
             self.btn_participant_ok.setText(f"Same participant ({pid}): confirm")
@@ -1332,8 +1429,8 @@ class LiveTab(QWidget):
         if step == "participant" and privacy.check_participant_id(self.participant.text().strip()) is None and not self.engine.tested_leg:
             return f"Choose the tested (dominant) leg of {self.participant.text().strip()} in the Participant section."
         if step == "privacy" and self._priv_recheck:
-            return ("The position changed: look at the picture again. Is the crop still round the leg, and does nothing identify the "
-                    "participant? Then press 'Privacy checked at this position' (or draw the crop or mask again).")
+            return ("The position changed: look at the picture again. Is any face visible, and is the crop still round the leg? Press V "
+                    "(or 'Privacy checked at this position') if all is well, or draw a mask or the crop again.")
         return STEP_HINT[step]
 
     def _participant_unconfirmed(self):
@@ -1552,7 +1649,7 @@ class LiveTab(QWidget):
         self.rebuild_landmarks()
         self.rebuild_reference_fields()
         self.refresh_plan()
-        self._privacy_position_changed()                        # (the target box was set with its signals blocked)
+        self._position_changed()                                # (the target box was set with its signals blocked)
 
     # ------------------------------------------------- reference readings (a hand instrument, typed in)
     def rebuild_reference_fields(self):
@@ -1741,9 +1838,10 @@ class LiveTab(QWidget):
         """A frontal test (camera in front of the participant) has no 'Participant faces': it offers the optional tape measure of the
         pelvis and the posture tick instead. (The tested leg is in the Participant section for every test since 0.20.0.)"""
         frontal = self.engine.test.frontal
-        for w, show in ((self.facing_combo, not frontal), (self.tape_spin, frontal), (self.chk_wall, frontal)):
+        for w, show, form in ((self.facing_combo, not frontal, getattr(self, "participant_form", None)),     # (built later than the first call)
+                              (self.tape_spin, frontal, self.settings_form), (self.chk_wall, frontal, self.settings_form)):
             w.setVisible(show)
-            label = self.settings_form.labelForField(w)               # (None for the tick box: it spans the row)
+            label = form.labelForField(w) if form is not None else None     # (None for the tick box: it spans the row)
             if label is not None:
                 label.setVisible(show)
 
@@ -2155,6 +2253,7 @@ class LiveTab(QWidget):
         self.refresh_view()
 
     def on_kind_changed(self):
+        had_ruler = self.engine.scale.configured
         try:
             self.engine.set_dot_kind(self.kind_combo.currentData())
         except RuntimeError as e:
@@ -2164,6 +2263,9 @@ class LiveTab(QWidget):
         self._stop_marking()
         self.update_dot_rows()
         self.btn_lock.setChecked(False)
+        if had_ruler:                                       # (the ruler dots are followed in the dot colour; 0.24.0: the ruler is marked first)
+            self._ruler_marking = None
+            self.say("The dot colour changed, so the ruler was cleared too: mark it again (C).", 8.0)
 
     # ------------------------------------------------------------ source
     def _camera_checklist_changed(self, *_):
@@ -2452,7 +2554,41 @@ class LiveTab(QWidget):
         self._stop_marking()                                  # (the ruler is served first: a dot waiting for a click would never get it)
         self.update_dot_rows()
         self._ruler_marking = 0
+        self.note("ruler marking started")
         self.say("Click the ruler dot at one end of the ruler.", 8.0)
+
+    def redo_ruler(self):
+        """The pinned 'Ruler (C)' button and the C key (0.24.0): mark the ruler again from whichever section is open; pressed again while it
+        waits for the clicks, it stops (the old scale is gone either way, like a single dot that was cancelled)."""
+        if self._ruler_marking is not None:
+            self._ruler_marking = None
+            self.update_scale_label()
+            self.say("Ruler marking stopped. Press Ruler (C) to mark it again.")
+            return
+        self.start_ruler_marking()
+        self.update_scale_label()
+
+    def ruler_is_fine(self):
+        """The reminder 'still right at this position?' is answered: the ruler and the camera have not moved."""
+        if self._ruler_recheck:
+            self._ruler_recheck = False
+            e = self.engine
+            self.note("ruler checked", f"{e.test.key} {'' if e.target is None else format(e.target, 'g')} (still right)".strip())
+        self.update_steps()
+
+    def relaxed_not_here(self):
+        """'Not here' on the resting-force reminder: no Zero 2 at this position; the reminder stays away until the position changes."""
+        self._relax_dismissed = self.engine.relaxed_key()
+        self.note("resting force reminder dismissed", self._relax_dismissed)
+        self.update_steps()
+
+    def confirm_privacy_if_open(self):
+        """The V key: 'I looked, no face is visible' (with a crop or masks: they are still right). Works whenever the picture is there."""
+        if self.worker is None or self._rec_started is not None:
+            self.say("Start the camera first, then look at the picture." if self.worker is None else "Not while recording.")
+            return
+        self.confirm_privacy_here()
+        self.say("Privacy: looked at this position.")
 
     def on_ruler_click(self, x, y):
         index = self._ruler_marking
@@ -2462,6 +2598,8 @@ class LiveTab(QWidget):
                 self.say("Now click the ruler dot at the other end.", 8.0)
             else:
                 self._ruler_marking = None
+                self._ruler_recheck = False                       # marked just now: that is the look at this position
+                self.note("ruler marked", f"{self.engine.scale.px_per_cm:.2f} px/cm")
                 self.say(f"Scale set: {self.engine.scale.px_per_cm:.2f} px per cm ({self.ruler_len.value():g} cm ruler).")
         else:
             self.say(self.engine.mark_problem or "No dot found at that spot. Click the centre of the ruler dot.")
@@ -2481,8 +2619,11 @@ class LiveTab(QWidget):
     def update_scale_label(self):
         sc = self.engine.scale
         recording = self._rec_started is not None
-        for w in (self.ruler_len, self.btn_ruler, self.btn_ruler_clear):
+        for w in (self.ruler_len, self.btn_ruler, self.btn_ruler_clear, self.btn_ruler_pin):
             w.setEnabled(not recording)
+        waiting = self._ruler_marking is not None
+        if self.btn_ruler_pin.isChecked() != waiting:
+            self.btn_ruler_pin.setChecked(waiting)           # (checked = it waits for the clicks; a click on the button itself is redo_ruler)
         if not sc.configured:
             self.scale_label.setText("Marking the ruler dots..." if self._ruler_marking is not None
                                      else "No scale set. Lengths in centimetres need a ruler in the picture.")
@@ -2823,18 +2964,23 @@ class LiveTab(QWidget):
         if ok:                                                # (drawing it meant looking at the picture of this position)
             self.confirm_privacy("crop drawn" if kind == "crop" else "mask added")
 
-    def _privacy_position_changed(self, *_):
-        """The participant is in another position (another test or target), so the picture is not the one the privacy set-up was looked at
-        on: the crop may no longer cover the leg, and a face may have come into view. The 'I looked' tick is cleared and recording is
-        refused until the picture has been looked at again (0.23.0). The same position again, trial after trial, asks nothing."""
+    def _position_changed(self, *_):
+        """The participant is in another position (another test or target). Two things may no longer be right, and both come up as soft
+        reminders (0.24.0; nothing stops Record): the picture the privacy set-up was looked at on (the crop may no longer cover the leg, a
+        face may have come into view; the 'I looked' tick is cleared, 0.23.0), and the ruler (it may have been moved or taken away).
+        The same position again, trial after trial, asks nothing. (The resting force follows its own per-position rule.)"""
         e = self.engine
         old, self._priv_pos = self._priv_pos, (e.test.key, e.target)
         if old == self._priv_pos or self._restoring:
             return
+        where = f"{e.test.key} {'' if e.target is None else format(e.target, 'g')}".strip()
         self._priv_recheck = True
         if self.chk_priv_ok.isChecked():
             self.chk_priv_ok.setChecked(False)                # ('I looked' was about the previous position)
-        self.note("privacy to be checked again", f"{e.test.key} {'' if e.target is None else format(e.target, 'g')}".strip())
+        self.note("privacy to be checked again", where)
+        if e.scale.configured:
+            self._ruler_recheck = True
+            self.note("ruler to be checked again", where)
         self.update_steps()
 
     def confirm_privacy(self, how):
@@ -3072,14 +3218,6 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Cannot record", "The video file has already ended, so nothing would be recorded. "
                                     "Step back with the Left arrow key or open the file again.")
                 return
-            if self._priv_recheck:
-                self.btn_rec.setChecked(False)
-                QMessageBox.warning(self, "Privacy", "The position changed since the privacy set-up was last looked at. Look at the picture "
-                                    "again: is the crop still round the leg, and does nothing identify the participant?\n\nThen press "
-                                    "'Privacy checked at this position' in the Privacy section (or draw the crop or a mask again), "
-                                    "and record.")
-                self.open_step("privacy")
-                return
             id_problem = privacy.check_participant_id(self.participant.text().strip())
             if id_problem:
                 self.btn_rec.setChecked(False)
@@ -3106,29 +3244,11 @@ class LiveTab(QWidget):
                 QMessageBox.warning(self, "Reference reading", ref_problem)
                 self.open_step("reference")
                 return
-            if not self.engine.locked:
-                r = QMessageBox.question(self, "Not locked", "The position is not locked, so the other joints are not "
-                                         "checked for drift. Record anyway?")
-                if r != QMessageBox.Yes:
-                    self.btn_rec.setChecked(False)
-                    return
-            main_problem = self.engine.main_angle_problem()
-            if main_problem:
-                r = QMessageBox.question(self, "Main angle", main_problem + " The trial would have no (or a doubtful) main angle "
-                                         "until that is fixed.\n\nRecord anyway?")
-                if r != QMessageBox.Yes:
-                    self.btn_rec.setChecked(False)
-                    return
-            src = self.force_source
-            if src is not None and not src.error and src.calibration.has_slope and not src.calibration.zero_set:
-                # 4 of the 11 trials of 2026-10-15 were recorded like this: volts only, no newtons and no peak force
-                r = QMessageBox.question(self, "Force not zeroed", "The force has not been zeroed since the program started, so this trial "
-                                         "will have volts but no newtons (and no peak force in N). To zero: unload the strap, press Zero (Z), "
-                                         "then record.\n\nRecord anyway, without newtons?")
-                if r != QMessageBox.Yes:
-                    self.btn_rec.setChecked(False)
-                    self.open_step("force")
-                    return
+            # What is still open as a soft reminder does not stop the recording (0.24.0): it is written to the session log and to
+            # meta.json, and what changes the file itself is said again with the trial's warnings once it is saved.
+            reminders = self._open_reminders()
+            self.engine.reminders_open = [text for text, _ in reminders]
+            self._soft_for_file = [text for text, in_file in reminders if in_file]
             try:
                 self.engine.start_trial(self.participant.text().strip(), self.notes.text())
             except Exception as e:  # noqa: BLE001
@@ -3138,6 +3258,8 @@ class LiveTab(QWidget):
             self._rec_started = time.perf_counter()
             self._start_recording_view()
             self.note("recording started", f"{self.participant.text().strip()} {self.engine.test.key} {self.engine.target if self.engine.target is not None else ''}".strip())
+            if reminders:
+                self.note("recording started with reminders open", " | ".join(text for text, _ in reminders))
             self.refresh_plan()
             self._marker_counts = {"start": 0, "end": 0, "other": 0}
             self._marker_msg = ("", 0.0)
@@ -3177,7 +3299,8 @@ class LiveTab(QWidget):
                                     "Check the camera and repeat the trial.")
             else:
                 short = n is not None and n < 30
-                warnings = list(self.engine.last_trial_warnings)
+                warnings = list(self.engine.last_trial_warnings) + [f"Recorded while this was open: {t}" for t in self._soft_for_file]
+                self._soft_for_file = []
                 self.rec_label.setText(f"Saved: {paths['data.csv'].parent.name}/{paths['raw.mp4'].name[:-8]}... "
                                        f"({n} frames, {duration:.1f} s)" + ("  VERY SHORT RECORDING" if short else "")
                                        + ("\nCHECK THIS TRIAL: " + warnings[0] if warnings else ""))
@@ -3192,6 +3315,31 @@ class LiveTab(QWidget):
                     self._add_after_trial([f"The 10 % check could not be made: {e}"], warn=True)
                 else:
                     self._check_position(paths["meta.json"], key, announce=True)
+
+    def _open_reminders(self):
+        """What is still open when Record is pressed, as (sentence, changes_what_the_file_holds) pairs (0.24.0). None of it stops the
+        recording. The first four used to be questions or a refusal; the last two were already only reminders on the screen."""
+        e = self.engine
+        out = []
+        shaped = bool(e.privacy_crop) or bool(e.privacy_masks)
+        if self._priv_recheck:
+            out.append(("Privacy: the picture was not looked at again after the position changed.", True))
+        elif not (shaped or self.chk_priv_ok.isChecked()):
+            out.append(("Privacy: nobody said that no face is visible.", True))
+        if not e.locked:
+            out.append(("The position is not locked, so the other joints are not checked for drift.", True))
+        main_problem = e.main_angle_problem()
+        if main_problem:
+            out.append((main_problem + " The trial may have no (or a doubtful) main angle.", True))
+        src = self.force_source
+        if src is not None and not src.error and src.calibration.has_slope and not src.calibration.zero_set:
+            # 4 of the 11 trials of 2026-10-15 were recorded like this: volts only, no newtons and no peak force (Review can apply a later zero)
+            out.append(("The force has not been zeroed since the program started: this trial has volts but no newtons.", True))
+        if self._ruler_recheck and e.scale.configured:
+            out.append(("Ruler: not looked at again after the position changed.", False))
+        if src is not None and src.calibration.zero_set and e.relaxed_here() is None and self._relax_dismissed != e.relaxed_key():
+            out.append(("Resting force: Zero 2 was not taken for this position.", False))
+        return out
 
     def _ask_tested_leg(self):
         """Record with no tested leg chosen for this participant (0.20.0): ask Right / Left / Cancel. True when a leg was chosen."""

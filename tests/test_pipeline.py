@@ -38,7 +38,8 @@ def values(res):
 
 def test_protocol_loads_with_goniometer_landmarks():
     t = TESTS["knee_extension"]
-    assert t.dots == ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"]
+    assert t.dots == ["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus"]       # 0.24.0: no foot in the knee and hip tests
+    assert TESTS["belt_squat"].dots == [*t.dots, "mt5_base", "mt5_head"]                          # ... the ankle tests and the belt squat keep it
     assert t.primary.name == "knee"
     assert TESTS["hip_extension_k90"].primary.name == "hip"
     assert TESTS["ankle_dorsiflexion"].primary.name == "ankle"
@@ -70,7 +71,7 @@ def test_auto_kind_detects_white_and_black():
 @pytest.mark.parametrize("hip,knee,ankle,tilt", [
     (0, 0, 0, 0), (45, 20, 5, 4), (80, 65, -10, -6), (-20, 110, 10, 12), (90, 140, 0, 0), (10, 90, -20, 8)])
 def test_all_angles_accurate_static(kind, facing, hip, knee, ankle, tilt):
-    eng = make_engine(OUT, kind=kind, facing=facing)
+    eng = make_engine(OUT, test="belt_squat", kind=kind, facing=facing)          # (knee, hip and ankle: the knee test has no foot since 0.24.0)
     pts = leg_points(hip, knee, ankle, tilt, facing)
     eng.process(render(pts, kind=kind, seed=3), 0.0)
     click_all(eng, pts)
@@ -138,7 +139,7 @@ def test_tracking_a_moving_knee_and_recording(tmp_path):
 
 
 def _locked_engine(tmp_path, still):
-    eng = make_engine(tmp_path)
+    eng = make_engine(tmp_path, test="belt_squat")
     eng.target = 60.0
     eng.process(render(still), 0.0)
     click_all(eng, still)
@@ -171,7 +172,7 @@ def test_neighbour_drift_is_flagged_after_lock(tmp_path):
 
 
 def test_lost_dot_is_flagged_and_reacquired(tmp_path):
-    eng = make_engine(tmp_path)
+    eng = make_engine(tmp_path, test="belt_squat")
     eng.target = 50.0
     pts = leg_points(hip_flex=70, knee_flex=50)
     eng.process(render(pts), 0.0)

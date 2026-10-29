@@ -43,7 +43,7 @@ def values(res):
 
 
 def test_skipping_the_pelvis_dot_drops_only_the_angles_that_need_it(tmp_path):
-    eng = engine(tmp_path, disabled=["iliac_crest"])
+    eng = engine(tmp_path, disabled=["iliac_crest"], test="belt_squat")        # (the belt squat has the foot; since 0.24.0 the knee test has not)
     assert eng.active_dots == ["trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base", "mt5_head"]
     assert [a.name for a in eng.active_angles] == ["knee", "ankle"]
     assert mark_all(eng) == 6                                          # the skipped dot is never asked for
@@ -59,7 +59,7 @@ def test_skipping_the_pelvis_dot_drops_only_the_angles_that_need_it(tmp_path):
 
 
 def test_trial_files_only_contain_the_chosen_landmarks(tmp_path):
-    eng = engine(tmp_path, disabled=["iliac_crest"])
+    eng = engine(tmp_path, disabled=["iliac_crest"], test="belt_squat")
     mark_all(eng)
     assert eng.lock_position()
     eng.start_trial("P01")
@@ -112,11 +112,22 @@ def test_choice_survives_switching_test_and_lock_is_dropped(tmp_path):
     eng = engine(tmp_path)
     mark_all(eng)
     assert eng.lock_position()
-    eng.set_dot_enabled("mt5_head", False)
+    eng.set_dot_enabled("malleolus", False)
     assert eng.locked is False                                          # references would be stale
     eng.set_test("hip_extension_k90")
-    assert eng.disabled_dots - OPTIONAL == {"mt5_head"} and eng.primary_angle.name == "hip"
-    assert "mt5_head" not in eng.active_dots
+    assert eng.disabled_dots - OPTIONAL == {"malleolus"} and eng.primary_angle.name == "hip"
+    assert "malleolus" not in eng.active_dots
+
+
+def test_a_foot_dot_switched_off_is_forgotten_in_a_test_that_has_no_foot(tmp_path):
+    """0.24.0: the knee and hip tests have no foot dots. A choice about a dot the test does not have is dropped (and not brought back)."""
+    eng = engine(tmp_path, test="belt_squat")
+    eng.set_dot_enabled("mt5_head", False)
+    assert eng.disabled_dots - OPTIONAL == {"mt5_head"}
+    eng.set_test("hip_extension_k90")
+    assert eng.disabled_dots - OPTIONAL == set() and "mt5_head" not in eng.test.all_dots
+    eng.set_test("belt_squat")
+    assert "mt5_head" in eng.active_dots
 
 
 def test_cannot_change_landmarks_while_recording_or_record_with_no_angles(tmp_path):
@@ -127,7 +138,7 @@ def test_cannot_change_landmarks_while_recording_or_record_with_no_angles(tmp_pa
         eng.set_dot_enabled("iliac_crest", False)
     eng.stop_trial()
 
-    eng2 = engine(tmp_path, disabled=["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus", "mt5_base"])
+    eng2 = engine(tmp_path, disabled=["iliac_crest", "trochanter", "epicondyle", "fibular_head", "malleolus"])
     assert eng2.active_angles == []
     with pytest.raises(RuntimeError):
         eng2.start_trial("P01")
@@ -138,7 +149,7 @@ def test_landmark_checkboxes_and_presets_in_the_window(tmp_path):
     app = QApplication.instance() or QApplication([])
     win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
     live = win.live
-    assert len(live.lm_checks) == 9                                     # 7 landmarks + the optional strap and anchor dots
+    assert len(live.lm_checks) == 7                                     # 5 landmarks (no foot in the knee test) + the optional strap and anchor dots
     assert all(cb.isChecked() for n, cb in live.lm_checks.items() if n not in OPTIONAL)
     assert not any(live.lm_checks[n].isChecked() for n in OPTIONAL)       # the optional dots start switched off
     assert live.lm_preset.itemText(0) == "Preset: all landmarks"
@@ -152,7 +163,7 @@ def test_landmark_checkboxes_and_presets_in_the_window(tmp_path):
     live.lm_preset.setCurrentIndex(knee_preset)
     live.apply_landmark_preset(knee_preset)
     assert win.engine.active_dots == ["trochanter", "epicondyle", "fibular_head", "malleolus"]
-    assert [cb.isChecked() for cb in live.lm_checks.values()] == [False, True, True, True, True, False, False, False, False]
+    assert [cb.isChecked() for cb in live.lm_checks.values()] == [False, True, True, True, True, False, False]
 
     live.apply_landmark_preset(0)                                       # back to everything
     assert win.engine.disabled_dots == OPTIONAL                          # all landmarks, optional dots still off

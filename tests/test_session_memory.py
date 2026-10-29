@@ -306,7 +306,7 @@ def test_the_participant_of_the_last_session_comes_back_as_a_question_not_as_an_
     assert b.participant.text() == "P07" and b._participant_unconfirmed()
     assert b.accordion.current() == "participant"                                           # the question is the first thing on screen
     b.update_steps()
-    assert b.strip.states["participant"][0] == "next" and b.strip.chips["participant"].text().endswith("P07?")
+    assert b.strip.states["participant"][0] == "todo" and b.strip.chips["participant"].text().endswith("P07?")      # (the camera comes first now)
     b.participant.returnPressed.emit()
     assert not b._participant_unconfirmed()
     w2.close()

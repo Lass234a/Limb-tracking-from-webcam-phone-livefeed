@@ -79,6 +79,7 @@ def test_f_keys_add_markers_while_typing_in_the_notes_box(recording):
 
 def test_enter_leaves_the_text_box_and_the_letter_keys_work_again(recording):
     app, win, live, pump, tmp = recording
+    live.open_step("participant")                            # (the notes box is in the Participant section, which is not the first one open since 0.24.0)
     live.notes.setFocus()
     app.processEvents()
     assert live.key_hint.isVisible()                         # the operator is told the letters are off
