@@ -18,6 +18,14 @@ replay put the dot somewhere else', not 'the replay is wrong'. With the same tra
 agree; what is left comes from the saved video being compressed (mp4v) and from clicks that were made while a dot was marked.
 A candidate is better when it loses fewer visible dots, fills gaps sooner, and does not move dots to other places than the saved
 track unless the saved track was wrong (look at the video yourself in Review for those frames: 'first_diff_frame').
+
+Two measures that do not depend on the saved track being right:
+  * marking_offset_px (per dot): how far the tracker's marking at the first picture lands from the position the program saved
+    there (empty = the marking failed). A colour or snapping fault shows here at once.
+  * apart_frames (one row per pair of dots on one bone, `rigid_pairs` of protocol.json, dot column "a+b"): the pictures in which
+    the distance between the two changed by more than 25 % from when they were first seen together: the program's own CHECK DOTS
+    rule (engine.RIGID_PAIR_CHANGE), here applied to each tracker's replay. saved_apart_frames is what the live program flagged
+    in data.csv ('dots_apart'); apart_both is the overlap. Fewer apart_frames with the same saved_apart_frames overlap = fewer jumps.
 """
 import argparse
 import csv
@@ -25,6 +33,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import statistics
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -79,42 +88,101 @@ def start_frame(rows, dots):
     return None
 
 
-def replay(tracker_mod, meta, rows, video, dots, i0, crop, full_size, masks):
-    """Track from row i0 to the end. Returns {dot: [(x, y, lost)] per row from i0}, the dots that could not be marked, and each
-    dot's diameter (pixels) as learned when it was marked."""
+def replay_all(mods, meta, rows, video, dots, i0, crop, full_size):
+    """Track from row i0 to the end with every tracker version in `mods` ({name: module}) over ONE pass through the video (the
+    picture is decoded once, not once per version). Returns, per version name: {dot: [(x, y, lost)] per row from i0}, the dots that
+    could not be marked, each dot's diameter (pixels) as learned when it was marked, and how far each marking landed from the saved
+    position at row i0 (pixels; a dot that could not be marked has no entry)."""
     cap = cv2.VideoCapture(str(video))
     kind = meta.get("dot_kind") or "auto"
-    ts = tracker_mod.TrackerSet(dots, kind=kind)
-    out = {d: [] for d in dots}
-    failed = set()
-    n = len(rows)
-    for i in range(n):
+    sets = {v: m.TrackerSet(dots, kind=kind) for v, m in mods.items()}
+    to_gray = next(iter(mods.values())).to_gray
+    out = {v: {d: [] for d in dots} for v in mods}
+    failed = {v: set() for v in mods}
+    offset = {v: {} for v in mods}
+    nan = float("nan")
+    for i in range(len(rows)):
         ok, img = cap.read()
         if not ok:
-            for d in dots:
-                out[d].append((float("nan"), float("nan"), True))
+            for v in mods:
+                for d in dots:
+                    out[v][d].append((nan, nan, True))
             continue
         if i < i0:
             continue
         if crop and full_size:
             img = privacy.pad_to_full(img, crop, full_size)
-        gray = tracker_mod.to_gray(img)
-        if i == i0:
-            for d in dots:
-                if not ts.init_dot(d, gray, _f(rows[i][f"{d}_x"]), _f(rows[i][f"{d}_y"])):
-                    failed.add(d)
-                    ts.trackers[d].initialised = False
-            for d in dots:
-                t = ts.trackers[d]
-                out[d].append((t.x, t.y, d in failed))
-            continue
-        states = ts.update(gray)
-        for d in dots:
-            s = states.get(d)
-            out[d].append((s.x, s.y, s.lost) if s else (float("nan"), float("nan"), True))
+        gray = to_gray(img)
+        for v, ts in sets.items():
+            if i == i0:
+                for d in dots:
+                    sx, sy = _f(rows[i][f"{d}_x"]), _f(rows[i][f"{d}_y"])
+                    if ts.init_dot(d, gray, sx, sy):
+                        offset[v][d] = float(np.hypot(ts.trackers[d].x - sx, ts.trackers[d].y - sy))
+                    else:
+                        failed[v].add(d)
+                        ts.trackers[d].initialised = False
+                for d in dots:
+                    t = ts.trackers[d]
+                    out[v][d].append((t.x, t.y, d in failed[v]))
+            else:
+                states = ts.update(gray)
+                for d in dots:
+                    s = states.get(d)
+                    out[v][d].append((s.x, s.y, s.lost) if s else (nan, nan, True))
     cap.release()
-    diam = {d: (ts.trackers[d].marked_diam or 10.0) for d in dots}
+    diam = {v: {d: (sets[v].trackers[d].marked_diam or 10.0) for d in dots} for v in mods}
+    return {v: (out[v], failed[v], diam[v], offset[v]) for v in mods}
+
+
+def replay(tracker_mod, meta, rows, video, dots, i0, crop, full_size, masks):
+    """One tracker version over the video (see replay_all). Returns the track, the dots that could not be marked and each dot's
+    diameter. `masks` is accepted for older callers and not used."""
+    out, failed, diam, _ = replay_all({"v": tracker_mod}, meta, rows, video, dots, i0, crop, full_size)["v"]
     return out, failed, diam
+
+
+# ---- dots on one bone: the program's own CHECK DOTS rule (protocol.json rigid_pairs, engine.RIGID_PAIR_CHANGE)
+RIGID_PAIR_CHANGE = 0.25
+_APART = re.compile(r"([a-z0-9_]+)-([a-z0-9_]+):[+-]?\d+")
+
+
+def read_rigid_pairs(protocol_path):
+    try:
+        return [tuple(p) for p in json.loads(Path(protocol_path).read_text(encoding="utf-8")).get("rigid_pairs", [])]
+    except (OSError, ValueError):
+        return []
+
+
+def apart_frames(tracks, pairs, i0, tol=RIGID_PAIR_CHANGE):
+    """{(a, b): rows in which the distance of the pair differs from its distance when both were first seen by more than `tol`}.
+    Only pictures in which both dots are tracked count (a lost dot has no position)."""
+    out = {}
+    for a, b in pairs:
+        if a not in tracks or b not in tracks:
+            continue
+        ref, flagged = None, set()
+        for k, (pa, pb) in enumerate(zip(tracks[a], tracks[b])):
+            if pa[2] or pb[2]:
+                continue
+            d = float(np.hypot(pa[0] - pb[0], pa[1] - pb[1]))
+            if ref is None:
+                ref = d
+            elif ref > 1e-6 and abs(d / ref - 1.0) > tol:
+                flagged.add(i0 + k)
+        out[(a, b)] = flagged
+    return out
+
+
+def saved_apart(rows, pairs):
+    """{(a, b): rows the live program flagged CHECK DOTS for that pair} from data.csv's 'dots_apart' column (e.g. "fibular_head-malleolus:+40")."""
+    out = {tuple(p): set() for p in pairs}
+    for r, row in enumerate(rows):
+        for m in _APART.finditer(row.get("dots_apart") or ""):
+            key = (m.group(1), m.group(2))
+            if key in out:
+                out[key].add(r)
+    return out
 
 
 def compare(track, rows, i0, dot, tol, masks):
@@ -150,10 +218,12 @@ def compare(track, rows, i0, dot, tol, masks):
             "p95_dist_px": round(float(np.percentile(dist, 95)), 3) if dist else None}
 
 
-def code_signature(candidate):
-    """Changes whenever the tracker code (or this script) changes, so cached numbers are never reused for different code."""
+def code_signature(candidate, protocol=None):
+    """Changes whenever the tracker code, this script or the protocol file (rigid_pairs) change, so cached numbers are never reused
+    for different code."""
     h = hashlib.sha1()
-    for p in sorted((HERE.parent / "limbtrack").glob("*.py")) + [Path(__file__)] + ([Path(candidate)] if candidate else []):
+    extra = ([Path(candidate)] if candidate else []) + ([Path(protocol)] if protocol and Path(protocol).is_file() else [])
+    for p in sorted((HERE.parent / "limbtrack").glob("*.py")) + [Path(__file__)] + extra:
         h.update(p.name.encode())
         h.update(p.read_bytes())
     return h.hexdigest()
@@ -174,7 +244,7 @@ def trial_signature(meta_path, meta, tol, code_sig):
 
 def process_trial(job):
     """One trial through every version. Runs in a worker process. Returns (label, report rows, printed line)."""
-    label, mp, i0, candidate, tol_factor = job
+    label, mp, i0, candidate, tol_factor, protocol = job
     versions = {"current": base_tracker}
     if candidate:
         versions["candidate"] = load_tracker(candidate)
@@ -187,12 +257,20 @@ def process_trial(job):
     masks = [tuple(m) for m in pv.get("masks_xywh") or []]
     dots = dots_of(rows)
     video = Path(mp).parent / meta["files"]["raw.mp4"]
+    pairs = [p for p in read_rigid_pairs(protocol) if p[0] in dots and p[1] in dots]
+    saved = saved_apart(rows, pairs)
+    ran = replay_all(versions, meta, rows, video, dots, i0, crop, full)
     report, tracks = [], {}
-    for vname, mod in versions.items():
-        tracks[vname], failed, diam = replay(mod, meta, rows, video, dots, i0, crop, full, masks)
+    for vname in versions:
+        tracks[vname], failed, diam, offset = ran[vname]
         for d in dots:
             res = compare(tracks[vname][d], rows, i0, d, tol_factor * diam[d], masks)
-            report.append({**info, "version": vname, "dot": d, "marked_at_frame": i0, "init_failed": d in failed, **res})
+            report.append({**info, "version": vname, "dot": d, "marked_at_frame": i0, "init_failed": d in failed,
+                           "marking_offset_px": round(offset[d], 2) if d in offset else None, **res})
+        for pair, flagged in apart_frames(tracks[vname], pairs, i0).items():
+            s = saved[pair]
+            report.append({**info, "version": vname, "dot": f"{pair[0]}+{pair[1]}", "marked_at_frame": i0,
+                           "apart_frames": len(flagged), "saved_apart_frames": len(s), "apart_both": len(flagged & s)})
     if "candidate" in versions:             # the two versions against each other
         for d in dots:
             a, b = tracks["current"][d], tracks["candidate"][d]
@@ -222,6 +300,7 @@ def main():
     ap.add_argument("--no-cache", action="store_true", help="replay every trial again")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="trials replayed at the same time (default: processors - 1)")
     ap.add_argument("--tol", type=float, default=0.75, help="positions within this x the dot's diameter count as the same (default 0.75)")
+    ap.add_argument("--protocol", default=str(HERE.parent / "protocol.json"), help="protocol.json whose rigid_pairs give the dots on one bone")
     ap.add_argument("--max-trials", type=int, default=0, help="stop after this many trials (0 = all)")
     args = ap.parse_args()
 
@@ -234,7 +313,7 @@ def main():
     old = read_key(args.key)
     used = {int(v[1:]) for v in old.values() if v[1:].isdigit()}
     nxt = max(used, default=0) + 1
-    code_sig = code_signature(args.candidate)
+    code_sig = code_signature(args.candidate, args.protocol)
     plan = []                               # (label, meta path, i0, signature)
     for mp in metas:
         if args.max_trials and len(plan) >= args.max_trials:
@@ -265,7 +344,7 @@ def main():
         if hit and hit.get("sig") == sig:
             results[label] = hit["report"]
         else:
-            todo.append((label, mp, i0, args.candidate, args.tol))
+            todo.append((label, mp, i0, args.candidate, args.tol, args.protocol))
     print(f"{len(plan)} trials: {len(results)} unchanged (from cache), {len(todo)} to replay"
           f"{f' on {min(args.jobs, len(todo))} processes' if len(todo) > 1 else ''}")
 
@@ -304,6 +383,15 @@ def main():
         rs = [r for r in report if r["version"] == vname]
         tot = {k: sum(int(r.get(k) or 0) for r in rs) for k in ("agree", "differs", "replay_lost_saved_ok", "saved_lost_replay_found")}
         print(f"  {vname:22s} {tot}")
+    print("\nDots on one bone that move apart (the program's CHECK DOTS rule, pictures) and markings off by more than 3 px or failed:")
+    for vname in versions[:2] if args.candidate else versions[:1]:
+        rs = [r for r in report if r["version"] == vname]
+        pairs_ = [r for r in rs if "+" in str(r["dot"])]
+        dots_ = [r for r in rs if "+" not in str(r["dot"])]
+        off = sum(1 for r in dots_ if r.get("init_failed") or (r.get("marking_offset_px") not in (None, "") and float(r["marking_offset_px"]) > 3.0))
+        print(f"  {vname:22s} apart in {sum(int(r.get('apart_frames') or 0) for r in pairs_)} pictures "
+              f"(the live program flagged {sum(int(r.get('saved_apart_frames') or 0) for r in pairs_)}, in both {sum(int(r.get('apart_both') or 0) for r in pairs_)}); "
+              f"markings off or failed: {off} of {len(dots_)} dots")
     print(f"\nWrote {args.out} (numbers only: safe to share) and {args.key} (keep private).")
     return 0
 
