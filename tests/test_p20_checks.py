@@ -268,9 +268,12 @@ def test_a_real_contraction_is_not_called_out(tmp_path):
     assert not any("hardly moved" in text for _, text in trial_checks(Trial(paths["meta.json"])))
 
 
-def test_no_start_marker_no_rise_check(tmp_path):
+def test_no_start_marker_the_rise_is_taken_over_the_whole_recording(tmp_path):
+    """Until 0.25.0 a trial without a start marker had no rise check at all; since 0.26.0 the whole recording is looked at (P02 2026-10-29:
+    the automatic marker never fired in two trials without force, and nothing was said). More in tests/test_pilot_checks.py."""
     eng, meta, paths, _ = force_trial(tmp_path, lambda s: 0.0 * s, markers=False)
-    assert "rise_n" not in meta["force"] and "no_rise_warning" not in meta["force"] and eng.last_trial_warnings == []
+    assert meta["force"]["rise_basis"] == "whole recording" and meta["force"]["no_rise_warning"] is True
+    assert any("No force rise" in w for w in eng.last_trial_warnings)
 
 
 # ------------------------------------------------------------------------------------------------ frontal tests lying on the side

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from . import overlay, privacy, reference, session_memory
 from .displacement import window_displacements
 from . import analysis
-from .force import SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
+from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
 from .loadcell import COVERAGE, GRAVITY, active_regression, find_regression
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
@@ -346,7 +346,8 @@ class Trial:
         # 0.24.0: no note about a short rest any more. The SOP's 3 s at rest after Record is replaced by the resting force taken before the
         # trial (Zero 2, X), which the Live tab reminds about (softly); how long the rest in the recording was is still in `seconds`
         # (export column force_rest_s) and is not hidden.
-        if not math.isnan(level) and not math.isnan(sd) and sd > REST_UNSTEADY_FRACTION * abs(peak - level):
+        pushed = unit != "N" or peak - level >= NO_FORCE_RISE_N        # 0.26.0: without a push there is no rise to compare the spread with
+        if pushed and not math.isnan(level) and not math.isnan(sd) and sd > REST_UNSTEADY_FRACTION * abs(peak - level):     # (P02: '0 N')
             notes.append(f"The force was not steady before the push (it varied by {sd:.{d}f} {unit}, SD): the strap was loaded or moving, "
                          "so the resting force is doubtful.")
         return {"unit": unit, "level": level, "sd": sd, "t_from": max(onset - REST_FROM_S, float(t[0])), "t_to": onset - REST_TO_S,
@@ -488,16 +489,20 @@ class Trial:
 def after_trial_check(meta_path):
     """What the window says after a trial is saved (0.20.0): the SOP 10.6 10 % check over every saved trial of the same participant,
     test and target (analysis.position_check on the export rows, so the numbers are the export's), and the resting-force note of
-    this trial (SOP 9.10: 3 s at rest in the strap). Reads files only; safe to run off the window's thread. Returns a dict:
-    participant, test_key, target_deg, n (trials of the position), check (position_check's dict), rest_note."""
+    this trial (SOP 9.10: 3 s at rest in the strap). 0.26.0 adds, from the same rows: the main joint during the push against the target
+    and the shift from rest (`angle_note`), whether that angle fits the position (`position_note`: against the earlier trials of the
+    position, or for its first trial against the previous position of the same test), and whether Zero 2 fits the force just before the
+    push (`relaxed_note`). Reads files only; safe to run off the window's thread. Returns a dict: participant, test_key, target_deg,
+    n (trials of the position), check (position_check's dict), rest_note, angle_note, position_note, relaxed_note, trial."""
     from .recorder import trial_metas
     meta_path = Path(meta_path).resolve()
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     who, key, tgt = meta.get("participant") or "", meta.get("test_key"), meta.get("target_deg")
-    paths = [p.resolve() for p in trial_metas(meta_path.parent.parent, who, key, tgt)]
+    root = meta_path.parent.parent
+    paths = [p.resolve() for p in trial_metas(root, who, key, tgt)]
     if meta_path not in paths:                         # (a file name of another form: check the trial on its own)
         paths.append(meta_path)
-    rows, rest_note, unreadable = [], "", []
+    rows, rest_note, unreadable, this_row, earlier = [], "", [], None, []
     for p in paths:
         try:
             tr = Trial(p)
@@ -507,17 +512,66 @@ def after_trial_check(meta_path):
             unreadable.append(p.name[: -len("_meta.json")])
             continue
         try:
-            rows.append(analysis.session_row(tr))
-            if p == meta_path and tr.has_force():
-                ri = tr.force_rest()
-                rest_note = ri["note"] if ri is not None else ""
+            row = analysis.session_row(tr)
+            rows.append(row)
+            if p == meta_path:
+                this_row = row
+                if tr.has_force():
+                    ri = tr.force_rest()
+                    rest_note = ri["note"] if ri is not None else ""
+            elif this_row is None:                     # (the trials before this one, oldest first)
+                earlier.append(row.get("plateau_angle_deg"))
         finally:
             tr.cap.release()
     check = analysis.position_check(rows)
     if unreadable:
         check["text"] = (check["text"] + " " if check["text"] else "") + f"Could not be read, so not compared: {', '.join(unreadable)}."
+    tol = float(meta.get("tolerance_deg") or 5.0)
+    angle_note = position_note = relaxed_note = ""
+    if this_row is not None:
+        angle_note = analysis.hold_angle_note(this_row, tol)
+        has_earlier = any(analysis._num(v) is not None for v in earlier)
+        previous = None if has_earlier else _previous_position(root, meta, meta_path)
+        position_note = analysis.position_angle_note(this_row.get("main_angle"), this_row.get("plateau_angle_deg"), earlier, tgt, tol, previous)
+        relaxed_note = analysis.relaxed_mismatch(this_row.get("force_unit"), this_row.get("force_relaxed"), this_row.get("force_rest"),
+                                                 this_row.get("force_peak_above_rest"))
     return {"participant": who, "test_key": key, "target_deg": tgt, "n": len(paths), "check": check,
-            "rest_note": rest_note, "trial": meta_path.name[: -len("_meta.json")]}
+            "rest_note": rest_note, "angle_note": angle_note, "position_note": position_note, "relaxed_note": relaxed_note,
+            "trial": meta_path.name[: -len("_meta.json")]}
+
+
+def _previous_position(root, meta, meta_path):
+    """(target, [plateau angles]) of the position of the same participant and test recorded last before this trial (another target), or
+    None. For the first trial of a position: was the participant really moved there? (0.26.0)"""
+    from .recorder import trial_metas
+    who, key, tgt, started = meta.get("participant") or "", meta.get("test_key"), meta.get("target_deg"), meta.get("started_at") or ""
+    best = None
+    for p in meta_path.parent.glob("*_meta.json"):
+        if p.resolve() == meta_path:
+            continue
+        try:
+            m = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        t, when = m.get("target_deg"), m.get("started_at") or ""
+        if ((m.get("participant") or "") != who or m.get("test_key") != key or t is None or tgt is None
+                or abs(float(t) - float(tgt)) < 1e-6 or not when or when >= started):
+            continue
+        if best is None or when > best[0]:
+            best = (when, float(t))
+    if best is None:
+        return None
+    plateaus = []
+    for p in trial_metas(root, who, key, best[1]):
+        try:
+            tr = Trial(p)
+        except Exception:  # noqa: BLE001 - an unreadable trial is simply not used for this comparison
+            continue
+        try:
+            plateaus.append(analysis.session_row(tr).get("plateau_angle_deg"))
+        finally:
+            tr.cap.release()
+    return best[1], plateaus
 
 
 class _TextPane(QTextEdit):

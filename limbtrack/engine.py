@@ -26,7 +26,8 @@ from .geometry import (HARRINGTON_DOWN, HARRINGTON_SIDEWAYS, KNEE_FACING_MIN_DEG
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef, position_number
 from .filters import SMOOTHING_WINDOW_S, MovingAverage
-from .force import smooth_signal
+from .force import NO_FORCE_RISE_N, smooth_signal
+from .loadcell import GRAVITY, find_regression
 from .recorder import FrameSizeChanged, TrialRecorder
 from . import cues, privacy, provenance
 from .reference import INSTRUMENTS, ReferenceReadings
@@ -37,7 +38,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.25.0"
+SOFTWARE_VERSION = "0.26.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -52,9 +53,7 @@ RIGID_PAIR_CHANGE = 0.25     # two dots on one bone (protocol rigid_pairs) whose
                              # picture's plane; over P01-P20 it flags only real jumps). 0.19.0
 FORCE_PEAK_WINDOW_S = 0.02   # the peak force is taken from a moving average over one 50 Hz mains cycle, so the hum is not counted as force
                              # (P20: 'peak 214 N' on screen with no load at all, 0.5 V of hum). The raw maximum is saved as peak_raw_n. 0.19.0
-NO_FORCE_RISE_N = 60.0       # after a trial with an MVIC start marker: the force (0.1 s average) must have moved at least this far from its
-                             # level before the marker, or the window warns. P20 (no load reached the DAQ): at most 47 N; P11: at least 112 N
-FORCE_RISE_SMOOTH_S = 0.1    # averaging for that check (a multiple of 20 ms: removes the 50 Hz hum)
+FORCE_RISE_SMOOTH_S = 0.1    # averaging for the 'no force rise' check (NO_FORCE_RISE_N, force.py; a multiple of 20 ms: removes the 50 Hz hum)
 
 
 class _FrozenWhileRecording:
@@ -1407,12 +1406,16 @@ class Engine:
 
     def _force_rise(self):
         """How far the force moved during the MVIC: the largest distance of its 0.1 s average between the first MVIC start marker and the next
-        end marker (else the end of the recording) from its level 1.0-0.2 s before the start marker. {} when the trial has no start marker
-        or no samples there. In P20 (2026-10-22) no load reached the DAQ and the program still showed a 'peak' of 200-440 N (hum)."""
+        end marker (else the end of the recording) from its level 1.0-0.2 s before the start marker. In P20 (2026-10-22) no load reached
+        the DAQ and the program still showed a 'peak' of 200-440 N (hum). Without a start marker (0.26.0: the automatic marker never fired,
+        or none was pressed) the range of the 0.1 s average over the whole recording instead (`_force_range_whole_trial`). {} without
+        samples."""
         rec, f = self.rec, self.force
-        starts = [e["t_s"] for e in rec.events if e["label"] == "MVIC start"]
-        if not starts or rec._t0 is None:
+        if rec._t0 is None:
             return {}
+        starts = [e["t_s"] for e in rec.events if e["label"] == "MVIC start"]
+        if not starts:
+            return self._force_range_whole_trial()
         t_start = starts[0]
         t_end = next((e["t_s"] for e in rec.events if e["label"] == "MVIC end" and e["t_s"] > t_start), rec.last_t)
         a, b = rec._t0 + t_start, rec._t0 + t_end
@@ -1430,12 +1433,62 @@ class Engine:
         if not before.any() or not during.any():
             return {}
         rise_v = float(np.max(np.abs(s[during] - np.median(s[before]))))
-        out = {"rise_v": round(rise_v, 5), "rise_window_t_s": [round(t_start, 4), round(t_end, 4)]}
+        out = {"rise_v": round(rise_v, 5), "rise_window_t_s": [round(t_start, 4), round(t_end, 4)], "rise_basis": "MVIC markers"}
         if f.calibration.has_slope:
             rise_n = rise_v * abs(float(f.calibration.n_per_v))
             out.update({"rise_n": round(rise_n, 2), "no_rise_warning": rise_n < NO_FORCE_RISE_N, "no_rise_limit_n": NO_FORCE_RISE_N})
         out["rise_meaning"] = (f"the largest distance of the {1000 * FORCE_RISE_SMOOTH_S:g} ms average force from its level 1.0-0.2 s before "
                                "the MVIC start marker, between that marker and the MVIC end marker (0.19.0)")
+        return out
+
+    def _force_range_whole_trial(self):
+        """The 'no force rise' check of a trial without an MVIC start marker (0.26.0): how far the 0.1 s average force moved over the whole
+        recording (largest minus smallest). Less than NO_FORCE_RISE_N means there was no contraction at all. On 2026-10-29 two P02 trials
+        with the strap not pulling (-1 and -3 N) went by without a word: the automatic marker never fired, so the check above never ran."""
+        rec, f = self.rec, self.force
+        ts, vs = f.samples_between(rec._t0, rec._t0 + rec.last_t)
+        half = int(round(FORCE_RISE_SMOOTH_S * f.rate)) // 2 + 1
+        if ts.size <= 2 * half:
+            return {}
+        s = smooth_signal(vs, f.rate, FORCE_RISE_SMOOTH_S)[half:ts.size - half]        # whole averaging windows only (see _force_rise)
+        if not np.any(np.isfinite(s)):
+            return {}
+        rise_v = float(np.nanmax(s) - np.nanmin(s))
+        out = {"rise_v": round(rise_v, 5), "rise_window_t_s": [0.0, round(rec.last_t, 4)], "rise_basis": "whole recording"}
+        if f.calibration.has_slope:
+            rise_n = rise_v * abs(float(f.calibration.n_per_v))
+            out.update({"rise_n": round(rise_n, 2), "no_rise_warning": rise_n < NO_FORCE_RISE_N, "no_rise_limit_n": NO_FORCE_RISE_N})
+        out["rise_meaning"] = (f"no MVIC start marker in this trial: the range (largest minus smallest) of the {1000 * FORCE_RISE_SMOOTH_S:g} ms "
+                               "average force over the whole recording (0.26.0)")
+        return out
+
+    def _force_limits(self, fm):
+        """Warnings about the force range of the trial just recorded (0.26.0), with what they found added to `fm` (the trial's meta 'force').
+        On 2026-10-28/29 a belt squat reached 5,231 N and the +-10 V input limit (57 samples), and seven trials went beyond the heaviest
+        calibration load (250 kg) for 2-6 s; the live header says so only while it happens, when the operator watches the participant."""
+        out, f = [], self.force
+        peak = fm.get("peak_n")
+        clipped = fm.get("samples_at_range_limit") or 0
+        if clipped:
+            out.append(f"The force reached the edge of the input range (+-{f.range_v:g} V) in {clipped} samples: the peak is cut off, so the true "
+                       + (f"peak was higher than the {peak:.0f} N saved. " if peak is not None else "peak is not known. ")
+                       + "Turn the amplifier gain down (or use a larger load cell) before the next trial.")
+        cal = f.calibration
+        reg = find_regression(cal.regression_id)
+        heaviest = reg.range_kg[1] if reg is not None else cal.known_mass_kg
+        if peak is not None and heaviest and peak / GRAVITY > heaviest * 1.001:
+            ts, vs = f.samples_between(self.rec._t0, self.rec._t0 + self.rec.last_t)
+            newtons = smooth_signal(cal.to_newton(vs), f.rate, FORCE_PEAK_WINDOW_S) if ts.size else np.zeros(0)
+            seconds = float(np.count_nonzero(newtons > heaviest * GRAVITY)) / f.rate
+            fm["above_calibration"] = {
+                "peak_kg": round(peak / GRAVITY, 1), "calibrated_to_kg": float(heaviest), "seconds_above": round(seconds, 2),
+                "calibration": cal.method,
+                "meaning": "the peak force (20 ms average) was above the heaviest load the calibration was made with; there the newtons are "
+                           "the calibration line extended, not measured, and the load cell's rated capacity and the rig's working load "
+                           "limit must cover it (0.26.0)"}
+            out.append(f"The peak force ({peak:.0f} N = {peak / GRAVITY:.0f} kg) is above the heaviest load of the calibration ({heaviest:g} kg), "
+                       f"for {seconds:.1f} s: there the newtons are the calibration line extended, not measured. Check the load cell's rated "
+                       "capacity and the rig's working load limit before going on.")
         return out
 
     # ----------------------------------------------------------------- privacy
@@ -1913,10 +1966,14 @@ class Engine:
                 meta["force"] = self._force_meta()
                 meta["force"].update(self._force_rise())
                 if meta["force"].get("no_rise_warning"):
+                    where = ("between the MVIC markers" if meta["force"].get("rise_basis") != "whole recording" else
+                             "no MVIC start was marked" + (" (the automatic marker never fired)" if self._auto is not None else "")
+                             + ", and during the whole recording")
                     self.last_trial_warnings.append(
-                        f"No force rise in this trial: between the MVIC markers the force moved at most {meta['force']['rise_n']:.0f} N "
+                        f"No force rise in this trial: {where} the force moved at most {meta['force']['rise_n']:.0f} N "
                         f"(a contraction moves it by much more). Is the strap hooked to the load cell, the amplifier on and its cable in "
                         f"the DAQ? Pull the strap by hand and watch the force before the next trial.")
+                self.last_trial_warnings += self._force_limits(meta["force"])
             for pair, (n, t_a, t_b) in self.rec._apart_frames.items():
                 self.last_trial_warnings.append(f"CHECK DOTS in {n} pictures of this trial ({t_a:.1f} to {t_b:.1f} s): the dots {pair.replace('-', ' and ')} "
                                                 "moved apart, so a dot may have jumped. Look at the video before keeping the trial.")

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .force import NO_FORCE_RISE_N
+from .loadcell import GRAVITY
 from .pull import compute_pull
 
 HUM_WARN_PCT = 3.0              # 50 Hz hum above this share of the force rise is flagged
@@ -21,6 +23,10 @@ ANCHOR_WANDER_WARN_PX = 2.0     # an anchor that wanders more than this has move
 STRAP_SEEN_WARN_PCT = 80.0
 DRIFT_WARN_DEG = 2.0            # the joint angle moving this much during the hold is flagged
 REPEAT_WARN_PCT = 10.0          # two trials of the same position differing by more than this: a third is needed (protocol, audit note)
+ANGLE_CHECK_DEG = 15.0          # 0.26.0: the main joint during the push differing this much from the earlier trials of its position is called
+                                # out (P01/P02 2026-10-28/29: six trials saved under the previous position read 24-38 deg off)
+RELAXED_MISMATCH_N = 20.0       # 0.26.0: Zero 2 and the force just before the push differing by more than this (or by more than
+RELAXED_MISMATCH_FRACTION = 0.05  # this share of the rise) is called out (P02 belt squat 90: Zero 2 9 N, rest before the push 423 N)
 
 
 # ------------------------------------------------------------------------------------------------ force timing
@@ -91,8 +97,8 @@ def torque_series(tr, picture_delay=0.0):
     spec = (tr.meta.get("pull") or {})
     seg, fulcrum = spec.get("segment_from_to"), spec.get("moment_arm_from_joint_dot")
     tracks = {**tr.tracks, **getattr(tr, "derived_tracks", {})}       # (a computed joint, the hip centre of a frontal test, is not a dot)
-    if not seg or not fulcrum or "anchor" not in tracks or fulcrum not in tracks:
-        return None
+    if not seg or not fulcrum or "anchor" not in tracks or fulcrum not in tracks or any(d not in tracks for d in seg):
+        return None            # (0.26.0: a segment dot switched off, P01's foot dots on 2026-10-28, raised KeyError and Review could not open the trial)
     stand_in = fulcrum not in getattr(tr, "derived_tracks", {})
     n = len(tr.t)
     arm = np.full(n, np.nan)
@@ -243,9 +249,18 @@ def trial_checks(tr, t0=None, t1=None):
             add("check", "The DAQ stopped during the recording: " + str(f["read_error"]))
         if f.get("frames_without_samples_over_0_5s"):
             add("check", f"No force samples for more than 0.5 s in {f['frames_without_samples_over_0_5s']} pictures.")
-        if f.get("no_rise_warning"):                                   # 0.19.0
-            add("check", f"The force hardly moved during the MVIC (at most {f['rise_n']:.0f} N): was the strap on the load cell and the "
+        if f.get("no_rise_warning"):                                   # 0.19.0 (0.26.0: also without MVIC markers, over the whole recording)
+            where = "during the whole recording (no MVIC start was marked)" if f.get("rise_basis") == "whole recording" else "during the MVIC"
+            add("check", f"The force hardly moved {where} (at most {f['rise_n']:.0f} N): was the strap on the load cell and the "
                          "amplifier on? The newtons of this trial are not a contraction.")
+        reg = getattr(tr, "regression", None)
+        if fs is not None and fs["unit"] == "N" and reg is not None and fs["peak"] / GRAVITY > reg.range_kg[1] * 1.001:     # 0.26.0
+            add("check", f"The peak force ({fs['peak']:.0f} N = {fs['peak'] / GRAVITY:.0f} kg) is above the heaviest calibration load "
+                         f"({reg.range_kg[1]:g} kg): the newtons there are the calibration line extended, not measured.")
+        if fs is not None:
+            rm = relaxed_mismatch(fs["unit"], fs["relaxed"], fs["rest_mean"], fs["peak_minus_rest"])                        # 0.26.0
+            if rm:
+                add("check", rm)
         fw = tr.force_window()
         hw = tr.hold_window()
         if fw and hw:
@@ -284,12 +299,91 @@ def trial_checks(tr, t0=None, t1=None):
     return out
 
 
+# ------------------------------------------------------------------------------------------------ after a trial (0.26.0)
+def _whole(v, sign=False):
+    """A whole number for a message, never '-0' (round() gives an int, which has no negative zero)."""
+    n = round(v)
+    return f"{n:+d}" if sign else f"{n:d}"
+
+
+def relaxed_mismatch(unit, relaxed, rest, rise):
+    """A sentence when Zero 2 (the relaxed level, 0.22.0) does not describe the trial: it and the force just before the push differ by more
+    than RELAXED_MISMATCH_N (or RELAXED_MISMATCH_FRACTION of the rise); else ''. Newtons only. On 2026-10-29 Zero 2 was often taken before
+    the participant was in the final posture: belt squat 90 9 N against 423 N before the push, ankle plantarflexion 0 -17 N against 300-356 N,
+    so 'above relaxed' was off by up to 414 N."""
+    relaxed, rest, rise = _num(relaxed), _num(rest), _num(rise)
+    if unit != "N" or relaxed is None or rest is None:
+        return ""
+    limit = max(RELAXED_MISMATCH_N, RELAXED_MISMATCH_FRACTION * abs(rise) if rise is not None else 0.0)
+    if abs(rest - relaxed) <= limit:
+        return ""
+    return (f"Zero 2 (relaxed) was {_whole(relaxed)} N, but the force just before this push was {_whole(rest)} N ({_whole(rest - relaxed, sign=True)} N): Zero 2 "
+            "does not describe this trial (the posture or the strap changed after it was taken), so 'above relaxed' is off by that much. "
+            "Use the peak above rest, or press X again with the participant relaxed in the final position.")
+
+
+def hold_angle_note(row, tolerance):
+    """What the main joint did in a trial (an export row from session_row): its angle during the push against the target, the angle at rest
+    before the push and the shift under load, and, when the shift is larger than the tolerance, the angle to set at rest so that the push
+    lands on the target (target minus the shift). '' without a push window or a main angle. Nothing is changed: these are the numbers
+    Review shows. On 2026-10-28/29 only 36 of 116 trials were within 5 deg of the target during the push; the knee moved a median 19 deg
+    (extension) and 18 deg (flexion) from rest under load, the ankle 20 deg (dorsiflexion); the live tab judges the angle at rest."""
+    main, p = row.get("main_angle"), _num(row.get("plateau_angle_deg"))
+    if not main or p is None or row.get("window") == "whole trial":
+        return ""
+    shift, tgt = _num(row.get("angle_rest_to_hold_deg")), _num(row.get("target_deg"))
+    text = f"{main} during the push: {_whole(p)} deg"
+    if tgt is not None:
+        dev = p - tgt
+        text += (f" (target {tgt:g} +-{tolerance:g}: "
+                 + ("within" if abs(dev) <= tolerance else f"{_whole(abs(dev))} deg {'above' if dev > 0 else 'below'}") + ")")
+    text += "."
+    if shift is not None:
+        text += f" At rest before the push it was {_whole(p - shift)} deg, so it moved {_whole(shift, sign=True)} deg under load."
+        if tgt is not None and abs(shift) > tolerance:
+            text += f" To be at {tgt:g} deg during the push, set about {_whole(tgt - shift)} deg at rest (the target minus this shift)."
+    return text
+
+
+def position_angle_note(main, plateau, earlier, target, tolerance, previous=None):
+    """A sentence when a trial's main joint during the push does not fit its position; else ''. `earlier`: the plateau angles of the earlier
+    trials of this position; `previous`: for the first trial of a position, (target, [plateau angles]) of the previous position of the same
+    test, or None. Called out: more than ANGLE_CHECK_DEG from the median of the earlier trials, or (first trial) within the tolerance of the
+    previous position while the two targets are more than ANGLE_CHECK_DEG apart. Not judged against the target itself (the hip reads
+    20-60 deg below it in every sitting position, so that would always fire). On 2026-10-28/29 six trials were saved under the previous
+    position this way (the position was changed in the program only afterwards); a dot that jumped or a changed set-up also shows here."""
+    plateau = _num(plateau)
+    if not main or plateau is None:
+        return ""
+    good = [v for v in (_num(x) for x in earlier) if v is not None]
+    if good:
+        med = float(np.median(good))
+        if abs(plateau - med) <= ANGLE_CHECK_DEG:
+            return ""
+        span = f"{_whole(min(good))}" if len(good) == 1 else f"{_whole(min(good))} to {_whole(max(good))}"
+        return (f"{main} during the push of this trial: {_whole(plateau)} deg; the earlier trials of this position: {span} deg ({_whole(plateau - med, sign=True)} deg). "
+                "Is the right position chosen in the program, and is the participant in it? (A dot that jumped, or a changed set-up, also "
+                "gives this: look at the video.)")
+    target = _num(target)
+    if previous is None or target is None:
+        return ""
+    ptgt, pvals = _num(previous[0]), [v for v in (_num(x) for x in previous[1]) if v is not None]
+    if ptgt is None or not pvals or abs(ptgt - target) <= ANGLE_CHECK_DEG:
+        return ""
+    med = float(np.median(pvals))
+    if abs(plateau - med) > tolerance:
+        return ""
+    return (f"{main} during the push: {_whole(plateau)} deg, the same as at the previous position of this test (target {ptgt:g}: {_whole(med)} deg), "
+            f"although the targets are {abs(ptgt - target):g} deg apart. Was the participant moved to the new position before Record, and is "
+            "the right position chosen in the program?")
+
+
 # ------------------------------------------------------------------------------------------------ one row per trial, per participant
 SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "test_key", "target_deg", "software_version", "window",
                    "window_start_s", "window_end_s",
                    "pictures_per_s", "force_unit", "force_peak", "force_t_peak_s", "force_plateau", "force_rest", "force_rest_s",
                    "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
-                   "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
+                   "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
                    "checks_to_look_at", "repeatability_pct_same_position", "third_trial_needed",
                    "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis"]
@@ -318,7 +412,8 @@ def session_row(tr):
         row.update(force_unit=fs["unit"], force_peak=fs["peak"], force_t_peak_s=fs["t_peak_s"], force_plateau=fs["plateau_mean"],
                    force_rest=fs["rest_mean"], force_rest_s=fs["rest_seconds"], force_peak_above_rest=fs["peak_minus_rest"],
                    force_relaxed=fs["relaxed"], force_peak_above_relaxed=fs["peak_minus_relaxed"],
-                   angle_at_peak_force_deg=fs["main_angle_at_peak_deg"], hum_pct_of_peak=fs["mains_hum_pct_of_peak"])
+                   angle_at_peak_force_deg=fs["main_angle_at_peak_deg"], hum_pct_of_peak=fs["mains_hum_pct_of_peak"],
+                   force_samples_at_limit=(m.get("force") or {}).get("samples_at_range_limit", ""))      # (0.26.0: > 0 = the peak is cut off)
         ft = force_timing(tr, *win)
         if ft is not None:
             row.update(force_onset_s=ft["onset_s"], force_time_to_90pct_s=ft["time_to_90pct_s"], force_hold_cv_pct=ft["hold_cv_pct"])
@@ -335,19 +430,50 @@ def session_row(tr):
     return row
 
 
+def _num(v):
+    return None if v in ("", None) or (isinstance(v, float) and math.isnan(v)) else float(v)
+
+
+def _peak(r):
+    return _num(r.get("force_peak"))
+
+
+def contracted(r):
+    """Whether the trial of an export row holds a real contraction (0.26.0): its rise (the peak above the rest before the push, else the
+    peak itself) is at least NO_FORCE_RISE_N in newtons, or above zero in volts (not zeroed: no newton limit can be applied). Trials
+    without one are left out of the 10 % check: on 2026-10-29 two P02 trials with the strap not pulling (peaks -1 and -3 N) were judged
+    'differ by -73.5 %, no third trial needed'."""
+    peak = _peak(r)
+    if peak is None:
+        return False
+    rise = _num(r.get("force_peak_above_rest"))
+    rise = peak if rise is None else rise
+    return rise >= NO_FORCE_RISE_N if r.get("force_unit") == "N" else rise > 0
+
+
+def _spread_pct(peaks):
+    """(largest - smallest) as a percentage of the mean (of its size: a mean below zero must not turn a spread negative)."""
+    mean = float(np.mean(peaks))
+    return 100.0 * (max(peaks) - min(peaks)) / abs(mean) if mean else math.nan
+
+
+def _listed(nums):
+    """1 -> '1', [1, 2] -> '1 and 2', [1, 2, 4] -> '1, 2 and 4'."""
+    nums = [str(x) for x in nums]
+    return nums[0] if len(nums) == 1 else ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
 def repeatability(rows):
     """Adds, to rows of the same test and target, how much their peak force differs and whether a third trial is needed
-    (more than REPEAT_WARN_PCT apart). Uses the force peak; rows without force are left alone."""
+    (more than REPEAT_WARN_PCT apart). Uses the force peak; rows without force, or without a contraction (`contracted`), are left alone."""
     groups = {}
     for r in rows:
-        if r["force_peak"] != "" and not (isinstance(r["force_peak"], float) and math.isnan(r["force_peak"])):
+        if contracted(r):
             groups.setdefault((r["test_key"], r["target_deg"], r["force_unit"]), []).append(r)
     for g in groups.values():
         if len(g) < 2:
             continue
-        peaks = [float(r["force_peak"]) for r in g]
-        mean = float(np.mean(peaks))
-        spread = 100.0 * (max(peaks) - min(peaks)) / mean if mean else math.nan
+        spread = _spread_pct([float(r["force_peak"]) for r in g])
         for r in g:
             r["repeatability_pct_same_position"] = spread
             r["third_trial_needed"] = bool(spread > REPEAT_WARN_PCT) if len(g) == 2 else ""
@@ -357,17 +483,14 @@ def repeatability(rows):
 MAX_TRIALS_PER_POSITION = 3     # SOP 10.6: no more than three trials
 
 
-def _peak(r):
-    v = r.get("force_peak")
-    return None if v in ("", None) or (isinstance(v, float) and math.isnan(v)) else float(v)
-
-
 def position_check(rows):
     """The SOP 10.6 check for the saved trials of ONE position (export rows from session_row, oldest first), after each trial: are the
     peaks within 10 % of their mean, or is a third trial needed? The total peak (`force_peak`) is compared, the same number and rule as
-    `repeatability` and the export (the group's choice, 2026-10-26); the peak above rest is shown beside it for information.
-    Returns {'state', 'text', 'pct', 'n'}: state 'one' (only one trial with force), 'ok', 'third' (a third trial is needed),
-    'deviation' (three or more trials and no two within 10 %), 'units' (newtons and volts cannot be compared), 'none' (no force)."""
+    `repeatability` and the export (the group's choice, 2026-10-26); the peak above rest is shown beside it for information. Trials
+    without a contraction (`contracted`, 0.26.0) are named and not compared; a peak cut off at the input limit is called 'at least'.
+    Returns {'state', 'text', 'pct', 'n'}: state 'one' (only one trial with a contraction), 'ok', 'third' (a third trial is needed),
+    'deviation' (three or more trials and no two within 10 %), 'units' (newtons and volts cannot be compared), 'no_rise' (force, but no
+    contraction in any trial), 'none' (no force)."""
     with_force = [r for r in rows if _peak(r) is not None]
     n = len(with_force)
     if n == 0:
@@ -380,31 +503,49 @@ def position_check(rows):
                         "the other newtons. Compare them in Review after recalculating newtons."}
     u = units[0]
     d = 0 if u == "N" else 3
-    peaks = [_peak(r) for r in with_force]
     fmt = lambda v: f"{v:.{d}f} {u}"                                              # noqa: E731
-    above = [r.get("force_peak_above_rest") for r in with_force]
+    nums = [i + 1 for i, r in enumerate(with_force) if contracted(r)]             # trial numbers (counted among the trials with force)
+    flat = [i + 1 for i, r in enumerate(with_force) if not contracted(r)]
+    limit = f"{NO_FORCE_RISE_N:g} N" if u == "N" else "0 V"
+    if not nums:
+        return {"state": "no_rise", "pct": math.nan, "n": n,
+                "text": f"No force rise in trial {_listed(flat)} of this position (less than {limit} above the rest), so there is nothing to "
+                        "compare. Is the strap hooked to the load cell and the amplifier on?"}
+    peaks = [_peak(with_force[i - 1]) for i in nums]
+    cut = [i for i in nums if (_num(with_force[i - 1].get("force_samples_at_limit")) or 0) > 0]
+    shown = {i: ("at least " if i in cut else "") + fmt(p) for i, p in zip(nums, peaks)}
+    above = [with_force[i - 1].get("force_peak_above_rest") for i in nums]
     above_txt = ("; above rest " + ", ".join("-" if a in ("", None) or (isinstance(a, float) and math.isnan(a)) else fmt(float(a)) for a in above)
                  if any(a not in ("", None) for a in above) else "")
-    listing = ", ".join(f"trial {i + 1} {fmt(p)}" for i, p in enumerate(peaks)) + above_txt
-    if n == 1:
-        return {"state": "one", "pct": math.nan, "n": 1, "text": f"Peak force {fmt(peaks[0])} (trial 1 of this position; the 10 % check follows after trial 2)."}
-    mean = float(np.mean(peaks))
-    spread = 100.0 * (max(peaks) - min(peaks)) / mean if mean else math.nan       # the same as repeatability()
-    if n == 2:
+    listing = ", ".join(f"trial {i} {shown[i]}" for i in nums) + above_txt
+    notes = ""
+    if flat:
+        notes += f" Not compared: trial {_listed(flat)} (no force rise: less than {limit} above the rest)."
+    if cut:
+        notes += (f" Trial {_listed(cut)} reached the input limit, so {'its' if len(cut) == 1 else 'their'} true peak was higher than saved: "
+                  "this comparison is a lower bound.")
+    if len(nums) == 1:
+        return {"state": "one", "pct": math.nan, "n": n,
+                "text": f"Peak force {shown[nums[0]]} (trial {nums[0]} of this position; the 10 % check follows after trial {n + 1}).{notes}"}
+    spread = _spread_pct(peaks)                                                   # the same as repeatability()
+    if len(nums) == 2:
         if spread > REPEAT_WARN_PCT:
-            return {"state": "third", "pct": spread, "n": 2,
+            return {"state": "third", "pct": spread, "n": n,
                     "text": f"THIRD TRIAL NEEDED: the two peaks differ by {spread:.1f} % of their mean (limit {REPEAT_WARN_PCT:g} %): {listing}. "
-                            "Rest 60 s, then record trial 3 (SOP 10.6)."}
-        return {"state": "ok", "pct": spread, "n": 2,
-                "text": f"10 % check: the two peaks differ by {spread:.1f} % of their mean (limit {REPEAT_WARN_PCT:g} %): {listing}. No third trial needed."}
-    best = min((100.0 * abs(a - b) / ((a + b) / 2.0), i, j) for i, a in enumerate(peaks) for j, b in enumerate(peaks) if j > i and (a + b) > 0)
+                            f"Rest 60 s, then record trial {n + 1} (SOP 10.6).{notes}"}
+        return {"state": "ok", "pct": spread, "n": n,
+                "text": f"10 % check: the two peaks differ by {spread:.1f} % of their mean (limit {REPEAT_WARN_PCT:g} %): {listing}. "
+                        f"No third trial needed.{notes}"}
+    best = min(((100.0 * abs(a - b) / abs((a + b) / 2.0), nums[i], nums[j]) for i, a in enumerate(peaks) for j, b in enumerate(peaks)
+                if j > i and (a + b) != 0), default=(math.inf, nums[0], nums[1]))
+    k = len(nums)
     more = f" {n} trials are saved at this position (SOP 10.6: at most {MAX_TRIALS_PER_POSITION})." if n > MAX_TRIALS_PER_POSITION else ""
     if best[0] > REPEAT_WARN_PCT:
         return {"state": "deviation", "pct": spread, "n": n,
-                "text": f"No two of the {n} peaks are within {REPEAT_WARN_PCT:g} % of their mean (closest: trials {best[1] + 1} and {best[2] + 1}, "
-                        f"{best[0]:.1f} %): {listing}. Note it in the deviation log; no further trial (SOP 10.6).{more}"}
+                "text": f"No two of the {k} peaks are within {REPEAT_WARN_PCT:g} % of their mean (closest: trials {best[1]} and {best[2]}, "
+                        f"{best[0]:.1f} %): {listing}. Note it in the deviation log; no further trial (SOP 10.6).{more}{notes}"}
     return {"state": "ok", "pct": spread, "n": n,
-            "text": f"10 % check: trials {best[1] + 1} and {best[2] + 1} differ by {best[0]:.1f} % of their mean (all {n}: {spread:.1f} %): {listing}.{more}"}
+            "text": f"10 % check: trials {best[1]} and {best[2]} differ by {best[0]:.1f} % of their mean (all {k}: {spread:.1f} %): {listing}.{more}{notes}"}
 
 
 def write_session_csv(rows, path):

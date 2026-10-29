@@ -6,6 +6,7 @@ __pycache__/
 
 # Participant data - never commit
 recordings/
+Pilot/
 
 # Local files
 last_error.log
