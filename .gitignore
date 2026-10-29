@@ -31,3 +31,7 @@ tests_last_run.txt
 
 # result of Check_phone_camera.bat
 phone_camera_check.txt
+
+# Numbers and keys from tools/replay_compare.py: the key names the trials, never commit it
+replay_key.csv
+replay_report.csv
