@@ -2896,6 +2896,9 @@ class LiveTab(QWidget):
                                          f"Next is trial {n_cur + 1}.")
             elif state == "deviation":
                 self.trial_label.setText(f"{where}: {n_cur} trials and no two within 10 %: note it in the deviation log (no more trials).")
+            elif state == "no_rise":                       # 0.26.0
+                self.trial_label.setText(f"{where}: {n_cur} trials saved, none with a force rise: the 10 % check cannot be made. "
+                                         f"Another is trial {n_cur + 1}.")
             else:
                 ok = " 10 % check: fine." if state == "ok" else ""
                 self.trial_label.setText(f"{where}: {n_cur} trials already saved (planned {TRIALS_PER_POSITION}).{ok} "
@@ -3407,6 +3410,17 @@ class LiveTab(QWidget):
                 return
         if announce:
             lines, warn = [], False
+            if res.get("angle_note"):                 # 0.26.0: the main joint during the push, the shift from rest, where to set it
+                self.note("hold angle", res["angle_note"])
+                lines.append(res["angle_note"])
+            if res.get("position_note"):              # 0.26.0: an angle that does not fit the position (wrong position chosen?)
+                self.note("angle check", res["position_note"])
+                lines.append("CHECK: " + res["position_note"])
+                warn = True
+            if res.get("relaxed_note"):               # 0.26.0: Zero 2 does not describe this trial
+                self.note("trial warning", res["relaxed_note"])
+                lines.append(res["relaxed_note"])
+                warn = True
             if res["rest_note"]:
                 self.note("trial warning", res["rest_note"])
                 lines.append(res["rest_note"])
@@ -3414,7 +3428,7 @@ class LiveTab(QWidget):
             if chk["text"]:
                 self.note("position check", chk["text"])
                 lines.append(chk["text"])
-                warn = warn or chk["state"] in ("third", "deviation", "units")
+                warn = warn or chk["state"] in ("third", "deviation", "units", "no_rise")
             if lines:
                 self._add_after_trial(lines, warn)
         self.refresh_plan()

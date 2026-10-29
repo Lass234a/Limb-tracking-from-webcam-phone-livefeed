@@ -3,6 +3,56 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.26.0 - 2026-10-29
+
+### Fixes and after-trial checks from the pilot sessions P01 and P02
+- **Why:** the review of the first two pilot sessions (`audit/PILOT_P01_P02_review_2026-10-29.md`; 128 trials, P01 on 0.21/0.22, P02 on
+  0.24/0.25) found five program faults and three things the window could say sooner. Asked on 2026-10-29: build the five fixes "also the 3
+  improvements".
+- **Review crashed on a trial whose pull segment dots were off (F2).** `analysis.torque_series` looked up the segment dots of the pull
+  (`mt5_base`, `mt5_head` in the ankle tests) without checking they were tracked: `KeyError`, so Review could not open P01's two plantarflexion
+  trials of 28 Oct, the 10 % check of that position failed ("could not be made: KeyError: 'mt5_base'") and the participant export listed them
+  as not readable. Now such a trial simply has no torque.
+- **The 10 % check passed two trials without any force (F3).** P02 knee extension 70, trials 1 and 2 (the strap not pulling, peaks -1 and
+  -3 N): "differ by -73.5 % ... No third trial needed" (the spread was divided by a negative mean). A trial now counts only with a contraction
+  (`analysis.contracted`: its rise above the rest at least `NO_FORCE_RISE_N`, 60 N; in volts above 0); the others are named "Not compared";
+  with none the state is `no_rise` (red message, plan line). Spread over the size of the mean. Same rule in `repeatability` (export columns).
+  On the pilot data: P02 knee extension 70 is now judged on trials 3 and 4 (9.7 %), with trials 1 and 2 named.
+- **No warning when the automatic MVIC marker never fired (F4).** The 0.19.0 "No force rise" check needed a start marker. Without one,
+  `Engine._force_range_whole_trial` takes the range of the 0.1 s average over the whole recording; under 60 N gives the same warning
+  ("no MVIC start was marked (the automatic marker never fired), and during the whole recording the force moved at most X N").
+  `force.rise_basis` says which (`"MVIC markers"` / `"whole recording"`); Review's check text follows it.
+- **A nonsense resting-force note (F5).** "The force was not steady before the push (it varied by 0 N, SD)" for a trial without a push: the
+  spread was compared with a rise of about 0. `Trial._find_force_rest` now judges steadiness only after a rise of at least 60 N (newtons).
+- **Peak cut off / beyond the calibration said after the trial (F1a).** P02's belt squat at 60 deg reached 9.97 V (57 samples at the
+  +-10 V limit, 5,231 N) and seven pilot trials went above the 250 kg of the calibration for 2-6 s; the live header said so only while it
+  happened. `Engine._force_limits`: trial warnings for samples at the input limit ("the peak is cut off ... turn the amplifier gain down")
+  and for a peak above the heaviest calibration load (`meta.json` `force.above_calibration`: peak kg, calibrated-to kg, seconds above).
+  Review's Check tab names a peak above the regression's range. The 10 % check shows a cut-off peak as "at least X N" and calls the comparison
+  a lower bound (new export column `force_samples_at_limit`).
+- **New after every trial (improvements):** `review.after_trial_check` returns three more texts, shown with the 10 % check and written to the
+  session log: `angle_note` (event *hold angle*): "Knee flexion during the push: 64 deg (target 70 +-5: 6 deg below). At rest before the push it
+  was 88 deg, so it moved -24 deg under load. To be at 70 deg during the push, set about 94 deg at rest" (the last sentence only when the
+  shift is larger than the tolerance); `position_note` (event *angle check*, red message): the angle during the push is more than 15 deg from
+  the earlier trials of the position, or the first trial of a position reads within the tolerance of the previous position of the same test
+  while the targets are more than 15 deg apart; `relaxed_note` (red message): Zero 2 and the force just before the push differ by more than
+  20 N or 5 % of the rise. Review's Check tab names the Zero 2 mismatch too.
+- **Replayed on the 128 pilot trials** (`audit/evidence/PILOT_2026-10-29/after_trial_replay.py`, output next to it): the angle line on 123
+  trials (the rest had no push window or no main angle), the "set about" hint on 68, the angle check on 19 (five of the six trials saved
+  under the previous position: P01 knee extension 20 T1, P01 hip flexion 90 T4, P02 hip flexion 90 T5-T7; not T2 of knee extension 20,
+  which read 50 deg, 14 deg from T1; then P01 knee extension 20 T3, 20 deg from the two before it; the others are jumped dots, a foot set-up
+  changed between trials, and P02's first ankle -20 trials, which read like the 0 position), the
+  Zero 2 message on 13 (P02), the "0 N" note on none (2 before), the KeyError on none (2 before).
+- **Measured numbers:** none change. The 10 % check's verdict changes for trials without a contraction (left out) and its text for cut-off
+  peaks; export rows get one column. `.gitignore`: `Pilot/` (participant data; only its videos were ignored).
+- **Tests:** `tests/test_pilot_checks.py` (21). Brought up to date: `test_p20_checks.py` (a trial without a start marker now gets the
+  whole-recording rise check: the old test said it had none), `test_pull_frontal.py` (the version from `SOFTWARE_VERSION`, not a literal).
+  Version 0.26.0. Full suite: 1067 passed, 1 skipped, 2 failed (those two old tests, 36.6 min); after updating them their files and the
+  new and related ones re-ran green (`test_p20_checks`, `test_pull_frontal`, `test_pilot_checks`, `test_rest_and_ten_percent`,
+  `test_analysis`: 95 passed).
+- **Not tried:** in a real window during a session (the GUI path is the existing 10 % check path with three more lines); the warnings on the
+  real DAQ at the input limit. The pilot replay ran the checks on the saved files, after the fact.
+
 ## 0.25.0 - 2026-10-29
 
 ### Strap and anchor dots in hip abduction and adduction

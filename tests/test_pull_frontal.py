@@ -11,7 +11,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 from limbtrack import analysis  # noqa: E402
-from limbtrack.engine import Engine  # noqa: E402
+from limbtrack.engine import SOFTWARE_VERSION, Engine  # noqa: E402
 from limbtrack.geometry import hip_centre_frontal  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.review import Trial  # noqa: E402
@@ -162,7 +162,7 @@ def test_the_recording_names_the_hip_centre_as_the_joint_of_the_pull(tmp_path):
     pull = meta["pull"]
     assert pull["segment_from_to"] == ["hip_centre", "patella"] and pull["moment_arm_from_joint_dot"] == "hip_centre"
     assert "hip_centre_x" in pull["joint_is_computed_point"]
-    assert meta["software_version"] == "0.25.0"
+    assert meta["software_version"] == SOFTWARE_VERSION
 
 
 def test_a_covered_anchor_leaves_the_pull_blank_not_guessed(tmp_path):
