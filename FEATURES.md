@@ -456,6 +456,12 @@ All of this only reads a recorded trial; nothing is written into the recording. 
 
 ---
 
+### A37. Tools that replay saved trials and collect the clean pilot measurements (no effect on the program)
+- **What:** `tools/replay_compare.py` runs saved trials (`raw.mp4` + `data.csv` + `meta.json`) through one or two tracker versions in a single pass over the video and writes numbers only: agreement with the saved track, `marking_offset_px` (how far the marking at the first picture lands from the saved position) and `apart_frames` (the CHECK DOTS rule of A30 applied to each tracker, with the live `dots_apart` beside it). `tools/synthetic_bench.py` is a stress benchmark on synthetic scenes with known truth. `tools/build_truth.py` links `session_log.csv` to the trial files (where CHECK DOTS / CHECK LABELS were shown, which dots were re-marked before a trial). `tools/collect_pilot.py`, with the project skill `.claude/skills/limbtrack-pilot-collection`, collects the clean MVIC measurements of the pilot into one local folder: an index of measurements, dots, positions, and every excluded trial with its reason.
+- **Alters numbers:** no. They read saved files and write new ones; nothing is written into a trial. The saved track is the recording tracker's own opinion, so agreement with it shows differences, not correctness; the video is the compressed `raw.mp4`, so small dots replay worse than they were tracked live.
+- **Private output:** `replay_key.csv`, `truth_candidates.csv`, `replay_cache.json` and `Pilot_collection/` name trials; they are in `.gitignore`.
+- **Need:** Extra (for checking a change to the tracker on real footage before it is accepted).
+- **Code:** `tools/`.
 ## H. Unfinished or unreliable
 
 1. **Mostly synthetic evidence.** The only real footage so far is one practice video with undersized dots (and one earlier recording). Thresholds are not tuned for real skin, lighting, straps or glare. Re-test, on a video with your real stickers: the lost-dot circle (2.0 x diameter), the partly-covered-dot thresholds, the dot-size estimate (no edge allowance since 0.7.2), tape dots (a black disc on white tape: glare, creased tape, sweat; `MARKERS.md` section 3 lists what was tested, on synthetic pictures only), and white and black dots together on real clothing and skin.

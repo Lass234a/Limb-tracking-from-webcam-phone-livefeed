@@ -23,6 +23,7 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
   frames agree with the saved track and about 660 fewer frames lose a dot; no dot got worse. The 126 pilot trials (P01, P02, `dot_kind` black)
   replay with identical numbers. `tests/test_marking.py` has two new tests (a bright speck beside a black dot, a dark speck beside a white
   dot); both fail on the old rule. `golden_tracking.npz` is unchanged.
+- **Tools and documents:** `tools/replay_compare.py`, `synthetic_bench.py`, `build_truth.py` and `collect_pilot.py` (with the project skill `.claude/skills/limbtrack-pilot-collection`) replay saved trials and collect the clean pilot measurements. They change nothing in the program or in any measured number. Described in `FEATURES.md` A37 and `HANDOFF.md` section 3; `Pilot_collection/` is in `.gitignore`.
 - **Not tried:** on the real rig. **Not decided:** a version number (`SOFTWARE_VERSION` is still 0.26.0), and whether the marking should
   also warn when white and black answer almost equally (within `MARKING_KIND_TIE`).
 - **Looked at and left out:** letting a lost dot be looked for at its segment length from a partner dot, or where its neighbours moved. On the
