@@ -48,6 +48,8 @@ MARKING_PEAK_BOX_PX = 8          # the dot's brightness is the strongest value w
 MARKING_BLOB_FRACTION = 0.5      # ... and the blob is everything above this fraction of it
 MARKING_MAX_SNAP_PX = 15         # the blob centre must be within this distance of the click
 MIN_BLOB_PIXELS = 3              # smaller specks are ignored
+MARKING_KIND_BOX_PX = 4          # auto colour: white or black is decided by the response this close to the click ...
+MARKING_KIND_TIE = 0.10          # ... unless white and black are within this fraction of each other there
 
 # Following the dot
 THRESHOLD_FRACTION = 0.4         # detection threshold = this x the dot's running contrast (and at least MIN_CONTRAST)
@@ -193,7 +195,17 @@ class DotTracker:
             # Auto: whichever of white-dot / black-dot filtering responds more strongly near the click
             # (a tie goes to white). Decided anew on every click and kept only if the marking succeeds.
             enh_w, enh_b = self._enhance(roi, MARKING_KERNEL_DIAM, "white"), self._enhance(roi, MARKING_KERNEL_DIAM, "black")
-            kind = "white" if strongest(enh_w) >= strongest(enh_b) else "black"
+            bk = MARKING_KIND_BOX_PX
+
+            def at_click(e):
+                near = e[max(cy - bk, 0):cy + bk + 1, max(cx - bk, 0):cx + bk + 1]
+                return float(near.max()) if near.size else 0.0
+
+            # Decided on the dot itself: a bright skin highlight or a dark edge a few pixels away must not decide the colour.
+            wk, bk_ = at_click(enh_w), at_click(enh_b)
+            if max(wk, bk_) < MIN_CONTRAST or abs(wk - bk_) <= MARKING_KIND_TIE * max(wk, bk_):
+                wk, bk_ = strongest(enh_w), strongest(enh_b)       # no clear winner on the dot: the old rule
+            kind = "white" if wk >= bk_ else "black"
             enh = enh_w if kind == "white" else enh_b
         else:
             kind = self.kind
