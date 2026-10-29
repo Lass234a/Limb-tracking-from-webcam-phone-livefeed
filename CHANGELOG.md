@@ -3,6 +3,18 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## Unreleased
+
+### Clear explanations and automatic checks for proposed changes
+- Proposed changes now have a plain-English form: what changes, why, whether measured numbers can change, how it was checked, and
+  anything still uncertain.
+- GitHub checks the test positions and runs the existing automatic tests on Windows with Python 3.12. The result includes a test
+  report and installed package versions. No participant recordings are uploaded.
+- `CONTRIBUTING.md` explains how to try a separate test copy and how to read the results. Lass is listed as the contact for the program;
+  his approval is optional, as authorised. This does not change repository settings or automatically merge changes.
+- No program code, measurement definitions, tracking reference or package requirements changed. These checks do not replace a trial
+  with the real camera, load cell and sound or validation against a goniometer.
+
 ## 0.24.0 - 2026-10-29
 
 ### A new order of the steps, soft reminders instead of hard stops, an easier ruler, and the foot only where the foot is used
