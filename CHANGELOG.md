@@ -14,7 +14,8 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
 - **What changed:** `DotTracker.init_at` reads the two responses within `MARKING_KIND_BOX_PX` (4 px) of the click. When they are within
   `MARKING_KIND_TIE` (10 %) of each other there, or neither reaches `MIN_CONTRAST`, the old rule (strongest within the marking box, a tie goes
   to white) decides. An explicit white or black setting is not touched. Nothing after the marking changed: how a dot is followed, lost and
-  taken back is the same.
+  taken back is the same. The two new numbers are written into every `meta.json` under `tracker_settings.image_preparation`
+  (`marking_kind_box_px`, `marking_kind_tie`), like every other tracking number; `tests/test_tracker_settings.py` checks them.
 - **Measured** by replaying the 43 older trials: dots at the marking picture that were more than 3 px off or not marked: 9 before, 6 now;
   T06 trochanter, T14 trochanter, T15 epicondyle, T15 trochanter and T23 trochanter are marked on the dot (0.0-0.1 px). About 980 more
   frames agree with the saved track and about 660 fewer frames lose a dot; no dot got worse. The 126 pilot trials (P01, P02, `dot_kind` black)

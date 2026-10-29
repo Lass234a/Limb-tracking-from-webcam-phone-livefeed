@@ -59,7 +59,9 @@ def test_every_tracking_number_is_listed_in_settings():
     assert s["tracking"]["separate_fractions"] == [0.6, 0.75, 0.9]
     assert s["lost_dot"]["search_radius_diam_factor"] == 2.0 and s["lost_dot"]["resume_min_quality"] == 0.6
     assert s["image_preparation"]["kernel_diam_factor"] == 2.5
-    json.dumps(s)                                                     # must be writable to meta.json
+    assert s["image_preparation"]["marking_kind_box_px"] == tracker.MARKING_KIND_BOX_PX == 4          # the Auto colour rule (TRK-03 follow-up)
+    assert s["image_preparation"]["marking_kind_tie"] == tracker.MARKING_KIND_TIE == 0.10
+    json.dumps(s)                                                    # must be writable to meta.json
 
 
 def test_meta_json_records_the_settings(tmp_path):

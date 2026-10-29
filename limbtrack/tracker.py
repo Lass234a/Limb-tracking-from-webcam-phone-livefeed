@@ -82,6 +82,7 @@ def settings():
             "marking_kernel_diam_px": MARKING_KERNEL_DIAM, "marking_window_radius_px": MARKING_WINDOW_RADIUS_PX,
             "marking_peak_box_px": MARKING_PEAK_BOX_PX, "marking_blob_fraction": MARKING_BLOB_FRACTION,
             "marking_max_snap_px": MARKING_MAX_SNAP_PX, "min_blob_pixels": MIN_BLOB_PIXELS,
+            "marking_kind_box_px": MARKING_KIND_BOX_PX, "marking_kind_tie": MARKING_KIND_TIE,
         },
         "tracking": {
             "min_contrast": MIN_CONTRAST, "threshold_fraction": THRESHOLD_FRACTION,

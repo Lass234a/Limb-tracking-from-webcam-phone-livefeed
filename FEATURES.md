@@ -29,6 +29,7 @@ These are the ones to justify in a methods section. **Every number in A1 to A5 i
   - Blobs above 50 % of that peak are taken; the one whose centre is nearest the click wins.
   - It is rejected if that centre is more than 15 px from the click.
   - The blob area sets the dot's reference area (diameter = 2*sqrt(area/pi), minimum 4 px) and its peak sets the reference contrast.
+  - **Colour in Auto mode:** decided on every click from the white-dot and black-dot filter responses within 4 px of the click (`marking_kind_box_px`). When the two are within 10 % of each other there (`marking_kind_tie`), or neither reaches 8 grey levels, the strongest responses within the 8 px box decide as before (a tie goes to white). A bright skin highlight or a dark edge a few pixels from the dot no longer decides the colour.
 - **Need:** Essential.
 - **Code:** `tracker.py` `DotTracker.init_at`; settings `image_preparation.marking_*`.
 
