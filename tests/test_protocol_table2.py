@@ -47,7 +47,8 @@ FRONTAL = {"hip_abduction": [0, 20], "hip_adduction": [0, 20]}
 def test_the_frontal_rows_are_there_with_their_positions_and_no_neighbour_requirement(key):
     t = TESTS[key]
     assert t.view == "frontal" and t.targets == FRONTAL[key] and t.neighbour_targets == {}
-    assert t.optional_dots == []                                 # no strap or anchor in the frontal tests (no torque from the front yet)
+    assert t.optional_dots == ["strap", "anchor"]                # the strap and the anchor are offered in the frontal tests too (0.25.0)
+    assert t.pull_joint == "hip_centre"                          # ...and the pull is measured about the computed hip centre, not the ASIS
 
 
 def test_all_19_positions_of_the_protocol_are_in_the_plan():

@@ -79,7 +79,9 @@ def force_timing(tr, t0, t1):
 def torque_series(tr, picture_delay=0.0):
     """Joint torque (N.m) for every picture: smoothed force (N) x moment arm (m). Needs a calibrated force, a cm scale and the anchor.
     The moment arm is the distance from the joint to the line from the strap dot to the anchor dot; when the strap dot is not
-    tracked in a picture, the distal dot of the segment (the ankle: the strap sits next to it) stands in, and that is reported.
+    tracked in a picture, the distal dot of the segment (the ankle: the strap sits next to it) stands in, and that is reported. Not
+    when the joint is a computed point (the hip centre of a frontal test): there the segment ends at the knee, which is not where the
+    strap sits, so a picture without the strap dot gets no torque.
     Returns None, or a dict with t, torque, arm_cm, estimated (True where the stand-in was used), unit note."""
     if not tr.has_force() or not tr.px_per_cm:
         return None
@@ -88,18 +90,20 @@ def torque_series(tr, picture_delay=0.0):
         return None
     spec = (tr.meta.get("pull") or {})
     seg, fulcrum = spec.get("segment_from_to"), spec.get("moment_arm_from_joint_dot")
-    if not seg or not fulcrum or "anchor" not in tr.tracks or fulcrum not in tr.tracks:
+    tracks = {**tr.tracks, **getattr(tr, "derived_tracks", {})}       # (a computed joint, the hip centre of a frontal test, is not a dot)
+    if not seg or not fulcrum or "anchor" not in tracks or fulcrum not in tracks:
         return None
+    stand_in = fulcrum not in getattr(tr, "derived_tracks", {})
     n = len(tr.t)
     arm = np.full(n, np.nan)
     est = np.zeros(n, bool)
     for i in range(n):
         def xy(name):
-            x, yv = tr.tracks[name][0][i], tr.tracks[name][1][i]
+            x, yv = tracks[name][0][i], tracks[name][1][i]
             return None if (math.isnan(x) or math.isnan(yv)) else (float(x), float(yv))
         anchor, joint, a, b = xy("anchor"), xy(fulcrum), xy(seg[0]), xy(seg[1])
         strap = xy("strap") if "strap" in tr.tracks else None
-        if strap is None:
+        if strap is None and stand_in:
             strap, est[i] = b, True                    # the stand-in
         if None in (anchor, joint, a, b, strap):
             continue

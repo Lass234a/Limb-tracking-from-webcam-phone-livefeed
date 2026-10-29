@@ -431,6 +431,14 @@ All of this only reads a recorded trial; nothing is written into the recording. 
 - **Limits:** the privacy and ruler looks are the operator's word. Not tried on the real rig, with the real load cell and a person, or with real beeps.
 - **Code / tests:** `tests/test_reminders.py`, `tests/test_steps.py`, `tests/test_privacy_position.py`.
 
+### A35. Strap and anchor dots in hip abduction and adduction; the pull about the hip centre (new in 0.25.0; `protocol.json` `pull_joint`; `protocol.py` `TestDef.pull_joint`; `engine.py` `pull_segment`, `_compute_pull`, `_pull_meta`; `review.py` `Trial.derived_tracks`; `analysis.py` `torque_series`)
+- **Dots:** the two frontal tests offer the strap and the anchor dot like all others (off until ticked in Landmarks; a choice is kept from test to test). The angle of pull, moment arm, strap-to-joint distance, rope line, checks and torque then work as in the sagittal tests.
+- **Joint:** `"pull_joint": "hip_centre"` in both tests: the pull is measured about the computed hip centre (segment hip centre to patella centre), not the ASIS. Needs the ruler. `"pull_joint": "asis"` switches it. Undecided in the SOP (9.9); the ASIS and the hip centre are both in every CSV.
+- **Review:** the hip centre is read as a joint for the torque (`derived_tracks`); a frontal picture without the strap dot has no torque (no stand-in).
+- **Side effect:** a visit to a frontal test no longer switches the strap and anchor dots on in the next test.
+- **Limits:** not tried on a person; where the strap sits in the front view is not in the SOP; the ruler's depth against the strap's depth; the hip-centre constants are unchecked (A25).
+- **Code / tests:** `tests/test_pull_frontal.py`, `tests/test_strap_dots.py`, `tests/test_protocol_validation.py`.
+
 ### CSV columns
 `frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then (frontal tests only) per computed point `<point>_x, <point>_y` (the hip centre; blank when a needed dot is lost or there is no ruler scale; no `_lost` or `_q`), then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event, scale_px_per_cm` (the live ruler scale; blank when no ruler is marked or a ruler dot is lost), `force_n` (only when a force source was connected: mean newtons since the previous picture), and, only when the strap and anchor dots are both used, `pull_angle_deg, pull_off90_deg, moment_arm_px, moment_arm_cm, strap_joint_px, strap_joint_cm` (blank while a needed dot is lost), `label_check, dots_apart` (0.19.0, A30; empty when all is well), `source_frame`, and last one `<dot>_partial` per dot (1 = the dot looked partly covered or cut off in that frame). Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
 

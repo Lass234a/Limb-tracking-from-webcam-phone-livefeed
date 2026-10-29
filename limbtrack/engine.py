@@ -37,7 +37,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.24.0"
+SOFTWARE_VERSION = "0.25.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -516,11 +516,13 @@ class Engine:
         return "strap" in self.active_dots and "anchor" in self.active_dots
 
     def pull_segment(self):
-        """(proximal dot, distal dot, fulcrum dot) the pull is measured against: the second arm of the test's main joint."""
+        """(proximal point, distal dot, joint) the pull is measured against: the second arm of the test's main angle, about its fulcrum dot.
+        A test can name another joint ('pull_joint'): the frontal tests do, because their fulcrum, the ASIS, is not the hip joint (0.25.0)."""
         p = self.test.primary
         arm = p.vectors[1] if len(p.vectors) == 2 else None
         if isinstance(arm, (list, tuple)) and len(arm) == 2 and all(isinstance(d, str) for d in arm) and p.fulcrum:
-            return arm[0], arm[1], p.fulcrum
+            joint = self.test.pull_joint or p.fulcrum
+            return (joint if arm[0] == p.fulcrum else arm[0]), arm[1], joint
         return None
 
     def _compute_pull(self, states):
@@ -529,11 +531,11 @@ class Engine:
         spec = self.pull_segment()
         if spec is None:
             return None
-        names = ("strap", "anchor") + tuple(spec)
-        if any(n not in states or states[n].lost for n in names):
+        pos = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
+        pos.update(self._last_derived)                                  # a computed joint (the hip centre) is not among the dots
+        if any(n not in pos for n in ("strap", "anchor") + tuple(spec)):
             return None
-        xy = lambda n: (states[n].x, states[n].y)                       # noqa: E731
-        return compute_pull(xy("strap"), xy("anchor"), xy(spec[0]), xy(spec[1]), xy(spec[2]), self.scale.px_per_cm)
+        return compute_pull(pos["strap"], pos["anchor"], pos[spec[0]], pos[spec[1]], pos[spec[2]], self.scale.px_per_cm)
 
     def dot_sizes_cm(self):
         """Approximate width in cm of each marked dot (from its size when marked and the ruler scale); {} without a scale."""
@@ -1619,7 +1621,10 @@ class Engine:
                 head.append(f"CHECK DOTS: {self.dots_apart_text(pair, change)}. Mark it again (its number key) or Redo all (D).")
             pull = self._compute_pull(states)
             if self.pull_active:
-                head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off)")
+                spec = self.pull_segment()
+                needs_ruler = spec is not None and spec[2] in self.test.derived
+                head.append(describe_pull(pull) if pull else "PULL: not available (a strap, anchor or segment dot is lost or off"
+                            + (", or there is no ruler scale: the hip centre needs it)" if needs_ruler else ")"))
             for problem in self.scale.problems():
                 head.append("SCALE: " + problem)
             if self._asis_pair() is not None:
@@ -1779,6 +1784,8 @@ class Engine:
                 "segment_from_to": list(spec[:2]) if spec else None, "moment_arm_from_joint_dot": spec[2] if spec else None,
                 "pull_angle": "angle between the pull direction and the segment (proximal to distal dot); 90 = square to the segment",
                 "moment_arm": "shortest distance from the joint dot to the line of pull",
+                **({"joint_is_computed_point": f"the joint is a computed point: its positions are {spec[2]}_x and {spec[2]}_y in data.csv"}
+                   if spec and spec[2] in self.test.derived else {}),
                 "cm_use_ruler_scale": self.scale.px_per_cm is not None,
                 "valid_for": "the 2D picture only; cm only at the ruler's distance from the camera"}
 

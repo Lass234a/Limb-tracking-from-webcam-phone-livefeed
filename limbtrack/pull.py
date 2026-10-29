@@ -8,7 +8,9 @@ towards the anchor marker.
   main joint: shank in the knee tests, thigh in the hip tests, foot in the ankle tests), measured along the
   segment from its proximal dot to its distal dot. 90 deg means the pull is square to the segment; below 90
   the pull has a component towards the feet, above 90 towards the body.
-* moment arm: shortest distance from the joint (the main joint's fulcrum dot) to the line of pull.
+* moment arm: shortest distance from the joint (the main joint's fulcrum dot) to the line of pull. In the frontal
+  tests (hip abduction / adduction) the joint is the computed hip centre and the segment runs from it to the patella
+  centre (protocol.json "pull_joint", 0.25.0); the ASIS, the fulcrum of the Tabel 3 angle, is not the joint.
 * strap-joint distance: straight distance from the joint to the strap marker.
 
 All of this is the 2D picture: a pull toward or away from the camera is invisible. Distances in cm use the ruler

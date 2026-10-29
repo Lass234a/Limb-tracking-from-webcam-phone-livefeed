@@ -50,6 +50,7 @@ class TestDef:
     derived: dict = field(default_factory=dict)   # computed points this test's angles use: name -> definition (geometry.DERIVED_KINDS)
     reference_extras: dict = field(default_factory=dict)   # readings the operator may type that are not one of the angles (key -> name), e.g. the hip flexion of a frontal test
     rigid_pairs: list = field(default_factory=list)   # (dotA, dotB) on one bone, both dots of this test: their distance must not change (0.19.0)
+    pull_joint: str = None                        # the dot or computed point the angle of pull and moment arm are measured about, when not the main angle's fulcrum (0.25.0: the hip centre in the frontal tests)
 
     @property
     def frontal(self):
@@ -97,7 +98,7 @@ class ProtocolError(ValueError):
 _TOP_KEYS = {"tolerance_deg", "neighbour_tolerance_deg", "dot_order", "dot_labels", "optional_dots", "derived_points", "angle_library", "tests",
              "rigid_pairs"}
 _TEST_KEYS = {"label", "primary", "targets", "angles", "dots", "tolerance_deg", "neighbour_tolerance_deg", "optional_dots",
-              "neighbour_targets", "view", "reference_extras"}
+              "neighbour_targets", "view", "reference_extras", "pull_joint"}
 _ANGLE_KEYS = {"name", "vectors", "label", "signed", "sign", "offset", "primary", "fulcrum", "kind", "points", "judged"}
 _FIXED_ARMS = ("up", "down", "forward")
 _MAX_TOLERANCE = (30.0, 45.0)        # the ranges of the tolerance boxes in the window (main joint, other joints)
@@ -315,6 +316,12 @@ def validate_protocol(data):
                 else:
                     errs += [f'{path}.{key2}: "{n}" is a computed point, not a dot to mark' if n in derived
                              else f'{path}.{key2}: unknown dot "{n}"{_near(n, known)}' for n in v if n not in known]
+        pj = t.get("pull_joint")
+        if pj is not None:
+            if not isinstance(pj, str):
+                errs.append(f"{path}.pull_joint: must be the name of a dot or a computed point, not {pj!r}")
+            elif pj not in known_arms:
+                errs.append(f'{path}.pull_joint: unknown dot "{pj}"{_near(pj, known_arms)}')
         nt = t.get("neighbour_targets")
         if nt is not None:
             if not isinstance(nt, dict):
@@ -368,6 +375,10 @@ def load_protocol(path):
             missing = [d for d in a.dots if d not in dots]
             if missing:
                 raise ValueError(f"{key}/{a.name}: uses dots not in the test's dot list: {missing}")
+        derived_here = {n: dict(derived_defs[n]) for a in angles for v in a.vectors for n in spec_dots(v) if n in derived_defs}
+        pull_joint = t.get("pull_joint")
+        if pull_joint is not None and pull_joint not in list(dots) + list(t.get("optional_dots", data.get("optional_dots", []))) + list(derived_here):
+            raise ValueError(f"{key}: pull_joint \"{pull_joint}\" is not one of the test's dots or computed points")
         tests[key] = TestDef(
             key=key,
             label=t.get("label", key),
@@ -381,8 +392,9 @@ def load_protocol(path):
             neighbour_targets=dict(t.get("neighbour_targets", {})),
             view=t.get("view", "sagittal"),
             reference_extras=dict(t.get("reference_extras", {})),
-            derived={n: dict(derived_defs[n]) for a in angles for v in a.vectors for n in spec_dots(v) if n in derived_defs},
+            derived=derived_here,
             rigid_pairs=[tuple(p) for p in data.get("rigid_pairs", []) if p[0] in dots and p[1] in dots],
+            pull_joint=pull_joint,
         )
     return tests
 

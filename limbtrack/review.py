@@ -87,6 +87,8 @@ class Trial:
         # dot positions over the whole trial (NaN where a dot is lost) and the ruler scale, for the displacement numbers
         self.tracks = {n: (np.array([_f(r[f"{n}_x"]) for r in self.rows]), np.array([_f(r[f"{n}_y"]) for r in self.rows]))
                        for n in self.dot_names}
+        self.derived_tracks = {n: (np.array([_f(r[f"{n}_x"]) for r in self.rows]), np.array([_f(r[f"{n}_y"]) for r in self.rows]))
+                               for n in self.derived_names}          # (the hip centre, kept apart from the dots: it has no lost or quality columns)
         self.px_per_cm = (self.meta.get("scale") or {}).get("px_per_cm_at_marking")
         self.ruler_dots = (self.meta.get("scale") or {}).get("ruler_dots_px_at_marking")      # two fixed points, full-picture pixels
         self.ruler_cm = (self.meta.get("scale") or {}).get("ruler_length_cm")

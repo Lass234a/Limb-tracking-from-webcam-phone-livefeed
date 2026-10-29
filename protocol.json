@@ -20,6 +20,7 @@
   },
   "_optional_dots_note": "Extra dots that are tracked and recorded but not part of any angle. They start switched off; tick them in Landmarks to use them. Per test you can override with \"optional_dots\".",
   "optional_dots": ["strap", "anchor"],
+  "_pull_joint_note": "With the strap and the anchor dot on, the angle of pull and the moment arm are measured about the fulcrum dot of the test's main angle. In the two frontal tests that fulcrum is the ASIS, which is not the joint, so they name a 'pull_joint' instead: the computed hip centre (a dot or a computed point of the test; it needs the ruler scale). Write \"asis\" there to measure about the ASIS. Which pivot the study uses is not decided (SOP 9.9, with AnyBody): the ASIS and the hip centre are both in every file, so the other one can be worked out afterwards.",
 
   "_rigid_pairs_note": "Two dots on the same bone stay the same distance apart. When the distance between such a pair changes by more than 25 % from what it was when the dots were marked, a dot has most likely jumped to something else (P20, 2026-10-22): every angle that uses either dot is marked CHECK on screen, does not count as within limits, and the frames are saved in data.csv ('dots_apart') and meta.json. Only pairs on ONE bone belong here: iliac_crest-trochanter spans the hip and changes length when the hip moves.",
   "rigid_pairs": [["fibular_head", "malleolus"], ["mt5_base", "mt5_head"], ["trochanter", "epicondyle"], ["asis", "asis_opposite"]],
@@ -62,7 +63,7 @@
   },
 
   "tests": {
-    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative). Since 0.24.0 the foot (the 'ankle' angle and its two dots mt5_base and mt5_head) is tracked only in the ankle tests and the belt squat, because foot tracking has been difficult and the knee and hip tests do not use the foot: to bring it back into a test, add \"ankle\" to that test's 'angles'.",
+    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative). Since 0.24.0 the foot (the 'ankle' angle and its two dots mt5_base and mt5_head) is tracked only in the ankle tests and the belt squat, because foot tracking has been difficult and the knee and hip tests do not use the foot: to bring it back into a test, add \"ankle\" to that test's 'angles'. Since 0.25.0 the strap and anchor dots are offered in the frontal tests too (off until ticked, as in the others).",
     "knee_extension": {
       "label": "Knee extension, hip 90 (MVIC)",
       "primary": "knee",
@@ -103,7 +104,7 @@
       "view": "frontal",
       "primary": "abd_goniometer",
       "targets": [0, 20],
-      "optional_dots": [],
+      "pull_joint": "hip_centre",
       "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
       "angles": ["abd_goniometer", "abd_hip_centre"]
     },
@@ -113,7 +114,7 @@
       "view": "frontal",
       "primary": "abd_goniometer",
       "targets": [0, 20],
-      "optional_dots": [],
+      "pull_joint": "hip_centre",
       "reference_extras": {"hip_flexion": "Hip flexion (typed from an inclinometer)", "knee_flexion": "Knee flexion (typed from an inclinometer)"},
       "angles": ["abd_goniometer", "abd_hip_centre"]
     },

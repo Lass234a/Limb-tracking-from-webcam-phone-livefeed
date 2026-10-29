@@ -74,6 +74,10 @@ CASES = [
     ("judged as text", lambda d: d["angle_library"]["abd_hip_centre"].update(judged="no"), "angle_library.abd_hip_centre.judged"),
     ("unknown view", lambda d: d["tests"]["hip_abduction"].update(view="sideways"), "tests.hip_abduction.view"),
     ("misspelt view", lambda d: d["tests"]["hip_abduction"].update(view="frontl"), 'did you mean "frontal"?'),
+    # the joint the pull is measured about (0.25.0)
+    ("pull joint as a number", lambda d: d["tests"]["hip_abduction"].update(pull_joint=7), "tests.hip_abduction.pull_joint"),
+    ("misspelt pull joint", lambda d: d["tests"]["hip_abduction"].update(pull_joint="hip_center"),
+     'tests.hip_abduction.pull_joint: unknown dot "hip_center" (did you mean "hip_centre"?)'),
     # angles that would silently not do what the protocol says (0.17.1)
     ("signed angle in a frontal test", lambda d: d["angle_library"]["abd_goniometer"].update(signed=True),
      'tests.hip_abduction.angles: "abd_goniometer" is a signed angle'),

@@ -3,6 +3,42 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.25.0 - 2026-10-29
+
+### Strap and anchor dots in hip abduction and adduction
+- **Why:** asked on 2026-10-29: "we need an anchor and strap marker for abduction and adduction". 0.15.0 had left them out of the two frontal
+  tests ("no torque from the front yet"), so the Landmarks list of those tests had no strap or anchor to tick.
+- **What:** `hip_abduction` and `hip_adduction` now offer the strap and the anchor dot like every other test (`protocol.json`: the empty
+  `optional_dots` of those two tests is gone): dot buttons 4 and 5, off until ticked, a choice made in another test is kept. With both on,
+  everything that already worked for them in the sagittal tests works here: the rope line on the picture, the angle of pull, the moment arm and
+  the strap-to-joint distance (CSV columns and `meta.json` `pull`), the anchor-wander and strap-seen checks, and the torque in Review.
+- **The joint the pull is measured about (my decision, one word to change):** in the sagittal tests it is the fulcrum dot of the main angle.
+  In the frontal tests that fulcrum is the ASIS, which is not the hip joint: the hip centre of the equation (Harrington, 0.15.0) lies about
+  90 mm medial and 86 mm below it for a pelvis 250 mm wide, and for a horizontal rope that 86 mm is added to the moment arm (about a tenth of
+  the arm for a strap near the ankle, more for a strap higher up). So the two frontal tests have a new optional key, `"pull_joint":
+  "hip_centre"`: the pull is measured about the computed hip centre, and the thigh segment for the pull angle runs from it to the patella
+  centre. It needs the ruler, like the hip centre itself (without one the header says *PULL: not available ... no ruler scale: the hip centre
+  needs it*). `"pull_joint": "asis"` measures about the ASIS instead. **The SOP has this as undecided** (9.9, "ASIS or estimated hip centre,
+  with AnyBody"); both the ASIS and the hip centre are in every CSV (`asis_x`, `hip_centre_x`, ...), so the other pivot can always be worked
+  out afterwards. `protocol.py` checks the name (a dot or computed point of that test).
+- **Review:** `Trial.derived_tracks` holds the hip centre's positions (kept apart from `tracks`, which are dots with `_lost` columns);
+  `analysis.torque_series` takes the joint from either. Where the strap dot is not seen in a picture of a frontal trial there is **no stand-in**
+  (in the ankle test the distal dot of the segment stands in for the strap; here the segment ends at the knee, not where the strap sits), so
+  that picture has no torque. `meta.json` `pull` names the joint (`"hip_centre"`) and says it is a computed point.
+- **Small side effect, fixed by the same change:** until now, visiting a frontal test switched the strap and anchor dots *on* in the next knee,
+  hip or ankle test (the frontal tests had no such dots, which made the program forget they were meant to start off). They now start off
+  and stay as the operator left them.
+- **Tests:** `tests/test_pull_frontal.py` (new, 18 with the parametrised ones): the protocol offers the dots and the pull joint, a bad name is
+  refused with the test named, the moment arm and pull angle against hand-worked numbers (horizontal rope at 0 and 20 deg, both legs; a rope at
+  45 deg; the ASIS gives an arm 60+ px longer; `"asis"` switches the pivot), no ruler = no pull and the header says why, the extra dots change
+  no angle, the recording (CSV, meta, a covered anchor leaves the pull blank), Review's `derived_tracks`, the torque from a hip centre and no
+  stand-in. Brought up to date: `test_strap_dots.py`, `test_protocol_table2.py` (the frontal tests now offer the dots), `test_protocol_validation.py`
+  (+2 cases). Version 0.25.0.
+- **Not tried:** a real frontal trial with a strap and an anchor on a person (where the strap sits on the leg in the front view is not
+  written in the SOP: 9.7 describes the sagittal tests); the torque of a frontal trial against a hand calculation; whether the ruler, which
+  is at the depth of the ASIS in these tests, is also the right scale at the depth of the strap. The hip-centre constants are still unchecked
+  against the original paper (0.15.0).
+
 ## 0.24.0 - 2026-10-29
 
 ### A new order of the steps, soft reminders instead of hard stops, an easier ruler, and the foot only where the foot is used
