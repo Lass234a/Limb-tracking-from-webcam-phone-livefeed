@@ -38,7 +38,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.26.0"
+SOFTWARE_VERSION = "0.27.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -160,6 +160,7 @@ class Engine:
         self._privacy_hits = {}      # dot -> frames in which it was near the crop edge or inside a mask while recording
         self._privacy_look = None    # the operator's last "I looked at the picture of this position" (note_privacy_check; 0.23.0)
         self.reminders_open = []     # what the window still had as a soft reminder when Record was pressed (plain sentences; 0.24.0)
+        self.rest_before = None      # the rest before this trial, from the window's rest timer (rest.RestTimer.meta; 0.27.0)
         self.save_overlay = True    # also save overlay.mp4 (Review can redraw it from raw.mp4 and the CSV, and export it later)
         self.recording_first = True  # while recording the window does less, so more pictures are tracked and saved (gui.py; 0.21.0)
         self._relaxed_for_trial = False   # the force's relaxed level was taken for the position being recorded (set when a trial starts; 0.22.0)
@@ -1019,7 +1020,13 @@ class Engine:
         self._cues.cancel()
         self._cues.last_error, self._cues.error_count = None, 0       # a test starts afresh: whatever fails now is reported now
         self._cues.schedule([(now + dt, name) for dt, name in ((0.0, "record"), (0.8, "ramp"), (1.6, "hold"), (2.5, "push"),
-                                                              (3.0, "push"), (3.7, "relax"), (4.6, "end"))])
+                                                              (3.0, "push"), (3.7, "relax"), (4.6, "end"), (5.8, "rest"))])
+
+    def rest_beep(self):
+        """The rest is over (0.27.0): three short beeps, on the cue player (so its errors are kept and shown like the other beeps). The
+        window decides whether to call it (its own switch); never while recording."""
+        if self.rec is None:
+            self._cues.play("rest")
 
     def _auto_mvic_step(self, t):
         """Give the force samples that came in to the automatic MVIC, and write its start / end marker on this picture when due."""
@@ -1884,6 +1891,7 @@ class Engine:
             "overlay_video_saved": self.save_overlay,
             "privacy": self._privacy_meta(),
             "reminders_open_at_start": list(self.reminders_open),     # soft reminders nobody had answered when Record was pressed (0.24.0)
+            "rest_before": self.rest_before,                          # the rest timed before this trial (0.27.0; None: none was timed)
             "force_setup": self.force.info() if self.force is not None else None,
             "auto_mvic_setup": ({"enabled": True, "threshold_n": self.auto_mvic_threshold, "length_s": self.auto_mvic_seconds}
                                 if self.auto_mvic else {"enabled": False}),

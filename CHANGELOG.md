@@ -3,6 +3,33 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.27.0 - 2026-10-30
+
+### A rest timer between contractions
+- **Why:** asked on 2026-10-29 ("add a rest timer"). SOP v0.18 times the rests with a stopwatch (1.7): 60 s between the trials of one
+  position (10.5, 10.6), 120 s before the next position (10.8) and between the belt squat trials (11.7), 30 s after the submaximal
+  contraction (9.11). In the pilot sessions 33 of the 89 rests between two trials of one position were shorter than 60 s (the shortest
+  5 s), and 8 of the 37 changes of position took less than 120 s (from `Pilot/session_log.csv`).
+- **What:** a line under Lock / Record (`limbtrack/rest.py` `RestTimer`; `gui.py` `_update_rest`): it starts when a recording stops and
+  counts up, amber "REST 0:42 of 1:00 (before the next trial at this position)", then green "Rest 1:05: done ...". The goal follows where
+  the operator is: 60 s at the same position; 120 s once the 10 % check needs no further trial there, when another position is chosen, or
+  in the belt squat. **Submax rest 30 s (T)** starts the 30 s after the submaximal contraction (which is not recorded). Three short beeps
+  when the rest is over (a new cue, `"rest"`; its own switch *Beep when the rest is over* in Markers and sound, on by default,
+  remembered; independent of *Sound cues*; never during a recording); again when the rest became longer after a change of position.
+  *Test the beeps* plays it last. Session log: *rest started* (submax), *rest over*.
+- **Record during a rest** is never refused: it is a soft reminder ("Rest: only 0:42 since the last trial (the SOP asks for 1:00 ...)"),
+  written to `reminders_open_at_start` and said again with the trial's warnings. Every trial saves `meta.json` `rest_before` (seconds from
+  the end of the previous recording, or the submax button, to Record; the goal; why; short or not; null for the first trial of a run).
+  Review: a check line when the rest was short, and a new export column `rest_before_s`.
+- **Measured numbers:** none change. The rest is counted from the moment the recording stopped (with the automatic stop, 2 s after the
+  MVIC end marker), so it is about 2 s shorter than the rest since the end of the contraction. It is not kept across a restart of the
+  program.
+- **Tests:** `tests/test_rest_timer.py` (10: the SOP rules on a made-up clock, the beep once and again, two recordings through the real
+  window with a video file: the line, the reminder, `rest_before` in meta, Review's check and column; the submax button and the T key; the
+  switch remembered; the beep never during a recording); `test_cues.py` (*Test the beeps* order). The new beep was played once through the
+  real Windows sound call outside the tests (no error; nobody has heard it but the user). Version 0.27.0.
+- **Not tried:** in a session; whether the beep is loud enough in the lab.
+
 ## 0.26.0 - 2026-10-29
 
 ### Fixes and after-trial checks from the pilot sessions P01 and P02

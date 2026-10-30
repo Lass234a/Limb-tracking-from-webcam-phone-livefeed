@@ -27,6 +27,7 @@ from .loadcell import GRAVITY, find_regression
 from .force import HUM_NOTE_V, ForceCalibration, ForceError, NiDaqForce, SimulatedForce
 from .protocol import plan_positions
 from .recorder import count_trials, trial_metas
+from .rest import REST_AFTER_SUBMAX_S, RestTimer
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
 from .review import ReviewTab, after_trial_check, fill_reference_choices, select_reference_choices
@@ -767,6 +768,11 @@ class LiveTab(QWidget):
         self.cue_push_spin.setToolTip("A short motivating tick this often while the force is held (0 = no ticks).")
         self.cue_push_spin.valueChanged.connect(lambda v: self._set_setting("cue_push_every_s", self.cue_push_spin, v))
         self.cue_push_spin.setEnabled(self.engine.audio_cues)
+        self.chk_rest_beep = QCheckBox("Beep when the rest is over")
+        self.chk_rest_beep.setChecked(True)
+        self.chk_rest_beep.setToolTip("Three short beeps when the rest of the SOP is over (60 s between trials at one position, 120 s before the next "
+                                      "position and in the belt squat, 30 s after the submaximal contraction). The rest is counted from the moment a "
+                                      "recording stops and shown under the Record button. Independent of 'Sound cues'.")
         self.btn_cue_test = QPushButton("Test the beeps")
         self.btn_cue_test.setToolTip("Plays every beep once, in the order of a contraction (also when the beeps are switched off).")
         self.btn_cue_test.clicked.connect(self.test_beeps)
@@ -805,6 +811,7 @@ class LiveTab(QWidget):
         mf.addRow("Stop this long after the end", self.auto_stop_spin)
         mf.addRow(self.chk_cues)
         mf.addRow("Tick during the hold every", self.cue_push_spin)
+        mf.addRow(self.chk_rest_beep)
         mf.addRow(self.btn_cue_test)
         mf.addRow(self.btn_rehearse)
         mf.addRow(self.rehearse_label)
@@ -1161,6 +1168,18 @@ class LiveTab(QWidget):
         quick.addWidget(self.btn_lock, 0, 0)
         quick.addWidget(self.btn_rec, 0, 1)
         quick.addWidget(self.btn_pause, 1, 0, 1, 2)
+        # --- the rest between contractions (0.27.0, SOP 10.5/10.8/11.7/9.11): counted from the end of each recording, shown here
+        self.rest = RestTimer()
+        self.rest_label = QLabel("")
+        self.rest_label.setWordWrap(True)
+        self.rest_label.setVisible(False)                           # only while a rest is timed and nothing is recorded
+        self.btn_rest_submax = QPushButton(f"Submax rest {REST_AFTER_SUBMAX_S:g} s  (T)")
+        self.btn_rest_submax.setFocusPolicy(Qt.NoFocus)
+        self.btn_rest_submax.setToolTip("After the submaximal contraction (SOP 9.11, not recorded): start the 30 s rest before the first MVIC "
+                                        "trial. After a trial the rest starts by itself.")
+        self.btn_rest_submax.clicked.connect(self.start_submax_rest)
+        quick.addWidget(self.rest_label, 2, 0)
+        quick.addWidget(self.btn_rest_submax, 2, 1)
         head = QVBoxLayout()
         head.setSpacing(6)
         head.addWidget(self.strip)
@@ -1233,6 +1252,7 @@ class LiveTab(QWidget):
         QShortcut(QKeySequence(Qt.Key_G), self, activated=self.btn_ref_stamp.click)
         QShortcut(QKeySequence(Qt.Key_D), self, activated=self.btn_redo_dots.click)
         QShortcut(QKeySequence(Qt.Key_C), self, activated=self.btn_ruler_pin.click)
+        QShortcut(QKeySequence(Qt.Key_T), self, activated=self.btn_rest_submax.click)
         QShortcut(QKeySequence(Qt.Key_V), self, activated=self.confirm_privacy_if_open)
         QShortcut(QKeySequence(Qt.Key_N), self, activated=self.btn_pos_next.click)
         QShortcut(QKeySequence(Qt.Key_B), self, activated=self.btn_pos_prev.click)
@@ -1475,6 +1495,7 @@ class LiveTab(QWidget):
                           "length": self.auto_len_spin.value()},
             "cues": {"on": self.chk_cues.isChecked(), "push_every_s": self.cue_push_spin.value()},
             "auto_stop": {"on": self.chk_auto_stop.isChecked(), "after_s": self.auto_stop_spin.value()},
+            "rest": {"beep": self.chk_rest_beep.isChecked()},
             "camera_model": self.camera_model.text().strip(),
             "ruler_cm": self.ruler_len.value(),
             "participant": self.participant.text().strip(),
@@ -1542,6 +1563,7 @@ class LiveTab(QWidget):
             st = s.get("auto_stop") or {}
             part(lambda: self.auto_stop_spin.setValue(float(st["after_s"])))
             part(lambda: self.chk_auto_stop.setChecked(bool(st["on"])))
+            part(lambda: self.chk_rest_beep.setChecked(bool((s.get("rest") or {})["beep"])))
             part(lambda: self.camera_model.setText(str(s.get("camera_model", ""))))
             part(lambda: self.ruler_len.setValue(float(s["ruler_cm"])))
             part(lambda: self.participant.setText(session_memory.participant_if_recent(s)))
@@ -3252,12 +3274,15 @@ class LiveTab(QWidget):
             reminders = self._open_reminders()
             self.engine.reminders_open = [text for text, _ in reminders]
             self._soft_for_file = [text for text, in_file in reminders if in_file]
+            self.engine.rest_before = self.rest.meta(self._position_now(), self._rest_position_done())
             try:
                 self.engine.start_trial(self.participant.text().strip(), self.notes.text())
             except Exception as e:  # noqa: BLE001
                 self.btn_rec.setChecked(False)
                 QMessageBox.warning(self, "Cannot record", str(e))
                 return
+            self.rest.stop()                                        # (a new rest starts when this recording stops)
+            self._update_rest()
             self._rec_started = time.perf_counter()
             self._start_recording_view()
             self.note("recording started", f"{self.participant.text().strip()} {self.engine.test.key} {self.engine.target if self.engine.target is not None else ''}".strip())
@@ -3275,6 +3300,8 @@ class LiveTab(QWidget):
             self._end_recording_view()
             n = self.engine.rec.frames if self.engine.rec is not None else None
             duration = time.perf_counter() - self._rec_started if self._rec_started is not None else 0.0
+            if self._rec_started is not None:                       # the rest after this contraction begins now (0.27.0; also when the
+                self.rest.start("trial", self._position_now(), self.engine.test.key)     # engine had to end the recording itself)
             due = self.engine.seconds_to_auto_stop()
             if self.engine.rec is not None:
                 self.note("recording stopped", f"{n} frames, {duration:.1f} s, " + ("by itself after the MVIC end" if due is not None and due <= 0 else "by hand"))
@@ -3342,6 +3369,9 @@ class LiveTab(QWidget):
             out.append(("Ruler: not looked at again after the position changed.", False))
         if src is not None and src.calibration.zero_set and e.relaxed_here() is None and self._relax_dismissed != e.relaxed_key():
             out.append(("Resting force: Zero 2 was not taken for this position.", False))
+        rest = self.rest.reminder(self._position_now(), self._rest_position_done())          # 0.27.0: the rest is in the file (rest_before)
+        if rest:
+            out.append((rest, True))
         return out
 
     def _ask_tested_leg(self):
@@ -3360,6 +3390,44 @@ class LiveTab(QWidget):
             return False
         self.leg_combo.setCurrentIndex(self.leg_combo.findData(leg))
         return self.engine.tested_leg == leg
+
+    # ------------------------------------------------------------ the rest between contractions (SOP 10.5, 10.8, 11.7, 9.11; 0.27.0)
+    def _position_now(self):
+        return self._position_key(self.participant.text().strip(), self.engine.test.key, self.engine.target)
+
+    def _rest_position_done(self):
+        """Whether the 10 % check needs no further trial at the position the rest follows (then the next is a new position: 120 s)."""
+        got = self._repeat.get(self.rest.position) if self.rest.position is not None else None
+        return got is not None and got[1].get("state") in ("ok", "deviation")
+
+    def start_submax_rest(self):
+        """The 30 s after the submaximal contraction (not recorded), started by hand."""
+        if self._rec_started is not None:
+            self.say("A rest cannot start during a recording.")
+            return
+        self.rest.start("submax")
+        self.note("rest started", "after the submaximal contraction")
+        self._update_rest()
+
+    def _update_rest(self):
+        """The rest line under Record: amber while the rest runs, green when the SOP's time is over (with a beep, if wanted). Hidden while
+        recording and when no rest is timed."""
+        st = None if self._rec_started is not None else self.rest.status(self._position_now(), self._rest_position_done())
+        if st is None:
+            if self.rest_label.isVisible():
+                self.rest_label.setVisible(False)
+            return
+        style = "color: #16a34a; font-weight: bold;" if st["done"] else "color: #b45309; font-weight: bold; font-size: 15px;"
+        if self.rest_label.text() != st["text"]:
+            self.rest_label.setText(st["text"])
+        if self.rest_label.styleSheet() != style:
+            self.rest_label.setStyleSheet(style)
+        if not self.rest_label.isVisible():
+            self.rest_label.setVisible(True)
+        if self.rest.beep_due(self._position_now(), self._rest_position_done()):
+            self.note("rest over", st["text"])
+            if self.chk_rest_beep.isChecked():
+                self.engine.rest_beep()
 
     # ------------------------------------------------------------ the 10 % check after each trial (SOP 10.6; 0.20.0)
     @staticmethod
@@ -3496,6 +3564,7 @@ class LiveTab(QWidget):
                 return
         self.update_force_box()
         self.update_reference_box(recording)
+        self._update_rest()
         self._show_cleared_pelvis_facts()            # (the engine clears them when a recording ends with another participant code)
         self.plan.setEnabled(not recording)
         for w in (self.btn_crop, self.btn_mask, self.btn_priv_clear, self.btn_folder):

@@ -14,6 +14,7 @@ import numpy as np
 from .force import NO_FORCE_RISE_N
 from .loadcell import GRAVITY
 from .pull import compute_pull
+from .rest import clock_text
 
 HUM_WARN_PCT = 3.0              # 50 Hz hum above this share of the force rise is flagged
 FPS_WARN = 20.0                 # fewer pictures per second than this are flagged
@@ -212,6 +213,9 @@ def trial_checks(tr, t0=None, t1=None):
     texts = checks.get("label_checks") or {}
     for code, c in (checks.get("label_check_frames") or {}).items():
         add("check", f"CHECK LABELS in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): {texts.get(code, code)}.")
+    rb = m.get("rest_before")                                          # 0.27.0: the rest timed before the trial
+    if rb and rb.get("short"):
+        add("check", f"Only {clock_text(rb['seconds'])} of rest before this trial (the SOP asks for {clock_text(rb['required_s'])} {rb.get('why', '')}).")
     small = (m.get("dot_size_check") or {}).get("below_minimum")
     if small:
         add("check", "Dots under the 2 cm minimum: " + ", ".join(small))
@@ -381,7 +385,7 @@ def position_angle_note(main, plateau, earlier, target, tolerance, previous=None
 # ------------------------------------------------------------------------------------------------ one row per trial, per participant
 SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "test_key", "target_deg", "software_version", "window",
                    "window_start_s", "window_end_s",
-                   "pictures_per_s", "force_unit", "force_peak", "force_t_peak_s", "force_plateau", "force_rest", "force_rest_s",
+                   "pictures_per_s", "rest_before_s", "force_unit", "force_peak", "force_t_peak_s", "force_plateau", "force_rest", "force_rest_s",
                    "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
                    "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
@@ -402,7 +406,7 @@ def session_row(tr):
     row.update(trial=tr.base, position_number=m.get("position_number") or "", trial_number=m.get("trial_number") or "",   # (0.20.0)
                participant=m.get("participant"), test_key=m.get("test_key"), target_deg=m.get("target_deg"),
                software_version=m.get("software_version"), window=src, window_start_s=win[0], window_end_s=win[1],
-               pictures_per_s=m.get("measured_fps"))
+               pictures_per_s=m.get("measured_fps"), rest_before_s=(m.get("rest_before") or {}).get("seconds", ""))     # (0.27.0)
     ang = tr.summary(*win)
     main = next((r for r in ang if r["role"] == "main"), ang[0] if ang else None)
     if main is not None:

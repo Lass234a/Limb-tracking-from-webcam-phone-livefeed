@@ -248,7 +248,7 @@ def test_the_record_box_has_the_sound_controls(tmp_path, monkeypatch):
     live.btn_cue_test.click()
     time.sleep(0.2)
     assert heard == ["record"]                                              # the first beep is at once ...
-    assert names(win.engine._cues.pending()) == ["ramp", "hold", "push", "push", "relax", "end"]     # ... the rest follow in the order of a contraction
+    assert names(win.engine._cues.pending()) == ["ramp", "hold", "push", "push", "relax", "end", "rest"]     # ... the rest follow in the order of a contraction (0.27.0: then the rest-over beep)
     win.engine._cues.cancel()
     win.engine.rec = object()                                               # a trial is being recorded: the box refuses and says why
     live.chk_cues.setChecked(False)

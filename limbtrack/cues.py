@@ -10,6 +10,8 @@ detection from the force (the ramp was seen) or by the S key. From then on the 1
   during the hold        a short tick every second       "push"    motivation: keep pushing (0 = off)
   relax (length - 1 s)   two falling beeps               "relax"   let go, over one second
   end marker written     one low beep                    "end"     the contraction is over
+  rest over              three short beeps               "rest"    the rest of the SOP is over: ready for the next trial (0.27.0;
+                                                                   its own switch, 'Beep when the rest is over', not 'Sound cues')
 
 The times after the ramp are counted from when the force began to rise (the detector's estimate, about 0.1 to 0.2 s before the
 start marker), or from the S key press. They are cues, not measurements: nothing here is written into a recording except the
@@ -53,6 +55,7 @@ CUES = {
     "push": [(1320, 45)],
     "relax": [(990, 120), (660, 170)],
     "end": [(440, 360)],
+    "rest": [(784, 110), (784, 110), (1047, 220)],
 }
 
 
