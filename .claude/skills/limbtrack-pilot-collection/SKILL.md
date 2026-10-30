@@ -42,8 +42,9 @@ automatic end marker is always 7.0 s after the start, so it says nothing about t
 ## Say these things when you report results
 
 "Correct" means clean and complete, not validated. The angles have been tested in several rounds but are not directly validated against a goniometer or inclinometer (SETUP_AND_VALIDATION.md,
-section 4). A small spread inside a hold only shows that the tracking is steady. Ankle tests have no main angle in `data.csv`, and the hip
-angles read far from their targets (the pelvis-line definition issue in HANDOFF.md). When asked whether the angles were right, compare
+section 4). A small spread inside a hold only shows that the tracking is steady. The main angle is the one marked `primary` in each
+trial's `meta.json` (the ankle tests: `ankle_deg`). The hip angles read far from their targets (the pelvis-line definition issue in
+HANDOFF.md), and the knee and ankle move 10-25 deg from rest under load (`hold_minus_rest_deg`). When asked whether the angles were right, compare
 `hold_angle_deg` with `target_deg` and with the other trials of the same position, and say that absolute accuracy is unproven.
 
 ## Keep it local

@@ -3,6 +3,22 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## Tools (no program version) - 2026-10-30
+
+### Replay, benchmark and pilot-collection tools from pull request #4
+- **Taken:** the four tool commits of PR #4 (lassehk96-ops; authorship kept): `tools/replay_compare.py`, `tools/synthetic_bench.py`,
+  `tools/build_truth.py`, `tools/collect_pilot.py` and the project skill `limbtrack-pilot-collection` (`FEATURES.md` A38). Their edits of
+  HANDOFF, FEATURES and CHANGELOG were left out (they went with the colour rule) and are written here instead.
+- **Fixed on taking:** `collect_pilot.py` took the main angle from a fixed test-to-column table without the ankle tests, so every ankle trial
+  had none (and the skill file said "ankle tests have no main angle"); it now uses the angle marked `primary` in each `meta.json`. On the
+  pilot: 97 of the 98 clean trials have a main angle (78 before). `.gitignore`: `*_collection/` instead of only `Pilot_collection/` (a
+  collection made from another folder would not have been ignored).
+- **Not taken:** the Auto dot colour rule of #4 (`tracker.py`, `MARKING_KIND_BOX_PX` / `MARKING_KIND_TIE`). Its replay clicks on each dot's
+  saved centre; with clicks 11-12 px beside a tape dot (real clicks land up to about 12 px away) it took the tape for the dot in 12 of 56
+  synthetic clicks (25-26 of 56 for faded dots), marking 10-15 px off without a warning, where the old rule did not (review
+  `audit/PR4_review_2026-10-30.md`). The lab uses *Black dots*, which this rule does not touch.
+- **Measured numbers:** none (tools only).
+
 ## 0.27.0 - 2026-10-30
 
 ### A rest timer between contractions

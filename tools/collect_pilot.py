@@ -21,10 +21,19 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+# Only for a meta.json without 'primary' in its angles (see main_angle_column).
 MAIN_ANGLE = {"knee_extension": "knee_deg", "knee_flexion": "knee_deg", "hip_extension_k0": "hip_deg", "hip_extension_k90": "hip_deg",
               "hip_flexion": "hip_deg", "hip_abduction": "abd_goniometer_deg", "hip_adduction": "abd_goniometer_deg", "belt_squat": "knee_deg"}
 NAME = re.compile(r"^(P\d+)_(\d+)_(.+?)(?:_(-?\d+)deg)?_(T\d+)_(\d{8}-\d{6})_meta\.json$")
 PULL_DOTS = ("strap", "anchor")
+
+
+def main_angle_column(meta, test):
+    """The data.csv column of the trial's main angle: the angle marked 'primary' in its meta.json (every trial since 0.9.0 has one; the
+    ankle tests too: ankle_deg), else the fixed table. Until 2026-10-30 only the table was used and it had no ankle tests, so every ankle
+    trial came out without a main angle."""
+    prim = next((a.get("name") for a in meta.get("angles") or [] if a.get("primary")), None)
+    return f"{prim}_deg" if prim else MAIN_ANGLE.get(test)
 
 
 def find_pilot(given):
@@ -133,7 +142,7 @@ def analyse(mp, args):
              else "roughly 1-5-1" if rise_s is not None and 0.5 <= rise_s <= 2.5 and hold80 >= 3.0 else "other")
 
     # main angle at the hold
-    col = MAIN_ANGLE.get(test)
+    col = main_angle_column(meta, test)
     ang = [num(x.get(col)) if col in rows[0] else None for x in rows] if col else [None] * len(rows)
     pl_ang = [ang[i] for i in plateau if ang[i] is not None]
     ip = a + max(range(len(sf)), key=lambda i: sf[i])

@@ -38,4 +38,5 @@ replay_key.csv
 replay_report.csv
 replay_cache.json
 truth_candidates.csv
-Pilot_collection/
+# collections made by tools/collect_pilot.py (<pilot folder>_collection: copies of participant data)
+*_collection/
