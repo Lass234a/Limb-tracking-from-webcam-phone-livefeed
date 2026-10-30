@@ -2,23 +2,26 @@
 import csv
 import json
 import math
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QLineEdit, QSplitter, QTabWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QLineEdit, QMenu, QSplitter, QStackedWidget, QTabWidget, QTextEdit, QToolButton, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import overlay, privacy, reference, session_memory
+from . import overlay, privacy, reference, review_nav, session_memory
 from . import verdict as verdicts
 from .panels import VerdictBar
+from .review_overview import OverviewPage
+from .review_style import MetricCard, build_stylesheet
 from .displacement import window_displacements
 from . import analysis
-from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
+from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, WINDOW_PEAK_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
 from .loadcell import COVERAGE, GRAVITY, active_regression, find_regression
 from .pull import COLUMNS as PULL_COLUMNS
 from .angles import measure, segment_pairs
@@ -42,6 +45,41 @@ def _f(s):
         return math.nan
 
 
+def read_force_csv(path):
+    """(t_s, volts, newtons) arrays of a trial's force.csv, NaN where a cell is empty or not a number (newtons are empty without a calibration).
+    The same numbers the csv.DictReader gave before 0.29.0 (which took about a second for a 140 000-sample file, the largest share of
+    opening a trial and of the whole participant overview); a line cut short by a crash is padded with empty cells, not dropped.
+    Returns None when the file has no sample."""
+    with open(path, newline="", encoding="utf-8") as fh:
+        rd = csv.reader(fh)
+        header = next(rd, None)
+        if header is None:
+            return None
+        try:                                    # the usual file (every cell a number): numpy's own reader, several times faster
+            usecols = [header.index(c) for c in ("t_s", "volts", "newtons")]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")           # (a file with a header only: 'input contained no data')
+                arr = np.loadtxt(fh, delimiter=",", usecols=usecols, dtype=np.float64, ndmin=2)
+            return None if arr.shape[0] == 0 else (arr[:, 0].copy(), arr[:, 1].copy(), arr[:, 2].copy())
+        except (ValueError, IndexError):        # an empty or odd cell, a short line: read it cell by cell below
+            fh.seek(0)
+            next(csv.reader(fh), None)
+            rd = csv.reader(fh)
+        n = len(header)
+        rows = [r if len(r) == n else (r + [""] * (n - len(r)))[:n] for r in rd if r]
+    if not rows:
+        return None
+    cols = list(zip(*rows))
+
+    def column(name):
+        values = cols[header.index(name)]
+        try:
+            return np.array(values, dtype=np.float64)
+        except ValueError:
+            return np.array([_f(v) for v in values], dtype=np.float64)
+    return column("t_s"), column("volts"), column("newtons")
+
+
 PLATEAU_TRIM = 0.2         # the plateau of a hold is its middle part: the first and last 20 % of the window are left out
 REST_SECONDS = 1.0         # without a clear push in the force: "rest" is the second before the window starts
 REST_MIN_FRAMES = 5
@@ -59,7 +97,8 @@ REST_UNSTEADY_FRACTION = 0.10   # a rest whose spread (SD) is more than this sha
 class Trial:
     """A recorded trial loaded from disk."""
 
-    def __init__(self, meta_path):
+    def __init__(self, meta_path, open_video=True):
+        """`open_video` False: for numbers only (the participant overview and the exports of 0.29.0); no video is opened, `frame` gives None."""
         meta_path = Path(meta_path)
         self.meta_path = meta_path
         self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -113,11 +152,12 @@ class Trial:
             self.trail_segments[n] = [(np.array(a), np.array(b)) for a, b in segs]
         # PARKED-GHOST: self.ghost = self.meta.get("locked_positions_px")
         # PARKED-GHOST: self.ghost_anchor = self.meta.get("ghost_anchor")
-        self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"]))
+        self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"])) if open_video else None
         self._pos = -2
         # force (load cell through the DAQ): every sample, on the same time axis as the video (seconds after the first picture)
         self.force_t = self.force_v = self.force_n = None
         self.force_smooth_s = SMOOTH_DEFAULT_S        # moving average for the force curve and numbers (a multiple of 20 ms removes 50 Hz hum)
+        self.window_peak_s = WINDOW_PEAK_DEFAULT_S    # length of the sliding window of the sliding-window peak (0.29.0, analysis.window_peak)
         fmeta = self.meta.get("force") or {}
         self.force_cal = fmeta.get("calibration")
         self.regression = find_regression((self.force_cal or {}).get("regression_id"))
@@ -125,11 +165,9 @@ class Trial:
                                "no calibration yet: volts only")
         fname = (self.meta.get("files") or {}).get("force.csv")
         if fname and (folder / fname).exists():
-            frows = list(csv.DictReader(open(folder / fname, newline="", encoding="utf-8")))
-            if frows:
-                self.force_t = np.array([_f(r["t_s"]) for r in frows])
-                self.force_v = np.array([_f(r["volts"]) for r in frows])
-                self.force_n = np.array([_f(r["newtons"]) for r in frows])      # NaN where there was no calibration
+            got = read_force_csv(folder / fname)
+            if got is not None:
+                self.force_t, self.force_v, self.force_n = got                    # (newtons NaN where there was no calibration)
         pv = self.meta.get("privacy") or {}        # a cropped video is put back at its place on a black full-size picture
         self.crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
         self.full_size = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
@@ -162,7 +200,14 @@ class Trial:
         self.reference_side = reference.read_sidecar(self.meta_path)
         self._reference_rows = None
 
+    def close(self):
+        """Let go of the video file (a Trial that is replaced or finished with must not keep it open)."""
+        if self.cap is not None:
+            self.cap.release()
+
     def frame(self, i):
+        if self.cap is None:
+            return None
         if i != self._pos + 1:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ok, img = self.cap.read()
@@ -507,7 +552,7 @@ def after_trial_check(meta_path):
     rows, rest_note, unreadable, this_row, earlier = [], "", [], None, []
     for p in paths:
         try:
-            tr = Trial(p)
+            tr = Trial(p, open_video=False)                    # (numbers only: no video is opened)
         except Exception:  # noqa: BLE001 - an older trial that cannot be opened (a crashed recording) is named, not hidden
             if p == meta_path:
                 raise
@@ -524,7 +569,7 @@ def after_trial_check(meta_path):
             elif this_row is None and row.get("verdict") != verdicts.COMPROMISED:     # (the trials before this one, oldest first;
                 earlier.append(row.get("plateau_angle_deg"))                         # not one marked compromised: 0.28.0)
         finally:
-            tr.cap.release()
+            tr.close()
     check = analysis.position_check(rows)
     if unreadable:
         check["text"] = (check["text"] + " " if check["text"] else "") + f"Could not be read, so not compared: {', '.join(unreadable)}."
@@ -541,6 +586,22 @@ def after_trial_check(meta_path):
             "compromised": sum(verdicts.is_compromised(p) for p in paths),           # (0.28.0: part of what the window's check is for)
             "rest_note": rest_note, "angle_note": angle_note, "position_note": position_note, "relaxed_note": relaxed_note,
             "trial": meta_path.name[: -len("_meta.json")]}
+
+
+def trial_row(meta_path, smooth_s=SMOOTH_DEFAULT_S, window_s=WINDOW_PEAK_DEFAULT_S):
+    """The export row of one trial (analysis.session_row), worked out without opening its video: `(row, "")`, or `(None, why)` when the
+    trial cannot be read. Safe to run off the window's thread (it only reads files). The overview and the exports use it."""
+    try:
+        tr = Trial(meta_path, open_video=False)
+    except Exception as e:  # noqa: BLE001 - named on the trial's line, not hidden
+        return None, f"{type(e).__name__}: {e}"
+    try:
+        tr.force_smooth_s, tr.window_peak_s = float(smooth_s), float(window_s)
+        return analysis.session_row(tr), ""
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {e}"
+    finally:
+        tr.close()
 
 
 def _previous_position(root, meta, meta_path):
@@ -567,7 +628,7 @@ def _previous_position(root, meta, meta_path):
     plateaus = []
     for p in trial_metas(root, who, key, best[1]):
         try:
-            tr = Trial(p)
+            tr = Trial(p, open_video=False)
         except Exception:  # noqa: BLE001 - an unreadable trial is simply not used for this comparison
             continue
         try:
@@ -575,7 +636,7 @@ def _previous_position(root, meta, meta_path):
             if row.get("verdict") != verdicts.COMPROMISED:          # (a trial marked compromised does not say where the position was)
                 plateaus.append(row.get("plateau_angle_deg"))
         finally:
-            tr.cap.release()
+            tr.close()
     return best[1], plateaus
 
 
@@ -787,31 +848,94 @@ class ReferenceValidationDialog(QDialog):
 class ReviewTab(QWidget):
     def __init__(self, recordings_dir):
         super().__init__()
-        self.dir = Path(recordings_dir)
+        self._dir = Path(recordings_dir)
         self.trial = None
 
-        btn_open = QPushButton("Open trial...")
-        btn_open.clicked.connect(self.open_dialog)
-        btn_session = QPushButton("Export all trials of this participant")
-        btn_session.setToolTip("One row per trial (force peak, plateau, the angle at the peak, torque if possible, checks) and whether two trials of the "
-                               "same position differ by more than 10 %. Saved as <participant>_session_summary.csv in the participant's folder.")
-        btn_session.clicked.connect(self.export_session)
-        btn_refval = QPushButton("Reference validation...")
-        btn_refval.setToolTip("How far the app's angles are from the goniometer or inclinometer readings, over all trials in the recordings folder "
-                              "(average difference, spread, an agreement plot, and a table to save).")
-        btn_refval.clicked.connect(self.show_reference_validation)
-        self.title = QLabel("Open a trial (choose a *_meta.json file in the recordings folder).")
+        # --- the header (0.29.0): choose a participant, then a trial from a drop-down; the Trial and Overview pages; exports
+        self.participant_combo = QComboBox()
+        self.participant_combo.setMinimumWidth(120)
+        self.participant_combo.setToolTip("The participant whose trials you go through: the folders of the recordings folder that hold trials. "
+                                          "'Open folder...' adds any other place, such as Pilot/P01.")
+        self.participant_combo.activated.connect(self._participant_chosen)
+        self.btn_open_folder = QPushButton("Open folder...")
+        self.btn_open_folder.setToolTip("Pick a participant's folder (such as Pilot/P01), or a folder of participants (such as Pilot).")
+        self.btn_open_folder.clicked.connect(self.open_folder_dialog)
+        self.trial_combo = QComboBox()
+        self.trial_combo.setMinimumWidth(180)
+        self.trial_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.trial_combo.setToolTip("The trials of this participant in the order they were recorded: position, test, trial, time and your verdict "
+                                    "(✓ valid, ✗ compromised, · not judged).")
+        self.trial_combo.activated.connect(self._trial_chosen)
+        self.btn_prev = QPushButton("◀")
+        self.btn_next = QPushButton("▶")
+        for b, tip in ((self.btn_prev, "The previous trial (Alt+Left)"), (self.btn_next, "The next trial (Alt+Right)")):
+            b.setToolTip(tip)
+            b.setFixedSize(34, self.trial_combo.sizeHint().height())     # (a symbol from another font must not make the button taller than the rest)
+        self.btn_prev.clicked.connect(self.prev_trial)
+        self.btn_next.clicked.connect(self.next_trial)
+        self.btn_next_unjudged = QPushButton("Next not judged")
+        self.btn_next_unjudged.setObjectName("nextUnjudged")
+        self.btn_next_unjudged.setToolTip("Jump to the next trial that has no verdict yet (Alt+N). Go through a participant with this and the "
+                                          "Valid / Dots / Position / Force / Other buttons.")
+        self.btn_next_unjudged.clicked.connect(self.next_unjudged)
+        self.btn_view_trial, self.btn_view_overview = QPushButton("Trial"), QPushButton("Participant overview")
+        self.btn_view_trial.setObjectName("segLeft")
+        self.btn_view_overview.setObjectName("segRight")
+        view_group = QButtonGroup(self)
+        for b in (self.btn_view_trial, self.btn_view_overview):
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            view_group.addButton(b)
+        self.btn_view_trial.setChecked(True)
+        self.btn_view_trial.clicked.connect(lambda: self.show_view("trial"))
+        self.btn_view_overview.clicked.connect(lambda: self.show_view("overview"))
+        self.btn_view_overview.setToolTip("One line per trial of this participant: verdict, force numbers, checks. Sort, filter and export.")
+        self.act_export_all = QAction("All trials of this participant (CSV)", self)
+        self.act_export_all.setToolTip("One row per trial (verdict, force peak, sliding-window peak, time to peak, plateau, the angle at the peak, "
+                                       "torque if possible, checks) and whether two trials of the same position differ by more than 10 %. Saved as "
+                                       "<participant>_session_summary.csv in the participant's folder.")
+        self.act_export_valid = QAction("Valid trials only (CSV)", self)
+        self.act_export_valid.setToolTip("The same, with only the trials you marked valid. Saved as <participant>_session_summary_valid.csv.")
+        self.act_export_trial = QAction("This trial: summary CSV", self)
+        self.act_export_video = QAction("This trial: overlay video", self)
+        self.act_export_video.setToolTip("Draws the angles and trails on every frame and saves a video (for sharing or a presentation).")
+        self.act_refval = QAction("Reference validation...", self)
+        self.act_refval.setToolTip("How far the app's angles are from the goniometer or inclinometer readings, over all trials in the recordings "
+                                   "folder (average difference, spread, an agreement plot, and a table to save).")
+        self.act_open_file = QAction("Open a single trial file...", self)
+        self.act_export_all.triggered.connect(lambda: self.export_session())
+        self.act_export_valid.triggered.connect(lambda: self.export_session(valid_only=True))
+        self.act_export_trial.triggered.connect(self.export)
+        self.act_export_video.triggered.connect(self.export_overlay_video)
+        self.act_refval.triggered.connect(self.show_reference_validation)
+        self.act_open_file.triggered.connect(self.open_dialog)
+        self.btn_export = QToolButton()
+        self.btn_export.setText("Export")
+        self.btn_export.setPopupMode(QToolButton.InstantPopup)
+        export_menu = QMenu(self.btn_export)
+        for a in (self.act_export_all, self.act_export_valid):
+            export_menu.addAction(a)
+        export_menu.addSeparator()
+        for a in (self.act_export_trial, self.act_export_video):
+            export_menu.addAction(a)
+        export_menu.setToolTipsVisible(True)
+        self.btn_export.setMenu(export_menu)
+        self.btn_more = QToolButton()
+        self.btn_more.setText("More")
+        self.btn_more.setPopupMode(QToolButton.InstantPopup)
+        more_menu = QMenu(self.btn_more)
+        more_menu.setToolTipsVisible(True)
+        more_menu.addAction(self.act_refval)
+        more_menu.addAction(self.act_open_file)
+        self.btn_more.setMenu(more_menu)
+        self.title = QLabel("Choose a participant, then a trial.")
+        self.title.setObjectName("trialSubtitle")
         self.title.setWordWrap(True)
         self.btn_play = QPushButton("Play")
         self.btn_play.setCheckable(True)
         self.btn_play.clicked.connect(self.toggle_play)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.valueChanged.connect(self.show_frame)
-        btn_export = QPushButton("Export summary CSV")
-        btn_export.clicked.connect(self.export)
-        btn_video = QPushButton("Export overlay video")
-        btn_video.setToolTip("Draws the angles and trails on every frame and saves a video (for sharing or a presentation).")
-        btn_video.clicked.connect(self.export_overlay_video)
 
         self.video = QLabel()
         self.video.setMinimumSize(480, 270)
@@ -859,6 +983,10 @@ class ReviewTab(QWidget):
         self.force_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
         self.window = pg.LinearRegionItem(brush=(30, 120, 220, 40))
         self.force_window_mirror = pg.LinearRegionItem(brush=(30, 120, 220, 40), movable=False)       # the same window, shown on the force plot
+        self.window_peak_mark = pg.LinearRegionItem(brush=(255, 212, 59, 110), movable=False)         # the stretch of the sliding-window peak (0.29.0)
+        for line in self.window_peak_mark.lines:
+            line.setPen(pg.mkPen(CURSOR_COLOUR, width=1))
+        self.window_peak_mark.setZValue(5)
         self.window.sigRegionChanged.connect(self._mirror_window)
         self.window.sigRegionChanged.connect(self.update_summary)
         self.chk_trails = QCheckBox("Show trails")
@@ -921,33 +1049,56 @@ class ReviewTab(QWidget):
         self.force_smooth.setToolTip("Moving average for the force curve and for peak and plateau numbers. Use a multiple of 20 ms: that removes 50 Hz "
                                      "mains hum exactly. 0 = raw samples. The saved files always hold the raw samples.")
         self.force_smooth.valueChanged.connect(self.on_force_smoothing)
+        self.window_peak_spin = _NoWheelSpin()
+        self.window_peak_spin.setRange(0, 2000)
+        self.window_peak_spin.setDecimals(0)
+        self.window_peak_spin.setSingleStep(20)
+        self.window_peak_spin.setSuffix(" ms")
+        self.window_peak_spin.setValue(WINDOW_PEAK_DEFAULT_S * 1000)
+        self.window_peak_spin.setToolTip("Length of the sliding window of the sliding-window peak: the highest mean of the raw force over any "
+                                         "stretch this long inside the blue window. Use a multiple of 20 ms (50 Hz hum cancels). 0 = the highest "
+                                         "single sample. The peak in the PeerJ paper behind it (Slade et al. 2026) is the dynamometer's own peak; "
+                                         "the paper gives no window length, 500 ms is this program's choice.")
+        self.window_peak_spin.valueChanged.connect(self.on_window_peak)
         self.btn_force_win = QPushButton("Window = force above half of peak")
         self.btn_force_win.setToolTip("Set the analysis window from the force itself: the stretch around the peak where the smoothed force is above half "
                                       "of the way from rest to peak (the hold). Use it when the MVIC markers were pressed early or late.")
         self.btn_force_win.clicked.connect(self.snap_to_force)
         self.force_box = QGroupBox("Force")
-        fb = QHBoxLayout(self.force_box)
-        fb.addWidget(QLabel("Smoothing"))
-        fb.addWidget(self.force_smooth)
-        fb.addWidget(QLabel("Picture delay"))
-        fb.addWidget(self.picture_delay)
-        fb.addWidget(QLabel("Zero"))
-        fb.addWidget(self.zero_spin)
-        fb.addWidget(self.btn_apply_cal)
-        fb.addStretch(1)
+        fb = QGridLayout(self.force_box)                       # two rows (0.29.0): one row of four boxes made the window wider than it was
+        for col, (text, box) in enumerate((("Smoothing", self.force_smooth), ("Sliding window", self.window_peak_spin), ("Picture delay", self.picture_delay))):
+            fb.addWidget(QLabel(text), 0, 2 * col)
+            fb.addWidget(box, 0, 2 * col + 1)
+        fb.addWidget(QLabel("Zero"), 1, 0)
+        fb.addWidget(self.zero_spin, 1, 1)
+        fb.addWidget(self.btn_apply_cal, 1, 2, 1, 2)
+        fb.setColumnStretch(6, 1)
         self.force_box.setVisible(False)
 
         # Graph-first layout (0.14.0; until then the graphs were a strip along the bottom and the number tabs sat top right):
         # video and its play controls top left, the graphs top right (the larger part), the number tabs in a wide strip below.
         # What acts on the analysis window or the force curve sits under the graphs it belongs to; the file buttons are in the top bar.
         # Both dividers can be dragged; where they are is remembered (attach_memory).
-        top = QHBoxLayout()
-        top.addWidget(btn_open)
-        top.addWidget(self.title, 1)
-        top.addWidget(btn_export)
-        top.addWidget(btn_video)
-        top.addWidget(btn_refval)
-        top.addWidget(btn_session)
+        self.header = QFrame()
+        self.header.setObjectName("reviewHeader")
+        top = QHBoxLayout(self.header)
+        top.setContentsMargins(0, 0, 0, 8)
+        top.setSpacing(6)
+        top.addWidget(QLabel("Participant"))
+        top.addWidget(self.participant_combo)
+        top.addWidget(self.btn_open_folder)
+        top.addSpacing(10)
+        top.addWidget(QLabel("Trial"))
+        top.addWidget(self.trial_combo, 1)
+        top.addWidget(self.btn_prev)
+        top.addWidget(self.btn_next)
+        top.addWidget(self.btn_next_unjudged)
+        top.addSpacing(10)
+        top.addWidget(self.btn_view_trial)
+        top.addWidget(self.btn_view_overview)
+        top.addSpacing(10)
+        top.addWidget(self.btn_export)
+        top.addWidget(self.btn_more)
         ctrl = QHBoxLayout()
         ctrl.addWidget(self.btn_play)
         ctrl.addWidget(self.slider, 1)
@@ -957,7 +1108,9 @@ class ReviewTab(QWidget):
         erow.addWidget(self.event_combo, 1)
         erow.addWidget(self.btn_hold)
         erow.addWidget(self.btn_force_win)
-        hint = QLabel("Blue band on the plots = analysis window (drag its edges on the upper plot). The numbers use it.")
+        hint = QLabel("Blue band on the plots = analysis window (drag its edges on the upper plot). The numbers use it. "
+                      "Yellow bar on the force = the sliding-window peak.")
+        hint.setObjectName("hint")
         hint.setWordWrap(True)
         left = QVBoxLayout()
         left.addWidget(self.video, 1)
@@ -997,10 +1150,66 @@ class ReviewTab(QWidget):
         self.verdict_bar = VerdictBar()
         self.verdict_bar.setVisible(False)
         self.verdict_bar.changed.connect(self._verdict_changed)
+        # the key numbers of the window, large (0.29.0): they follow the blue window
+        self.cards = {
+            "peak": MetricCard("Peak force", "The highest value of the smoothed force (the moving average chosen under Smoothing) in the blue window."),
+            "window_peak": MetricCard("Sliding-window peak", "The highest mean of the raw force over a stretch as long as the Sliding window box says."),
+            "time_to_peak": MetricCard("Time to peak", "Seconds from the start of the push to the peak. The start of the push is where the force was last "
+                                                       "within 10 % of its rise above the level before the push."),
+            "plateau": MetricCard("Plateau mean", "The mean force over the middle 60 % of the blue window."),
+            "above_rest": MetricCard("Peak above rest", "The peak minus the resting force before the push (SOP 9.10)."),
+            "angle": MetricCard("Angle at peak", "The main joint's angle at the moment of the peak force."),
+        }
+        self.angle_cards = {                               # a trial without force shows these instead
+            "hold": MetricCard("Hold angle", "The main joint's mean angle over the middle 60 % of the blue window."),
+            "target": MetricCard("Target", "The angle the position was set to, and how far the hold angle is from it."),
+            "shift": MetricCard("Rest to hold", "How far the main joint moved from its angle at rest to its angle in the hold."),
+        }
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(8)
+        for c in list(self.cards.values()) + list(self.angle_cards.values()):
+            cards_row.addWidget(c, 1)
+            c.setVisible(False)
+        info_row = QHBoxLayout()
+        info_row.setSpacing(10)
+        info_row.addWidget(self.title, 1)
+        info_row.addWidget(self.verdict_bar, 0, Qt.AlignTop)
+        self.trial_page = QWidget()
+        tp = QVBoxLayout(self.trial_page)
+        tp.setContentsMargins(0, 6, 0, 0)
+        tp.setSpacing(6)
+        tp.addLayout(info_row)
+        tp.addLayout(cards_row)
+        tp.addWidget(self.splitter, 1)
+        self.overview = OverviewPage(trial_row)
+        self.overview.openRequested.connect(self.open_base)
+        self.overview.exportRequested.connect(lambda valid_only: self.export_session(valid_only=valid_only))
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.trial_page)
+        self.stack.addWidget(self.overview)
         lay = QVBoxLayout(self)
-        lay.addLayout(top)
-        lay.addWidget(self.verdict_bar)
-        lay.addWidget(self.splitter, 1)
+        lay.addWidget(self.header)
+        lay.addWidget(self.stack, 1)
+        self.tabs.setObjectName("numberTabs")
+        # keys that work only inside the Review tab (the Live tab keeps its letter keys)
+        for seq, slot in (("Alt+Left", self.prev_trial), ("Alt+Right", self.next_trial), ("Alt+N", self.next_unjudged)):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+        self._entries = []                  # review_nav.TrialEntry of the open participant
+        self._folder = None                 # the open participant's folder
+        self._index = -1                    # the entry that is open in the Trial view
+        self._extra_folders = []            # participant folders added with 'Open folder...' (outside the recordings folder)
+        self._pending_restore = None        # the remembered participant and trial, restored the first time the tab is shown
+        self._syncing = False               # True while the combos are set from code (no loading then)
+        self._apply_style()
+        self.refresh_participants()
+        self._update_nav_buttons()                          # (nothing is open yet: no previous, next or next-not-judged)
+        self._redraw_timer = QTimer(self)                   # the picture is drawn again at the new size a moment after the video area is resized
+        self._redraw_timer.setSingleShot(True)              # (a divider dragged, the window resized: it was cut off or too small until the next picture)
+        self._redraw_timer.setInterval(60)
+        self._redraw_timer.timeout.connect(lambda: self.trial is not None and self.show_frame(self.slider.value()))
+        self.video.installEventFilter(self)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance)
         self._memory_path = None
@@ -1027,17 +1236,286 @@ class ReviewTab(QWidget):
             pass
 
     def attach_memory(self, path):
-        """Remember the divider positions between launches: an own top-level part ('review_ui') of settings.json."""
+        """Remember between launches (own top-level parts of settings.json): the divider positions ('review_ui') and the participant and
+        trial that were open, with the participant folders added by hand ('review_nav'; put back the first time the tab is shown)."""
         self._memory_path = Path(path)
-        self.apply_layout_state(session_memory.read_all(path).get("review_ui") or {})
+        data = session_memory.read_all(path)
+        self.apply_layout_state(data.get("review_ui") or {})
+        nav = data.get("review_nav")
+        if isinstance(nav, dict):
+            extras = [Path(p) for p in nav.get("extra_folders") or [] if isinstance(p, str) and Path(p).is_dir()]
+            for f in extras:
+                self._add_extra_folder(f)
+            self.refresh_participants()
+            folder = nav.get("participant_dir")
+            if isinstance(folder, str) and Path(folder).is_dir():
+                self._pending_restore = (Path(folder), nav.get("trial") if isinstance(nav.get("trial"), str) else None)
 
     def _save_layout(self):
         if self._memory_path is not None:
             session_memory.write_part(self._memory_path, review_ui=self.layout_state())
 
+    def _save_nav(self):
+        if self._memory_path is not None and self._folder is not None:
+            base = self._entries[self._index].base if 0 <= self._index < len(self._entries) else None
+            session_memory.write_part(self._memory_path, review_nav={"participant_dir": str(self._folder), "trial": base,
+                                                                      "extra_folders": [str(f) for f in self._extra_folders][-20:]})
+
+    # ------------------------------------------------------------- participants and trials (0.29.0)
+    @property
+    def dir(self):
+        """The recordings folder: the participants are its sub-folders. Set by the Live tab when the folder is changed."""
+        return self._dir
+
+    @dir.setter
+    def dir(self, path):
+        self._dir = Path(path)
+        self.refresh_participants()
+
+    @staticmethod
+    def _same(a, b):
+        try:
+            return Path(a).resolve() == Path(b).resolve()
+        except OSError:
+            return str(a) == str(b)
+
+    def _add_extra_folder(self, folder):
+        if not any(self._same(folder, f) for f in self._extra_folders):
+            self._extra_folders.append(Path(folder))
+
+    def refresh_participants(self):
+        """Fill the participant drop-down: the folders of the recordings folder that hold trials, then any added with 'Open folder...'.
+        The open participant stays selected. Nothing is loaded."""
+        found = []
+        if review_nav.has_trials(self._dir):                         # (trials saved straight into the recordings folder)
+            found.append((self._dir.name or str(self._dir), self._dir, len(review_nav.trial_paths(self._dir))))
+        found += review_nav.participant_folders(self._dir)
+        for f in self._extra_folders:
+            if not any(self._same(f, p) for _, p, _ in found) and review_nav.has_trials(f):
+                found.append((f.name, f, len(review_nav.trial_paths(f))))
+        self._syncing = True
+        try:
+            self.participant_combo.clear()
+            self.participant_combo.addItem("Choose a participant...", None)
+            for name, path, n in found:
+                self.participant_combo.addItem(f"{name}  ·  {n} trial{'' if n == 1 else 's'}", str(path))
+                self.participant_combo.setItemData(self.participant_combo.count() - 1, str(path), Qt.ToolTipRole)
+            self._select_participant_item(self._folder)
+        finally:
+            self._syncing = False
+
+    def _select_participant_item(self, folder):
+        i = 0
+        if folder is not None:
+            for k in range(1, self.participant_combo.count()):
+                if self._same(self.participant_combo.itemData(k), folder):
+                    i = k
+                    break
+        self.participant_combo.setCurrentIndex(i)
+
+    def _participant_chosen(self, index):
+        data = self.participant_combo.itemData(index)
+        if data:
+            self.set_participant(Path(data))
+
+    def open_folder_dialog(self):
+        d = QFileDialog.getExistingDirectory(self, "Open a participant's folder (or a folder of participants)",
+                                             str(self._folder.parent if self._folder is not None else self._dir))
+        if d:
+            self.open_folder(Path(d))
+
+    def open_folder(self, folder):
+        """A participant folder (such as Pilot/P01) opens that participant; a folder of participant folders (such as Pilot) adds them all to
+        the participant drop-down and opens the first."""
+        kind, folders = review_nav.resolve_folder(folder)
+        if kind == "none":
+            QMessageBox.information(self, "No trials there", f"No trial (*_meta.json) was found in {folder} or in the folders inside it.")
+            return
+        for f in folders:
+            self._add_extra_folder(f)
+        self.refresh_participants()
+        self.set_participant(folders[0])
+
+    def set_participant(self, folder, base=None, load=True):
+        """Show the trials of this participant folder in the trial drop-down and in the overview, and (`load`) open `base`, else the first
+        trial without a verdict, else the first."""
+        folder = Path(folder)
+        self._folder = folder
+        self._entries = review_nav.list_trials(folder)
+        self._index = -1
+        if not any(self._same(folder, self.participant_combo.itemData(k)) for k in range(1, self.participant_combo.count())):
+            self._add_extra_folder(folder)
+            self.refresh_participants()
+        self._syncing = True
+        try:
+            self._select_participant_item(folder)
+        finally:
+            self._syncing = False
+        self._fill_trial_combo()
+        self.overview.set_participant(folder.name, self._entries)
+        self._after_view_change()
+        if load and self._entries:
+            i = next((k for k, e in enumerate(self._entries) if e.base == base), None) if base else None
+            if i is None:
+                i = review_nav.next_unjudged(self._entries, -1)
+            self._open_index(0 if i is None else i)
+        else:
+            self._update_nav_buttons()
+            self._save_nav()
+
+    def _fill_trial_combo(self):
+        self._syncing = True
+        try:
+            self.trial_combo.clear()
+            for i, e in enumerate(self._entries):
+                self.trial_combo.addItem(e.label, i)
+                self.trial_combo.setItemData(i, e.base if e.readable else f"{e.base}: {e.error}", Qt.ToolTipRole)
+            if not self._entries:
+                self.trial_combo.addItem("No trials in this folder" if self._folder is not None else "Choose a participant first", None)
+                self.trial_combo.setCurrentIndex(0)
+            else:
+                self.trial_combo.setCurrentIndex(self._index if 0 <= self._index < len(self._entries) else -1)
+        finally:
+            self._syncing = False
+
+    def _trial_chosen(self, index):
+        i = self.trial_combo.itemData(index)
+        if isinstance(i, int):
+            self._open_index(i)
+
+    def _open_index(self, i):
+        """Open the i-th trial of the list. A trial that cannot be opened is named, and the one before it stays on screen."""
+        e = self._entries[i]
+        previous = self._index
+        try:
+            self.load(e.meta_path)
+        except Exception as err:  # noqa: BLE001 - shown to the operator
+            QMessageBox.warning(self, "Cannot open trial", f"{e.base}\n\n{err}")
+            self._syncing = True
+            try:
+                self.trial_combo.setCurrentIndex(previous if 0 <= previous < len(self._entries) else -1)
+            finally:
+                self._syncing = False
+            return False
+        return True
+
+    def open_base(self, base):
+        """Open the trial of this name (a line of the overview was activated) and show the Trial page."""
+        i = next((k for k, e in enumerate(self._entries) if e.base == base), None)
+        if i is not None and self._open_index(i):
+            self.show_view("trial")
+
+    def prev_trial(self):
+        self._step(-1)
+
+    def next_trial(self):
+        self._step(1)
+
+    def _step(self, d):
+        i = self._index + d
+        if 0 <= i < len(self._entries):
+            self._open_index(i)
+
+    def next_unjudged(self):
+        i = review_nav.next_unjudged(self._entries, self._index)
+        if i is not None:
+            self._open_index(i)
+
+    def _update_nav_buttons(self):
+        n = len(self._entries)
+        self.btn_prev.setEnabled(self._index > 0)
+        self.btn_next.setEnabled(0 <= self._index < n - 1)
+        left = review_nav.next_unjudged(self._entries, self._index)
+        self.btn_next_unjudged.setEnabled(left is not None)
+        counts = review_nav.counts(self._entries)
+        self.btn_next_unjudged.setToolTip(
+            f"Jump to the next trial that has no verdict yet (Alt+N). {counts['not judged']} of {n} not judged yet." if left is not None
+            else ("Every readable trial of this participant has a verdict." if n else "Choose a participant first."))
+
+    def _sync_navigation(self, meta_path):
+        """A trial was loaded (by the drop-down, the overview, Open a single trial file, or code): make the header say which one it is."""
+        meta_path = Path(meta_path)
+        folder = meta_path.parent
+        i = None
+        if self._folder is not None and self._same(folder, self._folder):
+            i = next((k for k, e in enumerate(self._entries) if self._same(e.meta_path, meta_path)), None)
+        if i is None:                                     # another participant, or a trial recorded since the list was made
+            fresh = self._folder is not None and self._same(folder, self._folder)
+            self._folder = folder
+            self._entries = review_nav.list_trials(folder)
+            if not fresh and not any(self._same(folder, self.participant_combo.itemData(k)) for k in range(1, self.participant_combo.count())):
+                self._add_extra_folder(folder)
+                self.refresh_participants()
+            self.overview.set_participant(folder.name, self._entries)
+            i = next((k for k, e in enumerate(self._entries) if self._same(e.meta_path, meta_path)), -1)
+            self._index = i
+            self._fill_trial_combo()
+        self._index = i
+        self._syncing = True
+        try:
+            self._select_participant_item(folder)
+            self.trial_combo.setCurrentIndex(i)
+        finally:
+            self._syncing = False
+        self._update_nav_buttons()
+        self._save_nav()
+
+    def show_view(self, name):
+        """'trial' or 'overview'."""
+        over = name == "overview"
+        self.btn_view_overview.setChecked(over)
+        self.btn_view_trial.setChecked(not over)
+        self.stack.setCurrentIndex(1 if over else 0)
+        self._after_view_change()
+
+    def _after_view_change(self):
+        if self.stack.currentIndex() == 1:
+            self.overview.set_settings(self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0)
+            self.overview.ensure_rows()
+            if 0 <= self._index < len(self._entries):
+                self.overview.select_base(self._entries[self._index].base)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self._pending_restore is not None:             # the participant and trial of the last time (not at start-up: the Live tab comes first)
+            (folder, base), self._pending_restore = self._pending_restore, None
+            try:
+                self.set_participant(folder, base=base)
+            except Exception:  # noqa: BLE001 - a remembered trial that cannot be opened must not stop the tab from showing
+                pass
+        elif self._folder is not None:                    # trials recorded since the tab was last seen
+            fresh = review_nav.list_trials(self._folder)
+            if [x.base for x in fresh] != [x.base for x in self._entries]:
+                cur = self._entries[self._index].base if 0 <= self._index < len(self._entries) else None
+                self._entries = fresh
+                self._index = next((k for k, x in enumerate(fresh) if x.base == cur), -1)
+                self._fill_trial_combo()
+                self.overview.set_participant(self._folder.name, self._entries)
+                self._update_nav_buttons()
+            self.refresh_participants()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.video and ev.type() == QEvent.Resize and self.trial is not None:
+            self._redraw_timer.start()
+        return super().eventFilter(obj, ev)
+
+    def _apply_style(self):
+        """The stylesheet from the application's palette (a light or a dark theme); set again only when it comes out different, because
+        setting a stylesheet can itself touch the palette."""
+        css = build_stylesheet(QApplication.palette())
+        if css != getattr(self, "_css", None):
+            self._css = css
+            self.setStyleSheet(css)
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            self._apply_style()
+
     # ------------------------------------------------------------- loading
     def open_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open trial", str(self.dir), "Trial (*_meta.json)")
+        """Open one trial file (More menu): the header then shows its participant."""
+        path, _ = QFileDialog.getOpenFileName(self, "Open trial", str(self._folder or self._dir), "Trial (*_meta.json)")
         if path:
             try:
                 self.load(path)
@@ -1048,12 +1526,16 @@ class ReviewTab(QWidget):
         self.btn_play.setChecked(False)
         self.timer.stop()
         tr = Trial(meta_path)
-        self.trial = tr
+        old, self.trial = self.trial, tr
+        if old is not None:
+            old.close()                                    # (the previous trial's video was never let go of before 0.29.0)
+        tr.window_peak_s = float(self.window_peak_spin.value()) / 1000.0
         m = tr.meta
         self.verdict_bar.set_verdict(verdicts.read_verdict(tr.meta_path), title="Verdict on this trial:", tip=tr.base)
         self.verdict_bar.setVisible(True)
-        self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  target {m['target_deg']} deg  |  "
-                           f"{m['frames']} frames, {m['duration_s']} s"
+        self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  "
+                           + (f"target {m['target_deg']:g} deg  |  " if isinstance(m.get("target_deg"), (int, float)) else "")
+                           + f"{m['frames']} frames, {m['duration_s']} s"
                            + (f"  |  ruler {tr.ruler_cm:g} cm = {tr.px_per_cm:.2f} px/cm" if tr.px_per_cm and tr.ruler_cm else "  |  no ruler scale")
                            + ("  |  UNFINISHED: the program stopped before saving; the video may not open" if tr.unfinished else "")
                            + (f"  |  STOPPED: {m['stopped_because']}" if m.get("stopped_because") else "")
@@ -1088,6 +1570,7 @@ class ReviewTab(QWidget):
         self.btn_hold.setEnabled(tr.hold_window() is not None)
         self.btn_force_win.setEnabled(tr.has_force())
         self.force_smooth.setEnabled(tr.has_force())
+        self.window_peak_spin.setEnabled(tr.has_force())
         if tr.has_force():
             zero, _ = tr.recorded_zero_v()
             self.zero_spin.setValue(zero)
@@ -1098,6 +1581,7 @@ class ReviewTab(QWidget):
         self.slider.blockSignals(False)
         self.show_frame(0)
         self.update_summary()
+        self._sync_navigation(tr.meta_path)                                    # the header says which participant and trial this is
 
     # ------------------------------------------------------------ playback
     def _apply_plot_view(self, draw=True):
@@ -1187,6 +1671,7 @@ class ReviewTab(QWidget):
             return
         fp.addItem(self.force_cursor)
         fp.addItem(self.force_window_mirror)
+        fp.addItem(self.window_peak_mark)
         unit, ys, _ = tr.force_signal()
         raw = tr.force_n if unit == "N" else tr.force_v
         faint = pg.PlotDataItem(tr.force_t, raw, pen=pg.mkPen((220, 60, 60, 45), width=1))
@@ -1300,7 +1785,11 @@ class ReviewTab(QWidget):
         if not self.trial.hold_window():
             lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
         self.stats.setText("\n".join(lines))
-        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())      # (None without force) for the three users below
+        fs = self.trial.force_summary(t0, t1, self.picture_delay.value())      # (None without force) for the users below
+        ft = analysis.force_timing(self.trial, t0, t1) if fs is not None else None
+        fp = analysis.force_peaks(self.trial, t0, t1, timing=ft)               # the sliding-window peak and the times to peak (0.29.0)
+        self._update_cards(rows, fs, fp)
+        self._update_window_peak_mark(fp)
         if self.plot_view.currentData() == "fa" and self.trial.has_force():
             if self._fa_dirty:
                 self._update_force_angle(fs)                 # the force or the picture delay changed: the whole path
@@ -1309,10 +1798,74 @@ class ReviewTab(QWidget):
         ref = self._reference_text()
         if ref != self.ref_text.text():                      # it does not follow the window: re-set (and scrolled to the top) only on a change
             self.ref_text.setText(ref)
-        self.force_text.setText(self._force_text(t0, t1, fs))
+        self.force_text.setText(self._force_text(t0, t1, fs, ft, fp))
         self._update_calibration(t0, t1, fs)
         self.disp.setText(self._displacement_text(t0, t1))
         self.check_text.setHtml(self._check_html(t0, t1))
+
+    def on_window_peak(self, ms):
+        if self.trial is None:
+            return
+        self.trial.window_peak_s = float(ms) / 1000.0
+        self.update_summary()
+
+    def _update_window_peak_mark(self, fp):
+        """The yellow bar on the force plot: the stretch the sliding-window peak was taken from."""
+        if math.isnan(fp["window_peak_start_s"]):
+            self.window_peak_mark.setVisible(False)
+            return
+        self.window_peak_mark.setRegion((fp["window_peak_start_s"], fp["window_peak_end_s"]))
+        self.window_peak_mark.setVisible(True)
+
+    def _update_cards(self, rows, fs, fp):
+        """The key numbers above the graphs: the force numbers when there is force, else the hold angle of the main joint."""
+        cards, angle_cards = self.cards, self.angle_cards
+        has_f = self.trial.has_force()
+        for c in cards.values():
+            c.setVisible(has_f)
+        for c in angle_cards.values():
+            c.setVisible(not has_f)
+        if not has_f:
+            main = next((r for r in rows if r["role"] == "main"), rows[0] if rows else None)
+            deg = lambda v: "-" if v is None or math.isnan(v) else f"{v:.1f} °"                                  # noqa: E731
+            if main is None:
+                for c in angle_cards.values():
+                    c.set_value("-", "")
+                return
+            plateau, tgt = main["plateau_mean_deg"], main["target_deg"]
+            dev = math.nan if (math.isnan(plateau) or math.isnan(tgt)) else plateau - tgt
+            tol = self.trial.meta.get("tolerance_deg") or 5.0
+            angle_cards["hold"].set_value(deg(plateau), f"{main['angle']} during the hold")
+            angle_cards["target"].set_value(deg(tgt), "" if math.isnan(dev) else f"{dev:+.1f} ° from the target",
+                                            None if math.isnan(dev) else "good" if abs(dev) <= tol else "warn")
+            angle_cards["shift"].set_value(deg(main["rest_to_hold_shift_deg"]), "from rest to the hold")
+            return
+        if fs is None:
+            for c in cards.values():
+                c.set_value("-", "no force in the window")
+            return
+        u = fs["unit"]
+        d = 3 if u == "V" else 1
+        f = lambda v: "-" if v is None or math.isnan(v) else f"{v:.{d}f}"                                      # noqa: E731
+        sm = f"{fs['smoothing_s'] * 1000:.0f} ms average" if fs["smoothing_s"] > 0 else "raw samples"
+        cards["peak"].set_value(f"{f(fs['peak'])} {u}", f"at {fs['t_peak_s']:.2f} s · {sm}")
+        if math.isnan(fp["window_peak"]):
+            cards["window_peak"].set_value("-", f"window shorter than {self.trial.window_peak_s * 1000:.0f} ms", "warn")
+        else:
+            cards["window_peak"].set_value(f"{f(fp['window_peak'])} {u}",
+                                           f"{fp['window_peak_ms']:.0f} ms window · {fp['window_peak_start_s']:.2f} to {fp['window_peak_end_s']:.2f} s")
+        if math.isnan(fp["time_to_peak_s"]):
+            cards["time_to_peak"].set_value("-", "no clear push in the window", "warn")
+        else:
+            also = "" if math.isnan(fp["time_to_window_peak_s"]) else f" · {fp['time_to_window_peak_s']:.2f} s to window peak"
+            cards["time_to_peak"].set_value(f"{fp['time_to_peak_s']:.2f} s", f"from the push start{also}")
+        cards["plateau"].set_value(f"{f(fs['plateau_mean'])} {u}", f"middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window")
+        if math.isnan(fs["peak_minus_rest"]):
+            cards["above_rest"].set_value("-", "no resting level before the push", "warn")
+        else:
+            cards["above_rest"].set_value(f"{f(fs['peak_minus_rest'])} {u}", f"rest {f(fs['rest_mean'])} {u}", "warn" if fs["rest_note"] else None)
+        a = fs["main_angle_at_peak_deg"]
+        cards["angle"].set_value("-" if math.isnan(a) else f"{a:.1f} °", fs["main_angle"] or "")
 
     def _reference_text(self):
         """The reference readings of the open trial beside the app's angle at the same moment."""
@@ -1366,7 +1919,8 @@ class ReviewTab(QWidget):
             return
         ReferenceValidationDialog(folder, rows, self).exec()
 
-    def _force_text(self, t0, t1, fs=None):
+    def _force_text(self, t0, t1, fs=None, ft=None, fp=None):
+        """`ft` / `fp`: force_timing and force_peaks of the window if the caller already has them (update_summary does)."""
         tr = self.trial
         if not tr.has_force():
             return "No force was recorded in this trial."
@@ -1377,8 +1931,18 @@ class ReviewTab(QWidget):
         fmt = lambda v, d=1: "-" if v is None or math.isnan(v) else f"{v:.{d}f}"                    # noqa: E731
         d = 3 if u == "V" else 1
         sm = f"{fs['smoothing_s'] * 1000:.0f} ms moving average" if fs["smoothing_s"] > 0 else "raw samples"
+        if fp is None:
+            ft = analysis.force_timing(tr, t0, t1)
+            fp = analysis.force_peaks(tr, t0, t1, timing=ft)
+        if math.isnan(fp["window_peak"]):
+            wp_line = (f"  sliding-window peak -      (the window is shorter than the {tr.window_peak_s * 1000:.0f} ms sliding window, "
+                       "or has gaps in the force)")
+        else:
+            wp_line = (f"  sliding-window peak {fmt(fp['window_peak'], d)}      (highest mean over {fp['window_peak_ms']:.0f} ms of the raw samples, "
+                       f"{fp['window_peak_start_s']:.2f} to {fp['window_peak_end_s']:.2f} s)")
         lines = [f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}; {sm})",
                  f"  peak                {fmt(fs['peak'], d)} at {fs['t_peak_s']:.2f} s",
+                 wp_line,
                  f"  plateau mean        {fmt(fs['plateau_mean'], d)}   (middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window)",
                  f"  rest before         {fmt(fs['rest_mean'], d)}      peak above rest {fmt(fs['peak_minus_rest'], d)}",
                  f"                      ({fs['rest_basis']}, {fs['rest_seconds']:.1f} s of force)"]
@@ -1398,10 +1962,11 @@ class ReviewTab(QWidget):
                   + (f"   (pictures read {fs['picture_delay_s']:+.3f} s after the peak)" if fs["picture_delay_s"] else "")
                   + "   (the plateau mean angle is on the Angles tab)",
                   f"  Calibration: {tr.force_cal_note}" + (f"  (regression {tr.regression.id}, see the Calibration tab)" if tr.regression else "")]
-        ft = analysis.force_timing(tr, t0, t1)
         if ft is not None:
             lines += ["", "Timing and steadiness (smoothed force)",
                       f"  onset                 {ft['onset_s']:.2f} s   (force last within 10 % of its rise above the level before the push)",
+                      f"  time to peak          {ft['time_to_peak_s']:.2f} s   (from the onset to the peak)"
+                      + ("" if math.isnan(fp["time_to_window_peak_s"]) else f"; to the middle of the sliding-window peak {fp['time_to_window_peak_s']:.2f} s"),
                       f"  10 % to 90 % of rise  {ft['time_to_90pct_s']:.2f} s",
                       f"  steepest rise         {fmt(ft['rise_rate_per_s'], d)} {u}/s  (over 100 ms)",
                       f"  held above 90 % of peak for {ft['hold_above_90pct_s']:.2f} s, steadiness (SD / mean) {fmt(ft['hold_cv_pct'])} %"]
@@ -1539,32 +2104,77 @@ class ReviewTab(QWidget):
             QMessageBox.warning(self, "Verdict not saved", f"The verdict could not be saved next to the trial:\n{e}")
             self.verdict_bar.set_verdict(verdicts.read_verdict(self.trial.meta_path))
             return
+        if 0 <= self._index < len(self._entries) and self._entries[self._index].meta_path == self.trial.meta_path:
+            e = self._entries[self._index]
+            e.refresh_verdict()
+            self.trial_combo.setItemText(self._index, e.label)         # the drop-down shows the verdict (✓ ✗ ·)
+            self.overview.update_verdict(e.base)
+            self._update_nav_buttons()
         self.update_summary()                                       # (the Check tab names the verdict)
 
-    def export_session(self):
-        """One row per trial of the open trial's participant, with the 10 % repeatability check between trials of the same position."""
-        if self.trial is None:
+    def export_session(self, valid_only=False):
+        """One row per trial of the open participant, with the verdict and the 10 % repeatability check between trials of the same position
+        (0.29.0: `valid_only` writes only the trials marked valid, to `<participant>_session_summary_valid.csv`, and the check is made among
+        them). Rows the overview has already worked out are used; the others are worked out here. A trial marked compromised is in the file
+        (with its reasons) but, as everywhere, not counted in the 10 % check."""
+        folder = self._folder if self._folder is not None else (self.trial.folder if self.trial is not None else None)
+        if folder is None:
             return
-        folder = self.trial.folder
+        entries = review_nav.list_trials(folder)
+        smooth, window = self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0
+        self.overview.cancel()
+        self.overview.set_settings(smooth, window)
         rows, failed = [], []
-        for mp in sorted(folder.glob("*_meta.json")):
-            try:
-                tr = Trial(mp)
-                try:
-                    tr.force_smooth_s = self.trial.force_smooth_s
-                    rows.append(analysis.session_row(tr))
-                finally:
-                    tr.cap.release()
-            except Exception as e:  # noqa: BLE001 - one unreadable trial must not stop the others
-                failed.append(f"{mp.name}: {e}")
+        todo = sum(1 for e in entries if e.readable and self.overview.row_for(e.base) is None)
+        progress = QProgressDialog("Working out the numbers of every trial...", "Cancel", 0, todo, self) if todo > 3 else None
+        if progress is not None:
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+        done = 0
+        try:
+            for e in entries:
+                if not e.readable:
+                    failed.append(f"{e.base}: {e.error}")
+                    continue
+                row = self.overview.row_for(e.base)
+                if row is None:
+                    row, err = trial_row(e.meta_path, smooth, window)
+                    if row is None:
+                        failed.append(f"{e.base}: {err}")
+                        continue
+                    self.overview.store(e, row)
+                    done += 1
+                    if progress is not None:
+                        progress.setValue(done)
+                        QApplication.processEvents()
+                        if progress.wasCanceled():
+                            return
+                rows.append(dict(row))
+        finally:
+            if progress is not None:
+                progress.close()
+        judged = {verdicts.VALID: 0, verdicts.COMPROMISED: 0, "not judged": 0}
+        for r in rows:
+            judged[r["verdict"] if r.get("verdict") in (verdicts.VALID, verdicts.COMPROMISED) else "not judged"] += 1
+        if valid_only:
+            rows = [r for r in rows if r.get("verdict") == verdicts.VALID]
         if not rows:
-            QMessageBox.warning(self, "Nothing to export", "No readable trials in " + str(folder))
+            QMessageBox.warning(self, "Nothing to export", ("No trial of this participant is marked valid yet in " if valid_only else "No readable trials in ")
+                                + str(folder))
             return
         analysis.repeatability(rows)
-        pid = self.trial.meta.get("participant") or "participant"
-        out = folder / f"{pid}_session_summary.csv"
+        pid = entries[0].participant if entries and entries[0].participant else folder.name
+        out = folder / f"{pid}_session_summary{'_valid' if valid_only else ''}.csv"
         analysis.write_session_csv(rows, out)
-        QMessageBox.information(self, "Exported", f"Saved {out.name}: {len(rows)} trials." + (("\nNot readable: " + "; ".join(failed)) if failed else ""))
+        text = f"Saved {out.name}: {len(rows)} trial{'' if len(rows) == 1 else 's'}"
+        text += (" (the valid ones)." if valid_only else
+                 f" ({judged['valid']} valid, {judged['compromised']} compromised, {judged['not judged']} not judged yet).")
+        if judged["not judged"]:
+            text += f"\n{judged['not judged']} trial{'' if judged['not judged'] == 1 else 's'} {'has' if judged['not judged'] == 1 else 'have'} no verdict yet: judge them (Next not judged), then export again."
+        if failed:
+            text += "\nNot readable: " + "; ".join(failed)
+        QMessageBox.information(self, "Exported", text)
+        return out
 
     def export(self):
         if self.trial is None:
@@ -1578,10 +2188,15 @@ class ReviewTab(QWidget):
                      "software_version": self.trial.meta.get("software_version"),
                      "window_source": "MVIC markers" if self.trial.hold_window() and tuple(map(float, (t0, t1))) == tuple(self.trial.hold_window())
                      else "window as set (not the MVIC markers)"}
+            v = verdicts.read_verdict(self.trial.meta_path) or {}                          # 0.29.0: the operator's verdict goes with the numbers
+            ident.update(verdict=v.get("verdict") or "", verdict_reasons=", ".join(verdicts.REASONS.get(r, r) for r in v.get("reasons") or []),
+                         verdict_note=v.get("note") or "")
             fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
             fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg",
                       "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note", "force_smoothing_ms", "force_mains_hum_pct_of_peak",
-                      "force_raw_peak", "force_regression_id", "force_peak_95pct_n", "force_relaxed_level", "force_peak_above_relaxed"]
+                      "force_raw_peak", "force_regression_id", "force_peak_95pct_n", "force_relaxed_level", "force_peak_above_relaxed",
+                      "force_window_peak", "force_window_peak_ms", "force_window_peak_at_s", "force_time_to_peak_s", "force_time_to_window_peak_s"]
+            fp = analysis.force_peaks(self.trial, t0, t1)
             cal = self.trial.force_cal or {}
             reg = self.trial.regression
             peak_ci = (COVERAGE * float(reg.sd_newton(fs["peak"])) if reg is not None and fs is not None and fs["unit"] == "N"
@@ -1589,7 +2204,8 @@ class ReviewTab(QWidget):
             fvals = ([fs["unit"], fs["peak"], fs["t_peak_s"], fs["plateau_mean"], fs["rest_mean"], fs["main_angle_at_peak_deg"],
                       fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note,
                       fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"],
-                      reg.id if reg is not None else "", peak_ci, fs["relaxed"], fs["peak_minus_relaxed"]]
+                      reg.id if reg is not None else "", peak_ci, fs["relaxed"], fs["peak_minus_relaxed"],
+                      fp["window_peak"], fp["window_peak_ms"], fp["window_peak_at_s"], fp["time_to_peak_s"], fp["time_to_window_peak_s"]]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))

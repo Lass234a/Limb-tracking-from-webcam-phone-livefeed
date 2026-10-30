@@ -3,6 +3,60 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.29.0 - 2026-10-30
+
+### Review: a participant, then a trial from a drop-down; a participant overview; the sliding-window peak and time to peak
+- **Why:** asked on 2026-10-30: go through a participant's trials inside the app instead of opening each one from a file dialog, mark each
+  as a good or a bad measurement and export everything; use the peak force the way the PeerJ paper in the folder (`peerj-20848.pdf`,
+  Slade et al. 2026) does, plus a time to peak; make the Review screen easier to read.
+- **What the paper says:** the baseline MVIC is the *peak* of a contraction, not the average of several, and one contraction is enough; practice
+  contractions add little (so no practice analysis is built). It takes the dynamometer's own peak torque (2500 Hz) and gives **no window
+  length**. The new *sliding-window peak* is the request's reading of that peak: the highest mean of the raw force over any stretch of W
+  seconds inside the blue window. **W = 500 ms is this program's choice** (box *Sliding window*, 0-2000 ms, steps of 20 ms so 50 Hz hum
+  cancels; 0 = the highest single sample). The peak that was already there (highest 100 ms moving average) is unchanged.
+- **New numbers (`analysis.window_peak`, `analysis.force_peaks`):** `force_window_peak`, `force_window_peak_ms`, `force_window_peak_at_s`
+  (the middle of the stretch), `force_time_to_peak_s` (from the start of the push, the onset of `force_timing`, to the peak),
+  `force_time_to_window_peak_s`. They are in the Force tab, in the cards above the graphs, in the single-trial CSV and in the participant CSV
+  (`SESSION_COLUMNS`). A window shorter than W gives a blank, not a number over less than was asked for (a trial without a push, where
+  'force above half of peak' is 30 ms of noise, has none). The stretch is drawn as a yellow bar on the force graph.
+- **Participant and trial drop-downs (`review_nav.py`):** *Open trial...* is gone from the top bar (it is *Open a single trial file...* in the
+  *More* menu). Choose the participant (the folders of the recordings folder that hold trials, with their trial counts; *Open folder...* adds
+  a participant folder such as `Pilot/P01` or a folder of participants such as `Pilot`), then the trial: `02 · Knee extension, hip 90 · 70° ·
+  T1 · 11:30 · ○ not judged` (✓ valid, ✗ compromised). The list is read from `meta.json` and `verdict.json` only, in recording order;
+  a trial that cannot be read is listed as such. **◀ ▶** (Alt+Left / Alt+Right), **Next not judged** (Alt+N; the keys work only inside Review, the Live tab
+  keeps its letter keys). Choosing a participant opens its first trial without a verdict. The last participant, trial and added folders are
+  remembered (`review_nav` in `settings.json`, put back the first time the tab is shown). `ReviewTab.dir` is a property: when the Live tab
+  changes the recordings folder the participant list refreshes. A verdict given in Review shows in the drop-down at once.
+- **Participant overview (`review_overview.py`):** *Trial | Participant overview* in the top bar. One line per trial: verdict, position, trial,
+  test, target, time, peak, sliding-window peak, time to peak, angle at peak, number of automatic checks (the list in the tooltip), the 10 %
+  check. Sort by a heading, filter (all / not judged / valid / compromised / with checks), double-click or Enter opens the trial. The rows are the
+  export's (`analysis.session_row`), worked out in a background thread with a progress bar and kept until the trial's files, or the
+  smoothing or sliding-window setting, change; the 10 % check is made over what is there. `Trial(meta, open_video=False)` opens no video.
+- **Export:** one menu. *All trials of this participant (CSV)* (every trial, with `verdict`, `verdict_reasons`, `verdict_note`),
+  *Valid trials only (CSV)* (`<participant>_session_summary_valid.csv`, the 10 % check among those), the single-trial summary (now with the verdict
+  columns too), the overlay video. The message after saving says how many trials are valid, compromised and not judged yet.
+- **Look (`review_style.py`):** a stylesheet for the Review tab built from the application's palette (light and dark), key-number cards
+  (peak, sliding-window peak, time to peak, plateau, peak above rest, angle at peak; for a trial without force: hold angle, target, rest to hold),
+  the verdict bar beside the trial description, a Trial / Overview switch, Export and More menus. The widget names, dividers, tab order and
+  plot colours that the tests and the remembered layout rely on are kept. The Force box (smoothing, sliding window, picture delay, zero)
+  is in two rows and a long card line is cut off instead of widening the tab, so the tab's minimum width is 937 px at the default font (890
+  px before 0.29.0); the first version of the cards asked for 1146 px and, with a long line, 1904 px. The picture is drawn again at the new size when a
+  divider or the window changes the video area (it stayed cut off at the old size until the next picture).
+- **Faster:** `read_force_csv` reads `force.csv` with numpy's reader (a damaged file falls back to cell-by-cell, with the same numbers as
+  the `csv.DictReader` it replaced): the largest pilot trial 1.1 s -> 0.2 s; the 64 trials of Pilot/P01 in the overview 121 s -> 22 s. The video of the
+  trial left behind is released when the next one is opened (it was not before). `after_trial_check` and the 10 % check no longer open the videos.
+- **Measured numbers:** none that existed before change (the new columns are added in the middle of `SESSION_COLUMNS`; read them by name).
+- **Tests:** `tests/test_window_peak.py` (12), `tests/test_review_nav.py` (8), `tests/test_force_csv.py` (5), `tests/test_review_overview.py` (17, real
+  recordings: drop-downs, previous / next / next not judged, remembered, overview in the background, exports, an unreadable trial, the picture
+  redrawn on resize, a long card line never widening the tab).
+- **Checked on the real pilot data:** Pilot/P01 (a copy, numbers files only): the real participant export of all 64 trials in 9 s with one
+  trial judged valid and one compromised, a damaged `meta.json` named in the message, and the window peak of one trial equal to a brute-force
+  calculation straight from its `force.csv` (749.171 N at 4.775 s, both ways). Pilot/P02: the overview and the pages in screenshots (light and dark,
+  1100 and 1400 px wide). Not tried by a person on the rig.
+- **Full suite on the final code:** 1132 passed, 1 skipped, 0 failed (28.8 min). (One run of `test_gui_smoke::test_full_session` failed once,
+  while heavy scripts ran beside it; it passed alone and in the full run.)
+- **Not built:** a per-position best-of-the-trials MVIC (the paper's cross-trial peak), overlaying trials, Excel export.
+
 ## 0.28.0 - 2026-10-30
 
 ### A verdict on every trial: valid, or compromised and why (the post-measurement log)

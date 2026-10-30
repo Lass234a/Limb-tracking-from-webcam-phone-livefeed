@@ -37,6 +37,8 @@ MIN_CAL_SPAN_V = 0.005            # a known load must move the signal by at leas
 ALIGN_WINDOW_S = 20.0
 CLIP_FRACTION = 0.99                # a sample this close to +-range is 'at the limit'
 SMOOTH_DEFAULT_S = 0.1              # display and analysis smoothing: a moving average of this length (a multiple of 20 ms removes 50 Hz hum)
+WINDOW_PEAK_DEFAULT_S = 0.5         # 0.29.0: the sliding-window peak is the highest mean force over any stretch this long (Review, adjustable).
+                                    # The PeerJ paper behind it (Slade et al. 2026) takes the dynamometer's peak and gives no window; 0.5 s is our choice.
 NO_FORCE_RISE_N = 60.0              # a contraction moves the force (0.1 s average) at least this far from its rest; less is 'no force rise'
                                     # (P20, no load reached the DAQ: at most 47 N; P11: at least 112 N). Used after a trial (0.19.0), and by
                                     # the 10 % check and the resting-force note, which leave trials without a rise out (0.26.0: P02 2026-10-29)

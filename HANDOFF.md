@@ -202,7 +202,10 @@ Tests: 52 test files in `tests/` (49 before the 2026-10-13 work) (synthetic leg 
    limit, or no samples for 0.5 s is flagged in the picture and `meta.json`. Force needs a **live camera** (not a video file).
 5. Review: Check / Angles / Force / Calibration / Dots-and-pull tabs, force strip under the angle plot, *Window = force above half of
    peak*, smoothing box, hum warning, *Recalculate newtons*, precision of the peak from the regression (warns beyond the heaviest calibration load),
-   *Export all trials of this participant* (one row per trial + the 10 % repeatability flag).
+   *Export all trials of this participant* (one row per trial + the 10 % repeatability flag). Since 0.29.0: participant and trial
+   drop-downs instead of *Open trial...*, a participant overview table, the sliding-window peak (`analysis.window_peak`, 500 ms
+   default, adjustable) and time to peak (`analysis.force_peaks`), a valid-only export; code in `review.py`, `review_nav.py`,
+   `review_overview.py`, `review_style.py`; see CHANGELOG 0.29.0.
 
 Torque (N.m) = smoothed force x moment arm: needs calibrated force + ruler scale + anchor dot; when the strap dot is not seen the ankle dot
 stands in (reported). It has only been exercised on synthetic geometry so far.

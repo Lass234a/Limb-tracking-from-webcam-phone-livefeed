@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .force import NO_FORCE_RISE_N
+from .force import NO_FORCE_RISE_N, WINDOW_PEAK_DEFAULT_S
 from .loadcell import GRAVITY
 from .pull import compute_pull
 from .rest import clock_text
@@ -80,7 +80,69 @@ def force_timing(tr, t0, t1):
     cv = 100.0 * float(np.nanstd(mid)) / abs(plateau90) if mid.size > 3 and plateau90 else math.nan
     return {"unit": unit, "peak": peak, "rest": base, "onset_s": onset, "time_to_90pct_s": t90 - onset,
             "rise_rate_per_s": rfd, "hold_above_90pct_s": float(t[b] - t[a]), "hold_mean": plateau90, "hold_cv_pct": cv,
-            "offset_s": float(t[b])}
+            "offset_s": float(t[b]), "t_peak_s": float(t[k]), "time_to_peak_s": float(t[k] - onset)}
+
+
+def window_peak(tr, t0, t1, window_s=WINDOW_PEAK_DEFAULT_S):
+    """The sliding-window peak (0.29.0): the highest mean force over any stretch of `window_s` seconds that lies wholly inside [t0, t1].
+    Taken from the raw samples (newtons if calibrated, else volts), not from the smoothed curve, so nothing is averaged twice; a window
+    that is a multiple of 20 ms covers whole 50 Hz hum cycles and cancels the hum. 0 = the highest single sample. A stretch with a missing
+    sample is skipped. Returns None without force, with no sample in the window, with a window shorter than `window_s` (a peak
+    over less than was asked for would be a different number), or when no stretch has all its samples. Otherwise a dict: value, unit,
+    window_s (as used), start_s / end_s (the stretch), at_s (its middle)."""
+    if not tr.has_force():
+        return None
+    unit, _, _ = tr.force_signal()
+    raw = np.asarray(tr.force_n if unit == "N" else tr.force_v, dtype=np.float64)
+    t = tr.force_t
+    idx = np.nonzero((t >= t0) & (t <= t1))[0]
+    if idx.size == 0:
+        return None
+    rate = 1.0 / float(np.median(np.diff(t))) if len(t) > 2 else 1000.0
+    n = max(1, int(round(window_s * rate)))
+    if idx.size < n:
+        return None
+    seg = raw[idx[0]: idx[-1] + 1]
+    good = np.isfinite(seg)
+    c = np.concatenate(([0.0], np.cumsum(np.where(good, seg, 0.0))))
+    cg = np.concatenate(([0], np.cumsum(good)))
+    counts = cg[n:] - cg[:-n]
+    with np.errstate(invalid="ignore"):
+        means = np.where(counts == n, (c[n:] - c[:-n]) / n, np.nan)
+    if np.all(np.isnan(means)):
+        return None
+    j = int(np.nanargmax(means))
+    a, b = int(idx[0]) + j, int(idx[0]) + j + n - 1
+    return {"value": float(means[j]), "unit": unit, "window_s": n / rate, "start_s": float(t[a]), "end_s": float(t[b]),
+            "at_s": float((t[a] + t[b]) / 2.0)}
+
+
+_UNSET = object()
+
+
+def force_peaks(tr, t0, t1, window_s=None, timing=_UNSET):
+    """Everything the paper-style peak adds to a trial in one dict (0.29.0): the sliding-window peak (`window_peak`) and the times to the
+    peaks, measured from the start of the push (`force_timing`'s onset: the force last within 10 % of its rise above the level before
+    the push), for the highest smoothed value (`time_to_peak_s`) and for the middle of the sliding-window stretch (`time_to_window_peak_s`).
+    Keys: window_peak, window_peak_ms, window_peak_start_s, window_peak_end_s, window_peak_at_s, onset_s, time_to_peak_s,
+    time_to_window_peak_s; NaN where it cannot be worked out (no force, no clear push, a window shorter than the sliding window).
+    `window_s` defaults to the trial's own setting (`tr.window_peak_s`); `timing` is `force_timing`'s answer when the caller already has it."""
+    nan = math.nan
+    out = {"window_peak": nan, "window_peak_ms": nan, "window_peak_start_s": nan, "window_peak_end_s": nan, "window_peak_at_s": nan,
+           "onset_s": nan, "time_to_peak_s": nan, "time_to_window_peak_s": nan}
+    if not tr.has_force():
+        return out
+    w = getattr(tr, "window_peak_s", WINDOW_PEAK_DEFAULT_S) if window_s is None else window_s
+    wp = window_peak(tr, t0, t1, w)
+    ft = force_timing(tr, t0, t1) if timing is _UNSET else timing
+    if wp is not None:
+        out.update(window_peak=wp["value"], window_peak_ms=wp["window_s"] * 1000.0, window_peak_start_s=wp["start_s"],
+                   window_peak_end_s=wp["end_s"], window_peak_at_s=wp["at_s"])
+    if ft is not None:
+        out.update(onset_s=ft["onset_s"], time_to_peak_s=ft["time_to_peak_s"])
+        if wp is not None:
+            out["time_to_window_peak_s"] = wp["at_s"] - ft["onset_s"]
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ torque
@@ -391,8 +453,11 @@ def position_angle_note(main, plateau, earlier, target, tolerance, previous=None
 # ------------------------------------------------------------------------------------------------ one row per trial, per participant
 SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "test_key", "target_deg", "software_version", "window",
                    "window_start_s", "window_end_s",
-                   "pictures_per_s", "rest_before_s", "force_unit", "force_peak", "force_t_peak_s", "force_plateau", "force_rest", "force_rest_s",
+                   "pictures_per_s", "rest_before_s", "force_unit", "force_peak", "force_t_peak_s",
+                   "force_window_peak", "force_window_peak_ms", "force_window_peak_at_s",              # 0.29.0: the sliding-window peak
+                   "force_plateau", "force_rest", "force_rest_s",
                    "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
+                   "force_time_to_peak_s", "force_time_to_window_peak_s",                               # 0.29.0
                    "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
                    "checks_to_look_at", "verdict", "verdict_reasons", "verdict_note", "repeatability_pct_same_position", "third_trial_needed",
@@ -427,6 +492,9 @@ def session_row(tr):
         ft = force_timing(tr, *win)
         if ft is not None:
             row.update(force_onset_s=ft["onset_s"], force_time_to_90pct_s=ft["time_to_90pct_s"], force_hold_cv_pct=ft["hold_cv_pct"])
+        fp = force_peaks(tr, *win, timing=ft)
+        row.update(force_window_peak=fp["window_peak"], force_window_peak_ms=fp["window_peak_ms"], force_window_peak_at_s=fp["window_peak_at_s"],
+                   force_time_to_peak_s=fp["time_to_peak_s"], force_time_to_window_peak_s=fp["time_to_window_peak_s"])
     tq = torque_summary(tr, *win)
     if tq is not None:
         row.update(torque_peak_nm=tq["peak_nm"], torque_at_peak_force_nm=tq["at_peak_force_nm"], arm_at_peak_force_cm=tq["arm_at_peak_force_cm"],
