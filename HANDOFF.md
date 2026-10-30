@@ -80,6 +80,7 @@ Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed
 | Check a phone camera | double-click `Check_phone_camera.bat` (reads only; writes `phone_camera_check.txt`) |
 | Try without hardware | Live tab: *Open video file* `demo/demo_leg_white_dots.mp4`; Force box: source *Simulated* |
 | Add a load cell calibration | `LoadCellCalibration/logs_to_points.py FOLDER` then `add_calibration.py POINTS.csv --id NAME --activate` |
+| Look at the load cell noise (hum, zero gate), anonymised data of 30 Oct | `LoadCellCalibration/noise/README.md` (`noise_export.py` rebuilds the CSVs from saved trials) |
 | Re-check the protocol file | `.venv\Scripts\python.exe -m limbtrack.protocol check` |
 
 Documents (all in the project root, written for the user as well): `README.md` (usage), `FEATURES.md` (every function, what it does to

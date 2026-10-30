@@ -53,6 +53,22 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
   `audit/PR4_review_2026-10-30.md`). The lab uses *Black dots*, which this rule does not touch.
 - **Measured numbers:** none (tools only).
 
+## Load-cell noise data (no program version) - 2026-10-30
+
+### Anonymised noise analysis of the load-cell signal (`LoadCellCalibration/noise/`)
+- **Why:** in the session of 30 Oct the load-cell signal carried 50 Hz mains hum and, at times, 100 Hz hum. The program refused the zero six times
+  ("wobbles 32-34 mV, limit 30") and the first three trials of the session were saved without a zero (no newtons). The data and the findings are
+  collected so the noise can be reduced in the program (and by the set-up).
+- **What:** `README.md` (findings, pointers into the code, ideas for features), `noise_export.py` (rebuilds the CSV files from saved trials; numpy only,
+  reads only) and four anonymised CSV files: per trial (163 trials in 4 sessions), per 1 s window, amplitude spectra, the operator's force/zero events.
+- **Not in it:** raw signals, participant codes, force peaks and force-over-time curves (participant data stays out of the repository). Note: the
+  `hum_pct_of_rise_*` columns together with the hum amplitude would let a reader back-calculate the force rise of one anonymous trial; there is no link to a person.
+- **Findings (not acted on):** the zero gate removes only the 50 Hz line, so 100 Hz hum made it refuse; `force.mains_amplitude` locks on exactly 50.000 Hz and
+  can read far too low on a long trial (0.4 % against a true 4.7 %, so the 3 % warning did not fire); a raw single-sample peak is 41-45 N too high in
+  50+100 Hz hum (the smoothed peak is not); the rest level before and after a push differed by 19-38 mV in the first trials (about +-3 % of the peak above rest).
+  Numbers and ideas: `LoadCellCalibration/noise/README.md`.
+- **Measured numbers:** none change (no program file changed).
+
 ## 0.27.0 - 2026-10-30
 
 ### A rest timer between contractions
