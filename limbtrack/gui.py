@@ -19,14 +19,15 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QSizePolicy, QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
 
 from . import privacy, reference, session_memory
+from . import verdict as verdicts
 from .session_log import SessionLog
-from .panels import Accordion, ReminderBar, Section, StepStrip
+from .panels import Accordion, ReminderBar, Section, StepStrip, VerdictBar
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
 from .loadcell import GRAVITY, find_regression
 from .force import HUM_NOTE_V, ForceCalibration, ForceError, NiDaqForce, SimulatedForce
 from .protocol import plan_positions
-from .recorder import count_trials, trial_metas
+from .recorder import trial_metas
 from .rest import REST_AFTER_SUBMAX_S, RestTimer
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
@@ -1167,7 +1168,7 @@ class LiveTab(QWidget):
         quick.setSpacing(4)
         quick.addWidget(self.btn_lock, 0, 0)
         quick.addWidget(self.btn_rec, 0, 1)
-        quick.addWidget(self.btn_pause, 1, 0, 1, 2)
+        quick.addWidget(self.btn_pause, 1, 0)                       # (0.27.0: beside the submax rest button, so no row is added)
         # --- the rest between contractions (0.27.0, SOP 10.5/10.8/11.7/9.11): counted from the end of each recording, shown here
         self.rest = RestTimer()
         self.rest_label = QLabel("")
@@ -1178,14 +1179,21 @@ class LiveTab(QWidget):
         self.btn_rest_submax.setToolTip("After the submaximal contraction (SOP 9.11, not recorded): start the 30 s rest before the first MVIC "
                                         "trial. After a trial the rest starts by itself.")
         self.btn_rest_submax.clicked.connect(self.start_submax_rest)
-        quick.addWidget(self.rest_label, 2, 0)
-        quick.addWidget(self.btn_rest_submax, 2, 1)
+        self.btn_rest_submax.setMinimumHeight(34)
+        quick.addWidget(self.btn_rest_submax, 1, 1)
+        quick.addWidget(self.rest_label, 2, 0, 1, 2)                # (hidden when no rest is timed: then the row takes no room)
+        # --- the operator's verdict on the trial just saved (0.28.0): Valid, or why it is compromised (not counted), and a note
+        self.verdict_bar = VerdictBar()
+        self.verdict_bar.setVisible(False)                          # from the first trial saved in this run; away while recording
+        self.verdict_bar.changed.connect(self._verdict_changed)
+        self._verdict_trial = None                                  # the meta.json the bar judges
         head = QVBoxLayout()
         head.setSpacing(6)
         head.addWidget(self.strip)
         head.addWidget(self.instruction)
         head.addWidget(self.reminders)
         head.addLayout(quick)
+        head.addWidget(self.verdict_bar)
         head.addWidget(self.quick_bar)
         self.accordion = Accordion()
         for number, key, title, widgets in (("1", "camera", "Camera", [src]),
@@ -2870,12 +2878,15 @@ class LiveTab(QWidget):
         pid = self.participant.text().strip()
         valid = privacy.check_participant_id(pid) is None
         cur_key, cur_tgt = self.engine.test.key, (self.engine.target if self.engine.primary_angle else None)
-        current, n_cur = None, 0
+        current, n_cur, files_cur, bad_cur = None, 0, 0, 0
         pinned = []                                       # the same rows for the pinned dropdown: "Knee extension, 70 deg   (1/2)"
         for i, (key, tgt) in enumerate(self.plan_rows):
-            n = count_trials(self.recordings_dir, pid, key, tgt) if valid else 0
+            metas = trial_metas(self.recordings_dir, pid, key, tgt) if valid else []
+            files = len(metas)                            # every saved trial (the 10 % check's cache counts these) ...
+            bad = sum(verdicts.is_compromised(p) for p in metas)
+            n = files - bad                               # ... and the ones that count: not marked compromised (0.28.0)
             mark = "-" if not valid else ("done" if n >= TRIALS_PER_POSITION else f"{n}/{TRIALS_PER_POSITION}")
-            if valid and n == TRIALS_PER_POSITION and (self._repeat_state(pid, key, tgt, n) or {}).get("state") == "third":
+            if valid and n == TRIALS_PER_POSITION and (self._repeat_state(pid, key, tgt, (files, bad)) or {}).get("state") == "third":
                 mark = "3rd!"                             # the two peaks differ by more than 10 %: a third trial (SOP 10.6, 0.20.0)
             text = f"{mark:>5}   {i + 1:02d}  {self._plan_text(key, tgt)}"
             pinned.append(f"{i + 1:02d}  {self._plan_text(key, tgt)}" + (f"   ({mark})" if valid else ""))
@@ -2883,7 +2894,7 @@ class LiveTab(QWidget):
             if item.text() != text:
                 item.setText(text)
             if key == cur_key and ((tgt is None and cur_tgt is None) or (tgt is not None and cur_tgt is not None and abs(tgt - cur_tgt) < 1e-6)):
-                current, n_cur = i, n
+                current, n_cur, files_cur, bad_cur = i, n, files, bad
         self.plan.blockSignals(True)
         self.plan.setCurrentRow(-1 if current is None else current)
         self.plan.blockSignals(False)
@@ -2902,12 +2913,13 @@ class LiveTab(QWidget):
         pc.setCurrentIndex(-1 if current is None else current)
         pc.blockSignals(False)
         where = self._plan_text(cur_key, cur_tgt)
+        left_out = f" ({bad_cur} not counted: marked compromised)" if bad_cur else ""
         if not valid:
             self.trial_label.setText("Enter the participant code (P01, ...) to count trials.")
         elif current is None:
             self.trial_label.setText(f"{where}: not a position of the plan (trials are not counted).")
         elif n_cur >= TRIALS_PER_POSITION:
-            chk = self._repeat_state(pid, cur_key, cur_tgt, n_cur)
+            chk = self._repeat_state(pid, cur_key, cur_tgt, (files_cur, bad_cur))
             if chk is None and self._rec_started is None:   # not known yet (a restart): work it out for this position, quietly
                 metas = trial_metas(self.recordings_dir, pid, cur_key, cur_tgt)
                 if metas:
@@ -2915,18 +2927,18 @@ class LiveTab(QWidget):
             state = (chk or {}).get("state")
             if state == "third":
                 self.trial_label.setText(f"{where}: THIRD TRIAL NEEDED, the two peaks differ by {chk['pct']:.1f} % (limit 10 %). "
-                                         f"Next is trial {n_cur + 1}.")
+                                         f"Next is trial {n_cur + 1}.{left_out}")
             elif state == "deviation":
-                self.trial_label.setText(f"{where}: {n_cur} trials and no two within 10 %: note it in the deviation log (no more trials).")
+                self.trial_label.setText(f"{where}: {n_cur} trials and no two within 10 %: note it in the deviation log (no more trials).{left_out}")
             elif state == "no_rise":                       # 0.26.0
                 self.trial_label.setText(f"{where}: {n_cur} trials saved, none with a force rise: the 10 % check cannot be made. "
-                                         f"Another is trial {n_cur + 1}.")
+                                         f"Another is trial {n_cur + 1}.{left_out}")
             else:
                 ok = " 10 % check: fine." if state == "ok" else ""
                 self.trial_label.setText(f"{where}: {n_cur} trials already saved (planned {TRIALS_PER_POSITION}).{ok} "
-                                         f"Another is trial {n_cur + 1}.")
+                                         f"Another is trial {n_cur + 1}.{left_out}")
         else:
-            self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}\n{where}")
+            self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}{left_out}\n{where}")
         pc.setToolTip(self.trial_label.text().split("\n")[0] + "\nPick another position to set the test and the target in one step.")
 
     def on_plan_clicked(self, item):
@@ -3285,6 +3297,7 @@ class LiveTab(QWidget):
             self._update_rest()
             self._rec_started = time.perf_counter()
             self._start_recording_view()
+            self.verdict_bar.setVisible(False)                      # (it judged the trial before; the next one is shown once saved)
             self.note("recording started", f"{self.participant.text().strip()} {self.engine.test.key} {self.engine.target if self.engine.target is not None else ''}".strip())
             if reminders:
                 self.note("recording started with reminders open", " | ".join(text for text, _ in reminders))
@@ -3336,6 +3349,7 @@ class LiveTab(QWidget):
                                        + ("\nCHECK THIS TRIAL: " + warnings[0] if warnings else ""))
                 self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;" if warnings else "color: #d97706; font-weight: bold;" if short else "")
                 self._last_trial_warnings = warnings
+                self._judge_trial(paths["meta.json"])
                 if warnings:
                     self._show_trial_warnings(warnings)
                 try:                                       # the 10 % check and the resting force follow from the saved files (0.20.0)
@@ -3390,6 +3404,39 @@ class LiveTab(QWidget):
             return False
         self.leg_combo.setCurrentIndex(self.leg_combo.findData(leg))
         return self.engine.tested_leg == leg
+
+    # ------------------------------------------------------------ the verdict on a trial (0.28.0, limbtrack/verdict.py)
+    def _judge_trial(self, meta_path):
+        """Show the bar for the trial just saved (its verdict, if it has one already)."""
+        self._verdict_trial = Path(meta_path)
+        name = self._verdict_trial.name[: -len("_meta.json")]
+        tn = next((part for part in name.split("_") if part[:1] == "T" and part[1:].isdigit()), "")
+        where = self._plan_text(self.engine.test.key, self.engine.target if self.engine.primary_angle else None)
+        self.verdict_bar.set_verdict(verdicts.read_verdict(self._verdict_trial), title=f"Trial {tn}:", tip=f"{where}: {name}")
+        self.verdict_bar.setVisible(True)
+
+    def _verdict_changed(self, v, reasons, note):
+        """A click on the bar (or the note finished): saved next to the trial at once, said in the session log, and the plan and the
+        10 % check of its position worked out again (a compromised trial is not counted)."""
+        path = self._verdict_trial
+        if path is None:
+            return
+        try:
+            saved = verdicts.write_verdict(path, v, reasons, note, where=verdicts.ON_SITE)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Verdict not saved", f"The verdict could not be saved next to the trial:\n{e}")
+            self.verdict_bar.set_verdict(verdicts.read_verdict(path))
+            return
+        self.note("trial judged", f"{path.name[: -len('_meta.json')]}: {verdicts.describe(saved)}")
+        try:
+            m = json.loads(path.read_text(encoding="utf-8"))
+            key = self._position_key(m.get("participant"), m.get("test_key"), m.get("target_deg"))
+        except (OSError, ValueError):
+            key = None
+        if key is not None:
+            self._repeat.pop(key, None)                             # (the counted trials changed: the 10 % check is made again, quietly)
+            self._check_position(path, key, announce=False)
+        self.refresh_plan()
 
     # ------------------------------------------------------------ the rest between contractions (SOP 10.5, 10.8, 11.7, 9.11; 0.27.0)
     def _position_now(self):
@@ -3464,13 +3511,15 @@ class LiveTab(QWidget):
         if "error" in res:
             text = "The 10 % check could not be made: " + res["error"]
             self.note("position check failed", text)
-            n = len(trial_metas(Path(res["meta_path"]).parent.parent, *key))
-            self._repeat[key] = (n, {"state": "error", "text": text, "pct": math.nan, "n": n})    # not tried again for these trials
+            metas = trial_metas(Path(res["meta_path"]).parent.parent, *key)
+            n = len(metas)
+            self._repeat[key] = ((n, sum(verdicts.is_compromised(p) for p in metas)),       # not tried again for these trials
+                                 {"state": "error", "text": text, "pct": math.nan, "n": n})
             if announce:
                 self._add_after_trial([text], warn=True)
             return
         chk = res["check"]
-        self._repeat[key] = (res["n"], chk)
+        self._repeat[key] = ((res["n"], res.get("compromised", 0)), chk)
         if announce:
             saved = trial_metas(Path(res["meta_path"]).parent.parent, *key)
             if res["n"] < len(saved):                 # a check that began before this trial was saved: once more, with it
@@ -3511,10 +3560,11 @@ class LiveTab(QWidget):
             self.rec_label.setStyleSheet("color: #dc2626; font-weight: bold;")
             self._show_trial_warnings(self._last_trial_warnings + lines, log=False)
 
-    def _repeat_state(self, pid, key, tgt, n):
-        """The 10 % check of a position when it is known for the trials now saved there (n), else None."""
+    def _repeat_state(self, pid, key, tgt, counts):
+        """The 10 % check of a position when it is known for the trials now saved there, else None. `counts`: (trials saved, of them
+        marked compromised): a verdict changed in Review makes a check made before it out of date (0.28.0)."""
         got = self._repeat.get(self._position_key(pid, key, tgt))
-        return got[1] if got is not None and got[0] == n else None
+        return got[1] if got is not None and got[0] == counts else None
 
     def _show_trial_warnings(self, warnings, log=True):
         """Problems found in the trial just saved (no force rise, dots that moved apart, CHECK LABELS; 0.19.0; the resting force and the 10 %

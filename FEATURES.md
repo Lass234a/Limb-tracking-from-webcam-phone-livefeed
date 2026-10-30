@@ -464,6 +464,15 @@ All of this only reads a recorded trial; nothing is written into the recording. 
 - **Private output:** `replay_key.csv`, `replay_report.csv`, `replay_cache.json`, `truth_candidates.csv` and every `*_collection/` folder name trials; all are in `.gitignore`. The collection tool refuses to write into a non-empty folder it did not make.
 - **Not taken from #4:** its change of the Auto dot colour rule (`tracker.py`): with clicks 11-12 px beside a tape dot it took the tape for the dot in up to 26 of 56 synthetic clicks (review `audit/PR4_review_2026-10-30.md`).
 
+### A39. The verdict on a trial: valid, or compromised and why (new in 0.28.0; `verdict.py`; `panels.py` `VerdictBar`; `gui.py` `_judge_trial`, `_verdict_changed`, `refresh_plan`; `review.py` `ReviewTab._verdict_changed`; `analysis.py` `position_check`, `repeatability`, `session_row`, `trial_checks`)
+- **On site:** after each trial a bar under Lock / Record: **Valid**, or **Dots** / **Position** / **Force** / **Other** (several at once) for a compromised trial, and a note. Saved at every click. Away while recording.
+- **In Review:** the same bar for the open trial; a change keeps the earlier verdict in the history.
+- **Saved:** `<trial>_verdict.json` next to the trial (verdict, reasons, note, judged_at, judged_in, history); `meta.json` is never rewritten. Session log: *trial judged*.
+- **Not counted:** a compromised trial is left out of the session plan's count, the 10 % check, the export's repeatability and the angle check of its position. Files and trial numbers stay.
+- **Export:** `verdict`, `verdict_reasons`, `verdict_note`; the Check tab names it.
+- **Limits:** judging is optional (no reminder); a trial judged in Review after its position was finished does not bring the plan back to that position by itself.
+- **Code / tests:** `tests/test_verdict.py`.
+
 ### CSV columns
 `frame, t_s, clock_s, locked`, then per dot `<dot>_x, <dot>_y` (both **blank while the dot is lost**), `<dot>_lost, <dot>_q`, then (frontal tests only) per computed point `<point>_x, <point>_y` (the hip centre; blank when a needed dot is lost or there is no ruler scale; no `_lost` or `_q`), then per angle `<angle>_deg, <angle>_ref, <angle>_dev, <angle>_ok` (all from the **unsmoothed** angle; blank = lost or no reference), then `all_ok, event, scale_px_per_cm` (the live ruler scale; blank when no ruler is marked or a ruler dot is lost), `force_n` (only when a force source was connected: mean newtons since the previous picture), and, only when the strap and anchor dots are both used, `pull_angle_deg, pull_off90_deg, moment_arm_px, moment_arm_cm, strap_joint_px, strap_joint_cm` (blank while a needed dot is lost), `label_check, dots_apart` (0.19.0, A30; empty when all is well), `source_frame`, and last one `<dot>_partial` per dot (1 = the dot looked partly covered or cut off in that frame). Only the chosen landmarks and the angles that can be computed from them are written. There is no longer a separate `_raw_deg` column because `_deg` is already raw.
 

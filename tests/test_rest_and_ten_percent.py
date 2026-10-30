@@ -207,7 +207,7 @@ def test_the_window_says_third_trial_needed_and_marks_the_plan(win, tmp_path, mo
     key = live._position_key("P01", "knee_extension", 70.0)
     assert pump(app, lambda: key not in live._repeat_running)                  # (going to the position starts a quiet check)
     live._check_position(b["meta.json"], key, announce=True)
-    assert pump(app, lambda: key not in live._repeat_running and live._repeat.get(key, (0,))[0] == 2)
+    assert pump(app, lambda: key not in live._repeat_running and live._repeat.get(key, ((0, 0),))[0] == (2, 0))
     assert "THIRD TRIAL NEEDED" in live.rec_label.text() and shown and "THIRD TRIAL NEEDED" in shown[-1][-1]
     row = live.plan.item(live.plan_rows.index(("knee_extension", 70))).text()
     assert row.strip().startswith("3rd!") and "THIRD TRIAL NEEDED" in live.trial_label.text()
@@ -227,7 +227,7 @@ def test_after_a_restart_the_position_is_checked_quietly_when_the_window_goes_th
     live.participant.setText("P01")
     live.go_to_position(live.plan_rows.index(("knee_extension", 70)))
     key = live._position_key("P01", "knee_extension", 70.0)
-    assert pump(app, lambda: live._repeat.get(key, (0,))[0] == 2)
+    assert pump(app, lambda: live._repeat.get(key, ((0, 0),))[0] == (2, 0))
     assert live.plan.item(live.plan_rows.index(("knee_extension", 70))).text().strip().startswith("3rd!")
     assert not shown                                                           # quiet: no message for trials of an earlier run
 

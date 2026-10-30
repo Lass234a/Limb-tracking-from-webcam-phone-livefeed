@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QWidget)
 
 from . import overlay, privacy, reference, session_memory
+from . import verdict as verdicts
+from .panels import VerdictBar
 from .displacement import window_displacements
 from . import analysis
 from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
@@ -519,8 +521,8 @@ def after_trial_check(meta_path):
                 if tr.has_force():
                     ri = tr.force_rest()
                     rest_note = ri["note"] if ri is not None else ""
-            elif this_row is None:                     # (the trials before this one, oldest first)
-                earlier.append(row.get("plateau_angle_deg"))
+            elif this_row is None and row.get("verdict") != verdicts.COMPROMISED:     # (the trials before this one, oldest first;
+                earlier.append(row.get("plateau_angle_deg"))                         # not one marked compromised: 0.28.0)
         finally:
             tr.cap.release()
     check = analysis.position_check(rows)
@@ -536,6 +538,7 @@ def after_trial_check(meta_path):
         relaxed_note = analysis.relaxed_mismatch(this_row.get("force_unit"), this_row.get("force_relaxed"), this_row.get("force_rest"),
                                                  this_row.get("force_peak_above_rest"))
     return {"participant": who, "test_key": key, "target_deg": tgt, "n": len(paths), "check": check,
+            "compromised": sum(verdicts.is_compromised(p) for p in paths),           # (0.28.0: part of what the window's check is for)
             "rest_note": rest_note, "angle_note": angle_note, "position_note": position_note, "relaxed_note": relaxed_note,
             "trial": meta_path.name[: -len("_meta.json")]}
 
@@ -568,7 +571,9 @@ def _previous_position(root, meta, meta_path):
         except Exception:  # noqa: BLE001 - an unreadable trial is simply not used for this comparison
             continue
         try:
-            plateaus.append(analysis.session_row(tr).get("plateau_angle_deg"))
+            row = analysis.session_row(tr)
+            if row.get("verdict") != verdicts.COMPROMISED:          # (a trial marked compromised does not say where the position was)
+                plateaus.append(row.get("plateau_angle_deg"))
         finally:
             tr.cap.release()
     return best[1], plateaus
@@ -988,8 +993,13 @@ class ReviewTab(QWidget):
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setSizes(DEFAULT_MAIN_SPLIT)
+        # the operator's verdict on the open trial (0.28.0): shown, and changed here when a trial turns out compromised (or fine) later
+        self.verdict_bar = VerdictBar()
+        self.verdict_bar.setVisible(False)
+        self.verdict_bar.changed.connect(self._verdict_changed)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
+        lay.addWidget(self.verdict_bar)
         lay.addWidget(self.splitter, 1)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance)
@@ -1040,6 +1050,8 @@ class ReviewTab(QWidget):
         tr = Trial(meta_path)
         self.trial = tr
         m = tr.meta
+        self.verdict_bar.set_verdict(verdicts.read_verdict(tr.meta_path), title="Verdict on this trial:", tip=tr.base)
+        self.verdict_bar.setVisible(True)
         self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  target {m['target_deg']} deg  |  "
                            f"{m['frames']} frames, {m['duration_s']} s"
                            + (f"  |  ruler {tr.ruler_cm:g} cm = {tr.px_per_cm:.2f} px/cm" if tr.px_per_cm and tr.ruler_cm else "  |  no ruler scale")
@@ -1516,6 +1528,18 @@ class ReviewTab(QWidget):
             for q in pull:
                 lines.append(f"{q['quantity']:22s}{q['mean']:8.1f}{q['min']:8.1f}{q['max']:8.1f}{q['change_start_to_end']:+11.1f}")
         return "\n".join(lines)
+
+    def _verdict_changed(self, v, reasons, note):
+        """The verdict was changed in Review: saved next to the trial (its history keeps what was decided on site)."""
+        if self.trial is None:
+            return
+        try:
+            verdicts.write_verdict(self.trial.meta_path, v, reasons, note, where=verdicts.IN_REVIEW)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Verdict not saved", f"The verdict could not be saved next to the trial:\n{e}")
+            self.verdict_bar.set_verdict(verdicts.read_verdict(self.trial.meta_path))
+            return
+        self.update_summary()                                       # (the Check tab names the verdict)
 
     def export_session(self):
         """One row per trial of the open trial's participant, with the 10 % repeatability check between trials of the same position."""

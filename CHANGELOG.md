@@ -3,6 +3,40 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.28.0 - 2026-10-30
+
+### A verdict on every trial: valid, or compromised and why (the post-measurement log)
+- **Why:** asked on 2026-10-30: "a post measurement log where we can mark if a measurement is completely well done and deemed valid on
+  site, and where some trials might be compromised through wrong dots, wrong position or bad force measurement". In the pilot sessions six
+  trials were saved under the wrong position and two had no force at all; nothing in the files said so, and the 10 % check and the session
+  plan counted them.
+- **What:** right after a trial is saved, a bar of two rows under Lock / Record and the rest line (`panels.VerdictBar`): *Trial T2:*
+  (the position and file in its tooltip) with **Valid** and four reasons it is compromised, **Dots** (wrong dots), **Position** (wrong
+  position), **Force** (bad force), **Other**, several at once; below them the verdict and a note. A click saves it at once; *Valid* clears
+  the reasons and a reason clears *Valid*; the frame turns green or red. With the rest line it takes about 90 px from the open section after
+  a trial (502 -> 412 px in a 1400 x 860 window).
+  Away while recording; after the next trial it shows that one. The same bar in Review, under the top bar, for the open trial (a verdict
+  changed later, e.g. after looking at the video).
+- **Saved:** `<trial>_verdict.json` next to the trial (`limbtrack/verdict.py`; atomic): verdict (`valid`, `compromised` or null), reasons,
+  note, when and where (*on site (Live tab)* or *Review*), and the earlier verdicts in `history`, so a change in Review keeps what was
+  decided on site. `meta.json` is never rewritten. Session log: *trial judged* with the verdict.
+- **Not counted:** a compromised trial is left out of the session plan's count ("Next: trial 1 of 2 (1 not counted: marked compromised)"),
+  of the 10 % check ("Not counted: trial 2 (marked compromised)"; all compromised: "No trial of this position counts") and of the export's
+  repeatability columns, and it does not set the angle of its position for the 0.26.0 angle check. Its files stay; the file numbering
+  (T1, T2, ...) is unchanged, so the next trial after a compromised T2 is T3.
+- **Review and export:** the Check tab names the verdict first ("Marked compromised (on site (Live tab)): wrong position (note). Not
+  counted." / "Marked valid ..."); export columns `verdict`, `verdict_reasons`, `verdict_note`.
+- **Measured numbers:** none change. What counts in the 10 % check and in the plan changes when a trial is marked compromised.
+- **Tests:** `tests/test_verdict.py` (10: the side file and its history, nonsense refused, the 10 % check and the export, the angle check,
+  judging two trials in the real Live window (plan counts, session log, hidden while recording), changing it in Review). Version 0.28.0.
+  Full suite on the final code: 1090 passed, 1 skipped, 0 failed (26.6 min).
+- **Fixed from 0.27.0:** the *Submax rest 30 s* button had a row of its own under Pause, which made the panel's pinned part taller, so
+  the Participant section needed scrolling (`tests/test_steps.py::test_the_short_sections_need_no_scrolling` failed in the full suite of
+  0.27.0: 1079 passed, 1 skipped, 1 failed). It is now beside Pause; the rest line below takes room only while a rest is timed.
+- **The Live tab's 10 % check result** for a position is kept with the number of trials saved there and how many of them are marked
+  compromised, so a verdict changed in Review makes it worked out again (`_repeat_state`).
+- **Not tried:** in a session. Not built: a reminder at Record when the last trial was not judged (judging is optional).
+
 ## Tools (no program version) - 2026-10-30
 
 ### Replay, benchmark and pilot-collection tools from pull request #4

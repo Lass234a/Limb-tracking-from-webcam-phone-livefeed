@@ -5,7 +5,9 @@ strip that never scrolls, and the rest is a list of sections of which one is ope
 line what it is set to. Nothing here knows about cameras or angles: the window gives it widgets and states.
 """
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+
+from .verdict import COMPROMISED, REASONS, VALID
 
 HEADER_STYLE = ("QPushButton { text-align: left; padding: 7px 10px; font-weight: bold; border: 1px solid rgba(128,128,128,0.35);"
                 " border-radius: 4px; }"
@@ -227,3 +229,113 @@ class StepStrip(QWidget):
 
     def state_of(self, key):
         return self.states[key][0]
+
+
+VERDICT_STYLES = {                              # the frame's colour says the verdict at a glance
+    VALID: ("#16a34a", "rgba(22,163,74,0.10)"),
+    COMPROMISED: ("#dc2626", "rgba(220,38,38,0.10)"),
+    None: ("rgba(128,128,128,0.45)", "transparent"),
+}
+VERDICT_BUTTONS = {"wrong_dots": "Dots", "wrong_position": "Position", "bad_force": "Force", "other": "Other"}
+VERDICT_TIPS = {
+    "wrong_dots": "Compromised: a dot was placed or marked in the wrong place, jumped, swapped or was lost when it mattered.",
+    "wrong_position": "Compromised: the participant was not in the position chosen in the program (or the wrong one was chosen).",
+    "bad_force": "Compromised: the strap was not pulling, slipped or jerked, the signal was cut off, or the zero was off.",
+    "other": "Compromised for another reason: write it in the note.",
+}
+
+
+class VerdictBar(QFrame):
+    """The operator's verdict on one trial (0.28.0, limbtrack/verdict.py): *Valid*, or one or more reasons it is compromised, and a
+    note. Under Record in the Live tab (the trial just saved) and in Review (the trial that is open). It only shows and reports; the
+    window saves. `changed(verdict, reasons, note)` comes on every click and when the note is finished; `set_verdict` shows a saved
+    verdict without it."""
+
+    changed = Signal(object, list, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("verdict")
+        lay = QVBoxLayout(self)                               # two rows, kept low: it sits in the panel's pinned part after each trial
+        lay.setContentsMargins(5, 3, 5, 3)
+        lay.setSpacing(2)
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        self.label = QLabel()                                 # which trial: "Trial T2:" (the position is in its tooltip)
+        self.label.setStyleSheet("font-weight: bold;")
+        row.addWidget(self.label)
+        self.btn_valid = QPushButton("Valid")
+        self.btn_valid.setToolTip("The trial was completely well done and is valid.")
+        self.reason_buttons = {}
+        for b in [self.btn_valid] + [QPushButton(VERDICT_BUTTONS[k]) for k in REASONS]:
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)                     # (a click must not take the keyboard from the letter keys)
+            b.setStyleSheet("QPushButton { padding: 2px 6px; } QPushButton:checked { font-weight: bold; }")
+            row.addWidget(b)
+        for k, b in zip(REASONS, [row.itemAt(i).widget() for i in range(2, row.count())]):
+            b.setToolTip(VERDICT_TIPS[k])
+            self.reason_buttons[k] = b
+            b.clicked.connect(lambda on, key=k: self._reason_clicked(key, on))
+        self.btn_valid.clicked.connect(self._valid_clicked)
+        lay.addLayout(row)
+        second = QHBoxLayout()
+        second.setSpacing(4)
+        self.state = QLabel()                                 # "not judged", "VALID", "COMPROMISED (not counted)"
+        second.addWidget(self.state)
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("Note (optional), Enter saves it")
+        self.note.editingFinished.connect(self._note_finished)
+        second.addWidget(self.note, 1)
+        lay.addLayout(second)
+        self._saved_note = ""
+        self._show_state()
+
+    def current(self):
+        """(verdict, reasons, note) as the buttons and the note stand."""
+        reasons = [k for k, b in self.reason_buttons.items() if b.isChecked()]
+        v = VALID if self.btn_valid.isChecked() else COMPROMISED if reasons else None
+        return v, reasons, self.note.text().strip()
+
+    def set_verdict(self, saved, title=None, tip=""):
+        """Show a saved verdict (a dict from verdict.read_verdict, or None) without reporting a change."""
+        if title is not None:
+            self.label.setText(title)
+            self.label.setToolTip(tip)
+        saved = saved or {}
+        self.btn_valid.setChecked(saved.get("verdict") == VALID)
+        for k, b in self.reason_buttons.items():
+            b.setChecked(saved.get("verdict") == COMPROMISED and k in (saved.get("reasons") or []))
+        self.note.blockSignals(True)
+        self.note.setText(saved.get("note") or "")
+        self.note.blockSignals(False)
+        self._saved_note = self.note.text().strip()
+        self._show_state()
+
+    def _valid_clicked(self, on):
+        if on:
+            for b in self.reason_buttons.values():
+                b.setChecked(False)
+        self._report()
+
+    def _reason_clicked(self, key, on):
+        if on:
+            self.btn_valid.setChecked(False)
+        self._report()
+
+    def _note_finished(self):
+        if self.note.text().strip() != self._saved_note:     # (editingFinished also comes when the box only loses the focus)
+            self._report()
+
+    def _report(self):
+        v, reasons, note = self.current()
+        self._saved_note = note
+        self._show_state()
+        self.changed.emit(v, reasons, note)
+
+    def _show_state(self):
+        v, reasons, _ = self.current()
+        text = "VALID" if v == VALID else "COMPROMISED (not counted)" if v == COMPROMISED else "not judged"
+        border, back = VERDICT_STYLES[v]
+        self.state.setText(text)
+        self.state.setStyleSheet(f"color: {border}; font-weight: bold;" if v else "color: #9ca3af;")
+        self.setStyleSheet(f"QFrame#verdict {{ border: 1px solid {border}; border-radius: 4px; background: {back}; }}")

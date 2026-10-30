@@ -15,6 +15,7 @@ from .force import NO_FORCE_RISE_N
 from .loadcell import GRAVITY
 from .pull import compute_pull
 from .rest import clock_text
+from . import verdict as verdicts
 
 HUM_WARN_PCT = 3.0              # 50 Hz hum above this share of the force rise is flagged
 FPS_WARN = 20.0                 # fewer pictures per second than this are flagged
@@ -213,6 +214,11 @@ def trial_checks(tr, t0=None, t1=None):
     texts = checks.get("label_checks") or {}
     for code, c in (checks.get("label_check_frames") or {}).items():
         add("check", f"CHECK LABELS in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): {texts.get(code, code)}.")
+    v = verdicts.read_verdict(tr.meta_path) if getattr(tr, "meta_path", None) else None        # 0.28.0: the operator's verdict
+    if v and v.get("verdict") == verdicts.COMPROMISED:
+        add("check", f"Marked compromised ({v.get('judged_in')}): {verdicts.describe(v)[len('compromised: '):]}. Not counted.")
+    elif v and v.get("verdict") == verdicts.VALID:
+        add("ok", f"Marked valid ({v.get('judged_in')})" + (f": {v['note']}" if v.get("note") else ""))
     rb = m.get("rest_before")                                          # 0.27.0: the rest timed before the trial
     if rb and rb.get("short"):
         add("check", f"Only {clock_text(rb['seconds'])} of rest before this trial (the SOP asks for {clock_text(rb['required_s'])} {rb.get('why', '')}).")
@@ -389,7 +395,7 @@ SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "t
                    "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
                    "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
-                   "checks_to_look_at", "repeatability_pct_same_position", "third_trial_needed",
+                   "checks_to_look_at", "verdict", "verdict_reasons", "verdict_note", "repeatability_pct_same_position", "third_trial_needed",
                    "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis"]
 
 
@@ -426,6 +432,10 @@ def session_row(tr):
         row.update(torque_peak_nm=tq["peak_nm"], torque_at_peak_force_nm=tq["at_peak_force_nm"], arm_at_peak_force_cm=tq["arm_at_peak_force_cm"],
                    torque_stand_in_pictures=tq["pictures_with_stand_in"])
     row["checks_to_look_at"] = " | ".join(text for lvl, text in trial_checks(tr, *win) if lvl == "check")
+    v = verdicts.read_verdict(tr.meta_path) if getattr(tr, "meta_path", None) else None         # the operator's verdict (0.28.0)
+    if v and v.get("verdict"):
+        row.update(verdict=v["verdict"], verdict_reasons=", ".join(verdicts.REASONS.get(r, r) for r in v.get("reasons") or []),
+                   verdict_note=v.get("note") or "")
     primary = tr.primary_angle                       # the typed reference of the main joint, beside the app's angle at the same moment
     ref = next((r for r in tr.reference_rows() if r["key"] == primary.name), None) if primary is not None else None
     if ref is not None:
@@ -472,7 +482,7 @@ def repeatability(rows):
     (more than REPEAT_WARN_PCT apart). Uses the force peak; rows without force, or without a contraction (`contracted`), are left alone."""
     groups = {}
     for r in rows:
-        if contracted(r):
+        if contracted(r) and r.get("verdict") != verdicts.COMPROMISED:             # (0.28.0: a trial marked compromised is not counted)
             groups.setdefault((r["test_key"], r["target_deg"], r["force_unit"]), []).append(r)
     for g in groups.values():
         if len(g) < 2:
@@ -499,7 +509,11 @@ def position_check(rows):
     n = len(with_force)
     if n == 0:
         return {"state": "none", "text": "", "pct": math.nan, "n": 0}
-    units = sorted({r["force_unit"] for r in with_force})
+    bad = [i + 1 for i, r in enumerate(with_force) if r.get("verdict") == verdicts.COMPROMISED]     # marked compromised (0.28.0)
+    if len(bad) == n:
+        return {"state": "none", "pct": math.nan, "n": n,
+                "text": f"No trial of this position counts: trial {_listed(bad)} {'is' if n == 1 else 'are'} marked compromised."}
+    units = sorted({r["force_unit"] for i, r in enumerate(with_force) if i + 1 not in bad})
     if len(units) > 1:
         volts = [i + 1 for i, r in enumerate(with_force) if r["force_unit"] == "V"]
         return {"state": "units", "pct": math.nan, "n": n,
@@ -508,13 +522,14 @@ def position_check(rows):
     u = units[0]
     d = 0 if u == "N" else 3
     fmt = lambda v: f"{v:.{d}f} {u}"                                              # noqa: E731
-    nums = [i + 1 for i, r in enumerate(with_force) if contracted(r)]             # trial numbers (counted among the trials with force)
-    flat = [i + 1 for i, r in enumerate(with_force) if not contracted(r)]
+    nums = [i + 1 for i, r in enumerate(with_force) if contracted(r) and i + 1 not in bad]     # trial numbers (among the trials with force)
+    flat = [i + 1 for i, r in enumerate(with_force) if not contracted(r) and i + 1 not in bad]
     limit = f"{NO_FORCE_RISE_N:g} N" if u == "N" else "0 V"
+    left_out = f" Not counted: trial {_listed(bad)} (marked compromised)." if bad else ""
     if not nums:
         return {"state": "no_rise", "pct": math.nan, "n": n,
                 "text": f"No force rise in trial {_listed(flat)} of this position (less than {limit} above the rest), so there is nothing to "
-                        "compare. Is the strap hooked to the load cell and the amplifier on?"}
+                        f"compare. Is the strap hooked to the load cell and the amplifier on?{left_out}"}
     peaks = [_peak(with_force[i - 1]) for i in nums]
     cut = [i for i in nums if (_num(with_force[i - 1].get("force_samples_at_limit")) or 0) > 0]
     shown = {i: ("at least " if i in cut else "") + fmt(p) for i, p in zip(nums, peaks)}
@@ -522,7 +537,7 @@ def position_check(rows):
     above_txt = ("; above rest " + ", ".join("-" if a in ("", None) or (isinstance(a, float) and math.isnan(a)) else fmt(float(a)) for a in above)
                  if any(a not in ("", None) for a in above) else "")
     listing = ", ".join(f"trial {i} {shown[i]}" for i in nums) + above_txt
-    notes = ""
+    notes = left_out
     if flat:
         notes += f" Not compared: trial {_listed(flat)} (no force rise: less than {limit} above the rest)."
     if cut:
