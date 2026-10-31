@@ -1,4 +1,4 @@
-"""Review tab layout (0.14.0): a visible position line, the graphs top right, the number tabs in a wide strip below,
+"""Review tab layout (0.32.0; before that 0.14.0): the trial on the left and the signal with its checks on the right, the number panels under the video,
 divider positions that are remembered."""
 import json
 import os
@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pyqtgraph as pg  # noqa: E402
 import pytest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QSizePolicy  # noqa: E402
+from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout  # noqa: E402
 
 from limbtrack.engine import Engine  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
@@ -69,33 +69,62 @@ def test_position_line_and_marker_lines_can_be_seen_on_the_plot_background(tmp_p
         assert _contrast(line.pen.color(), bg) >= 4.5
 
 
-def test_graphs_are_top_right_and_the_number_tabs_are_below(tmp_path):
+def test_the_trial_is_on_the_left_and_the_signal_on_the_right(tmp_path):
     _app()
     tab = ReviewTab(tmp_path)
     top = tab.top_splitter
-    assert top.orientation().name == "Horizontal" and tab.splitter.orientation().name == "Vertical"
-    assert tab.splitter.widget(0) is top and tab.splitter.widget(1) is tab.tabs
-    assert top.widget(0).isAncestorOf(tab.video)                 # video and its controls on the left
-    assert top.widget(1).isAncestorOf(tab.plot) and top.widget(1).isAncestorOf(tab.force_plot)
-    assert not top.isAncestorOf(tab.tabs)
+    assert top.orientation().name == "Horizontal" and tab.left_split.orientation().name == "Vertical"
+    assert top.widget(0) is tab.left_split and top.widget(1) is tab.right_stack
+    assert tab.left_split.widget(1) is tab.angle_tree and tab.left_split.widget(0).isAncestorOf(tab.video)    # video and its controls; the table of angles and their dots under them
+    assert tab.left_split.widget(0).isAncestorOf(tab.btn_fix) and not tab.left_split.widget(0).isAncestorOf(tab.plot)
+    signal = tab.right_stack.widget(0)
+    assert signal.isAncestorOf(tab.plot) and signal.isAncestorOf(tab.force_plot) and signal.isAncestorOf(tab.calib) and signal.isAncestorOf(tab.force_tree)
+    assert not signal.isAncestorOf(tab.checks) and not tab.right_stack.widget(1).isAncestorOf(tab.plot)
+    assert tab.right_stack.widget(1).isAncestorOf(tab.fix_dots)                 # the dot workspace takes the right side while the dots are fixed
+    for gone in ("tabs", "cards", "angle_cards", "kpi_widget", "force_box", "angle_panel", "force_panel", "dots_panel"):
+        assert not hasattr(tab, gone), gone                                       # (the cards, the tabs and the panels are the two tables now)
 
 
-def test_graphs_get_the_larger_share_of_the_top_row(tmp_path):
+def test_the_checks_are_a_chip_in_the_bottom_bar_below_the_graphs(tmp_path):
+    _app()
+    tab = ReviewTab(tmp_path)
+    tab.resize(1400, 820)
+    tab.show()
+    _app().processEvents()
+    assert tab.checks.isVisible() and tab.plot.isVisible()
+    assert tab.checks.mapTo(tab, tab.checks.rect().topLeft()).y() > tab.force_plot.mapTo(tab, tab.force_plot.rect().bottomLeft()).y() or tab.force_plot.isHidden()
+    assert tab.plot.mapTo(tab, tab.plot.rect().topLeft()).y() < tab.checks.mapTo(tab, tab.checks.rect().topLeft()).y()
+    tab.close()
+
+
+def test_the_graphs_and_the_video_get_the_room_not_the_tables(tmp_path):
     app = _app()
     tab = ReviewTab(tmp_path)
     tab.resize(1400, 820)
     tab.show()
     app.processEvents()
-    left, graphs = tab.top_splitter.sizes()
-    assert graphs > left
-    upper, lower = tab.splitter.sizes()
-    assert upper > lower >= tab.tabs.minimumHeight()
+    left, right = tab.top_splitter.sizes()
+    assert right >= left * 1.0                                                   # the signal side is not the smaller part
+    video_block, table = tab.left_split.sizes()
+    assert video_block > table >= tab.angle_tree.minimumSizeHint().height()
     tab.close()
 
 
-def test_calibration_pane_lies_side_by_side_to_fit_the_strip():
+def test_the_calibration_pane_is_a_graph_view_with_its_plots_over_its_words():
     _app()
-    assert isinstance(_CalibrationPane().layout(), QHBoxLayout)
+    pane = _CalibrationPane()
+    assert isinstance(pane.layout(), QVBoxLayout)
+    assert pane.text.maximumHeight() < 250
+
+
+def test_export_and_more_are_not_in_the_header_but_in_the_overview(tmp_path):
+    _app()
+    tab = ReviewTab(tmp_path)
+    assert not hasattr(tab, "btn_export") and not hasattr(tab, "btn_more")
+    assert not tab.header.isAncestorOf(tab.overview) and tab.overview.isAncestorOf(tab.overview.export_button) and tab.overview.isAncestorOf(tab.overview.more_button)
+    assert tab.overview.export_button.menu() is tab.export_menu and tab.overview.more_button.menu() is tab.more_menu
+    assert [a.text() for a in tab.export_menu.actions() if not a.isSeparator()] == [tab.act_export_all.text(), tab.act_export_valid.text(),
+                                                                                   tab.act_export_trial.text(), tab.act_export_video.text()]
 
 
 def test_video_label_does_not_dictate_its_size():
@@ -115,13 +144,13 @@ def test_divider_positions_are_remembered_and_the_rest_of_the_file_is_kept(tmp_p
     a.show()
     app.processEvents()
     a.top_splitter.setSizes([800, 1400])
-    a.splitter.setSizes([400, 400])
+    a.left_split.setSizes([400, 400])
     app.processEvents()
     a._save_layout()
     a.close()
     saved = json.loads(settings.read_text(encoding="utf-8"))
     assert saved["recordings_dir"] == "D:/data" and saved["session"]["test"] == "hip_flexion"
-    assert set(saved["review_ui"]) == {"top", "main"}
+    assert set(saved["review_ui"]) == {"top", "main", "fix"}
 
     b = ReviewTab(tmp_path)
     b.attach_memory(settings)
@@ -130,7 +159,7 @@ def test_divider_positions_are_remembered_and_the_rest_of_the_file_is_kept(tmp_p
     app.processEvents()
     left, graphs = b.top_splitter.sizes()
     assert left / (left + graphs) == pytest.approx(800 / 2200, abs=0.04)
-    upper, lower = b.splitter.sizes()
+    upper, lower = b.left_split.sizes()
     assert upper / (upper + lower) == pytest.approx(0.5, abs=0.05)
     b.close()
 
@@ -146,7 +175,7 @@ def test_unusable_remembered_positions_are_ignored(tmp_path, bad):
     tab.resize(1400, 820)
     tab.show()
     app.processEvents()
-    assert all(s > 0 for s in tab.top_splitter.sizes() + tab.splitter.sizes())
+    assert all(s > 0 for s in tab.top_splitter.sizes() + tab.left_split.sizes())
     tab.close()
 
 

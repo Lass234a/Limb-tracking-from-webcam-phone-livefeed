@@ -124,10 +124,10 @@ def test_review_shows_and_changes_the_verdict(tmp_path):
     tab = ReviewTab(root)
     tab.load(a["meta.json"])
     bar = tab.verdict_bar
-    assert bar.reason_buttons["wrong_dots"].isChecked() and bar.note.text() == "epicondyle jumped" and "COMPROMISED" in bar.state.text()
-    assert "Marked compromised" in tab.check_text.toPlainText()
+    assert bar.reason_buttons["wrong_dots"].isChecked() and bar.note.text() == "epicondyle jumped" and "compromised" in bar.state.text()
+    assert "Marked compromised" in tab.checks.text()                       # (a compromised verdict is a thing to look at, so it is in the lines the panel shows)
     bar.btn_valid.click()
     v = verdict.read_verdict(a["meta.json"])
     assert v["verdict"] == "valid" and v["judged_in"] == verdict.IN_REVIEW and v["history"][0]["verdict"] == "compromised"
-    assert "Marked valid" in tab.check_text.toPlainText()
+    assert "Marked valid" in tab.checks.text(everything=True) and "Marked compromised" not in tab.checks.text(everything=True)
     tab.trial.cap.release()

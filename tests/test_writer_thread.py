@@ -113,8 +113,8 @@ def test_review_exports_the_overlay_video_from_raw_and_csv(tmp_path, monkeypatch
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
     tab.export_overlay_video()
-    out = tmp_path / "P01" / f"{tab.trial.base}_overlay_export.mp4"
-    assert out.exists() and count_frames(out) == 12
+    out = tmp_path / "review" / "P01" / tab.trial.base / f"{tab.trial.base}_overlay_original.mp4"          # (the review folder, 0.30.0)
+    assert out.exists() and count_frames(out) == 12 and not list((tmp_path / "P01").glob("*_overlay_export*"))
 
 
 def test_the_window_has_an_overlay_checkbox_that_is_frozen_while_recording(tmp_path):

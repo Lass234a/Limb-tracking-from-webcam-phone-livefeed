@@ -70,7 +70,7 @@ def test_full_session(tmp_path, monkeypatch):
     assert tr.meta["frames"] > 20
     assert len(tr.rows) == tr.meta["frames"]
     win.review.show_frame(len(tr.rows) // 2)
-    assert win.review.stats.text().count("\n") >= 4
+    assert win.review.angle_tree.text(everything=True).count("\n") >= 4
     win.close()
 
 

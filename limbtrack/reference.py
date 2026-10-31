@@ -16,12 +16,12 @@ how a reading is compared with the app's angle, and the agreement statistics ove
 import csv
 import json
 import math
-import os
 import re
 import statistics
 from datetime import datetime
 from pathlib import Path
 
+from . import review_layer
 from .session_memory import read_all as _read_json_dict
 
 INSTRUMENTS = {"goniometer": "Goniometer", "inclinometer": "Digital inclinometer", "other": "Other instrument"}
@@ -143,15 +143,21 @@ def _reading(values):
 
 
 # ---------------------------------------------------------------------------------------------------------------- the side file
-def sidecar_path(meta_path):
-    """`<trial>_reference.json` next to `<trial>_meta.json`."""
+def legacy_sidecar_path(meta_path):
+    """`<trial>_reference.json` next to `<trial>_meta.json`: where Review put the readings until 0.29.0. Still read, never written."""
     p = Path(meta_path)
     return p.with_name(p.name[: -len("_meta.json")] + "_reference.json")
 
 
+def sidecar_path(meta_path):
+    """`reference.json` in the trial's review layer (0.30.0, limbtrack/review_layer.py): Review never writes beside a trial's own files."""
+    return review_layer.review_file(meta_path, "reference.json")
+
+
 def read_sidecar(meta_path):
-    """The readings added or changed later in Review, or {} (none, or unreadable)."""
-    return _read_json_dict(sidecar_path(meta_path))
+    """The readings added or changed later in Review, or {} (none, or unreadable). The review layer first, then a file an older
+    version left next to the trial."""
+    return _read_json_dict(sidecar_path(meta_path)) or _read_json_dict(legacy_sidecar_path(meta_path))
 
 
 def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="", recorded=None):
@@ -178,16 +184,7 @@ def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="",
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "note": note or "readings added or changed in Review; they win over the ones saved with the trial",
     }
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            tmp.unlink(missing_ok=True)                # no half-written file is left behind; the side file is as it was
-        except OSError:
-            pass
-        raise
+    review_layer.write_json(path, data)                # (atomic: no half-written file is left behind; the side file is as it was on an error)
     return path
 
 

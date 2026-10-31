@@ -3,6 +3,97 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.32.0 - 2026-10-31
+
+### Review tab, built around the review task: two tables, a bottom bar, a Fix-dots workspace with zoom, a faster overview, Approve review
+- **Why:** asked on 2026-10-30/31 after a first look at 0.31.0: the screen was cramped (a text line at the top left, verdict and Data switch each taking a row, big option blocks under the graphs,
+  number cards that repeated what the tabs below showed), the checks were hard to read, the Fix-dots video was too small to place dots by hand, and the first load of the participant overview froze the window.
+  The layout was drawn in seven mockups in the chat before anything was built. Layout, wording and keys only: no calculation, no file format and no review-layer behaviour changed; every export column is the same.
+- **Header (one row, never moves):** participant, trial list, previous / next, **"12 of 64 · 20 left"**, *Showing* **Original | Reviewed** (with "✎ n fixes" when the trial has fixes), Trial | Participant overview.
+- **Left:** the video (the text line above it is gone; frames, ruler scale and target are in its tooltip), the control row (Play, steps, slider, `200 / 363 · 6.75 / 12.18 s`, Show trails, **Fix dots**), then one table
+  **"Angles and the dots that make them"** (`review_angles.py`, `AngleDotTree`): a row per angle with *At peak* (large, green inside target ± tolerance), Hold, Target, Off, Lost; under it the dots that make that angle
+  (`AngleDef.dots`) with their Lost %; groups *Pull and torque* (strap and anchor, with pull angle and arm) and *Other dots*; a folded angle row rolls up its dots and shows a warning when one needs a look; a dot that needs a
+  look is tinted with a **Fix** link that opens the Fix-dots workspace on it; **More numbers** adds rest to hold, in tolerance, mean / SD / min / max and the dot shifts; an always-visible **Reference angle** button. It replaces the
+  six number cards, the Angles / Force / Dots / Reference tabs and the text panes.
+- **Right:** the Graphs chooser with **Window: MVIC markers** / **Window: force > half peak** and *Go to marker* on its row; the angle graph; the force graph (its one-line key is its title); then **"Force numbers and what they depend on"**
+  (`review_force.py`, `ForceTree`): bold rows **Peak force** (the 500 ms sliding-window peak, open by default, with the Sliding window, Smoothing and Picture delay boxes inside it, smoothed peak, peak 20 ms, time to peak ...),
+  **Above rest** (rest level, the **Zero** box, *Apply zero*, *Zero from* grey stretch / rest before the push / recorded zero, Zero 2), **Plateau mean**, **Peak torque**, **Load cell** (plus-minus, calibration, *Show the calibration graph*).
+  The settings are the same widgets as before, now inside the numbers they change. Time to peak and the other timing numbers are one click down.
+- **Bottom bar (never moves):** a **chip** "4 to look at" with a one-line preview that opens the whole list of checks in a pop-up (title, one sentence, an action button: Show dot, Set zero, Set window, Calibration); **✓ Valid (1)**,
+  **Compromised ▾** (Dots 2, Position 3, Force 4, Other 5) and *Note...* (the verdict control of the Live tab is unchanged; this is a new one-row variant with the same interface); **Next not judged**.
+- **Fix dots workspace:** the *Fix dots* button (or `F`) gives the video about two thirds of the width at full height, with a **Zoom** box (Fit, 2x, 3x, 4x) that magnifies the picture around the dot you are fixing (the last click, else where the
+  program has the dot); clicks still give the place in the whole picture. The divider can be pulled to leave only about 320 px for the tools. The bottom bar says "Fixing anchor · 2 pictures clicked, not saved · arrow keys step"
+  and has **Done (Esc)**. The workspace has a dot table (Lost, Jumps, shifts, Fixed), a timeline of jumps and lost stretches (click to go there), Hold in place, By hand and a folded Re-track; no verdict, Data switch or checks there.
+- **Keys:** Left / Right and `,` `.` one picture (Shift: ten), `1` Valid, `2` to `5` the reasons, `F` Fix dots, `Esc` leaves it, Alt+Left / Right trial, Alt+N next not judged. They do not fire while a number or a note is typed;
+  clicking the video gives it the keyboard.
+- **Sharper video:** the picture is scaled to the screen's own pixels (on a screen set to 125 or 150 % it was scaled small and stretched).
+- **Participant overview:** columns Verdict, Trial, **Time**, Pos, Test, Target, **Angle at peak**, Peak, Checks, 10 % check, **Window peak, Time to peak, Edits** (the last three at the right); **Export** and **More** are menus in the overview
+  (they left the top bar); **Approve review** records that the participant was looked through and which state of each trial's review was accepted (`review/<participant>/approval.json`, with the earlier approvals kept; it changes no number and
+  no recorded file) and says "Approved 30 Oct 17:12 - 2 trials changed since"; filter *Changed since approved*. The rows are worked out in **worker processes** (`overview_worker.py`, plain `python -m`, no multiprocessing: the launcher is
+  Start.bat) and kept in `review/<participant>/overview_cache.json`, so the first load no longer freezes the window and later loads are instant. Measured on a copy of Pilot P02 (64 trials, audit/evidence/SPEED_2026-10-31/overview_bench.py): all rows in the window's own thread 8.7 s (the longest time the window went without handling events: 0.23 s), with worker processes 4.5 s (0.29 s), the second time from the cache 0.15 s. (The earlier freeze came from the table being rebuilt for every arriving row and from the rows being worked out one after the other in the window's thread; both are changed. I could not reproduce a minute-long freeze here, so I cannot say it is gone on your laptop: tell me if the first load still stalls.)
+- **Bugs found by the new tests and fixed:** `review_layer._short` forgot how many trials an old approval had left out; an unreadable `approval.json` was replaced without a trace (now kept as `.bak`); a hand-edited overview cache with an entry
+  of the wrong shape stopped the participant from opening.
+- **Tests:** `tests/test_review_angles.py`, `test_review_force.py`, `test_review_checks.py`, `test_review_approval.py`, `test_review_bottom_bar.py`, `test_review_fixdots_ui.py`, `test_overview_worker.py`; the older Review tests read the two tables'
+  `text(everything=True)` instead of the removed text panes. **Full suite: 1562 passed, 1 skipped, 1 expected failure (a known gap of the old, now unused angle panel) in 57 minutes.**
+
+## 0.31.0 - 2026-10-31
+
+### Force and angle together on one graph with two vertical axes, and "peak (20 ms)"
+- **Why:** asked on 2026-10-31 after the noise data (PR #5): a graph with the force and the main angle together, "without affecting performance" (and, as the user pointed out, the point of limiting the graph is that the saved file reaches
+  about 30 pictures per second: graph and storage are different things).
+- **Live tab:** a new trace mode **"Main angle + force, two axes, last 15 s"** (the last entry of the Trace list, so the others keep their places): the angle on the left axis, the force on the right (`twoaxis.py`, `TwoAxisPlot`: a second view box on
+  the same time axis). The force is the same 100 ms-smoothed, thinned series the Force mode draws (about 1500 points of 15 s); nothing is saved differently. *Correction of what I first said:* the Live force trace was never the raw 15 000 points.
+- **Review:** *Graphs: Force and angle together (two axes)*; the blue analysis window can be dragged on it too.
+- **peak (20 ms):** the highest 20 ms average of the raw force, the same at any Smoothing: one mains cycle, so the 50 Hz line and every multiple of it cancel exactly (a raw single sample was a median 11 N, up to 45 N, too high in the PR #5 hum).
+  In the Force numbers, the export (`force_peak_20ms`) and the session summary.
+- **Speed of the saved file:** measured with the replay harness of 2026-10-27 (the real window, a 30 s recording, trace mode in turns; audit/evidence/SPEED_2026-10-31/). Saved pictures per second / pictures saved: Main angle 28.5 / 874 and 28.5 / 875, Force 28.4 / 870 and 28.0 / 859, **two axes 26.9 / 829 and 27.1 / 830 with one gap each**: the new graph cost the saved file about 5 % of its pictures (its redraw was 41 ms a second against 31 ms for the angle trace, plus the repaint of a second axis). So while recording, the two-axis trace now redraws every 2 s instead of every second (the other modes still every second): 27.8 / 851 and 28.0 / 859 against 27.2 / 836 for Main angle in the same series, i.e. no cost that stands out of the run-to-run spread (about 1 picture a second). The graph and the saved file are separate: nothing about the saved numbers changed.
+
+## 0.30.0 - 2026-10-31
+
+### The review layer: originals untouched, a force zero that sticks, dot fixes in post, export the original or the reviewed data
+- **Why:** asked on 2026-10-30/31: fix a dot after the trial (P02 T4 loses the anchor), put the force zero in by hand, and keep the original data safe
+  with a separate review folder and the choice to export either version. (Filtering of the force noise is **not** in this version: it waits for recordings from
+  the new room.)
+- **What the data said first (read-only look at the pilot trials):** P02 T4's anchor sits at (31.5, 633) until 6.4 s, then the tracker jumps ~80 px to the
+  dark foot of the post, is lost on and off and gone from 8.77 s; the real dot is in the footage all the time. With the anchor held at its place the peak torque
+  moves 1 % (250.3 -> 253.5 N.m); what comes back is pull and torque for 32 % of the pictures (125 -> 151 pictures in the force window).
+  Dots lost in > 2 % of the pictures: about 30 times in 128 pilot trials (anchor 7, strap 4, trochanter 4, mt5_head 4); 16 "dots moved apart" jumps.
+- **The data structure (`limbtrack/review_layer.py`):** the recorded files (`recordings/P02/`) are never written by Review. Everything Review changes or adds is in
+  `recordings/review/P02/<trial base>/`: `review.json` (the edit list: force zero, dot edits, fingerprints of the originals, an append-only history),
+  `dots_edit.csv` (per-picture positions of dots fixed by re-tracking or by hand), `verdict.json` and `reference.json` (what was judged or typed in Review; the on-site
+  verdict stays with the trial), the exports of the trial, and `review/P02/exports/` for the participant's exports. A reviewed trial is the original read through its edit
+  list: nothing is copied (the videos stay put), any edit can be reset. `review_layer.guard` refuses every write that is not under a folder called `review` or that lies next
+  to a `*_meta.json`; writes are atomic. The first test of it found that the guard's own refusal was being swallowed by a too broad `except OSError` (it is an OSError itself):
+  fixed before it was used.
+- **Original or reviewed:** a header switch **Data: Original | Reviewed** (default Reviewed) for the open trial, the overview and every export. With no fixes the two are the same and
+  the data says `original`. Exports name what they hold (`_original` / `_reviewed`) and carry `data_source`, `review_edits`, `force_zero_source`, `dots_corrected_pictures`.
+  Exports now go to the review folder (a change from 0.29.0, which saved them next to the trials). Per trial, Export on reviewed data with fixes also writes
+  `reviewed_data.csv` (every picture, dot columns / angles / pull as fixed, which dots were fixed) and `reviewed_force.csv` (every sample, newtons with the zero in use).
+  The trial list marks edited trials (`✎ edited`); the overview has an *Edits* column and an *Edited in Review* filter; *More > Open the review folder*.
+- **Force zero (B):** the Zero (V) box is a typed input; *Apply zero* saves it, *Zero = grey stretch* (a grey draggable stretch on the force graph: the mean of the recorded volts in it;
+  a note when it is not a multiple of 20 ms), *Zero = rest before the push*, *Recorded zero* (take it back). The slope is the one recorded with the trial, else the active load
+  cell regression's; it is stored with the zero so the newtons do not change if the regression is replaced later. Every number, the overview and the exports follow. New check **zero drift**
+  (the resting force before the push against the last second of the recording, flagged above 10 N) and export columns `force_zero_v`, `force_zero_source`, `force_zero_drift_n`.
+- **Fix dots (D, `dot_edits.py`, `review_fixdots.py`):** a tab. *Hold in place* (a fixed dot stays at its usual position, or where you clicked, over a time range; fixes T4 in one step),
+  *Mark lost*, *Re-track* (the program's own tracker follows the dot from the picture you clicked, backward / forward / both, until the next hand-fixed picture), *By hand*
+  (click the dot picture by picture, it steps on; a straight line between two clicks). Clicking on the video gives full-picture pixels (privacy crop respected); ◀ ▶ under the video
+  and the `,` `.` keys step one picture. Only the edited pictures change, with the recording's own functions: angles (`angles.measure`), deviation and in-tolerance flag against the
+  reference saved in the picture, the computed hip centre, pull angle and moment arm (`pull.compute_pull`), "dots apart", `all_ok`, lost %, trails, torque, displacement, the
+  overlay video (fixed dots get a magenta ring). A test shows that an edit which puts the dots where they were changes nothing (angles within 0.01 deg, pull within 0.06 px, hip centre within 0.02 px).
+  *Take back the last fix* and *Reset this dot*.
+- **Re-track is the program's tracker, not a better one.** On P02 T4 started from 1 s it follows the anchor to 6.0 s and jumps to (41.4, 711.4) exactly as in the recording (the dot's
+  picture is blurred there); started at 8 s it loses it in 185 of 363 pictures. Use *Hold* for fixed dots and *By hand* for moving ones; re-track helps where a dot was hidden and can be picked up
+  again. The status line says when more than 30 % could not be found.
+- **`tools/protect_originals.py`:** `manifest` (SHA-256 of every recorded file, in `review/<participant>/MANIFEST.sha256`, outside the participant folder), `verify` (changed / missing / new), `readonly`
+  (mark the recorded files read-only; `--writable` to undo). Keep an ordinary backup as well.
+- **Tests:** `test_review_layer.py` (10), `test_dot_edits.py` (11), `test_review_zero.py` (9), `test_originals_untouched.py` (2: a scripted Review session on a real recording leaves every file of the trial
+  byte-identical, with no new file beside it, and all output in `review/`), `test_protect_originals.py` (4); existing tests updated for the new export and side-file locations.
+- **Checked on the real pilot data:** P02 T4 on a copy: hold of the anchor through the real tab (pull and torque back for the whole hold, the "anchor lost 32 %" check gone, "wandered 0.1 px"),
+  re-track, a typed zero; the copy's recorded files identical afterwards.
+- **Not built (waits for the new-room noise recordings):** the Noise tab (spectrum at 50 / 100 / 200 / 400 Hz) and the force filter. What the pilot data says meanwhile: the raw force noise at rest
+  (SD ~10 N) is almost all 50 Hz hum (median amplitude 12.7 N; 100 / 200 / 400 Hz only 0.02-0.08 N), and a moving average that is a multiple of 20 ms removes 50 Hz and every multiple of it exactly
+  (SD ~1.2 N after 20 ms); the sliding-window peak (500 ms) is immune. Whether the new room's 100 / 200 / 400 Hz are mains harmonics is what the new recordings will show.
+
 ## 0.29.0 - 2026-10-30
 
 ### Review: a participant, then a trial from a drop-down; a participant overview; the sliding-window peak and time to peak

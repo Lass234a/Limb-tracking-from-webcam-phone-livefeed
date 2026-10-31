@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import review_layer
 from . import verdict as verdicts
 
 META_SUFFIX = "_meta.json"
@@ -45,6 +46,12 @@ class TrialEntry:
     readable: bool = True
     error: str = ""
     verdict: object = None          # verdict.VALID, verdict.COMPROMISED or None (not judged)
+    edited: bool = False            # 0.30.0: Review changed something in this trial (a zero, a dot): its review file says so
+
+    def refresh_edited(self):
+        d = review_layer.read_json(review_layer.review_json_path(self.meta_path))
+        f = d.get("force") or {}
+        self.edited = bool(f.get("zero") or f.get("filter") or d.get("dots"))
 
     @property
     def unfinished(self):
@@ -74,6 +81,8 @@ class TrialEntry:
         if self.clock:
             parts.append(self.clock)
         parts.append(f"{GLYPHS[self.verdict]} {WORDS[self.verdict]}" + (" · unfinished" if self.unfinished else ""))
+        if self.edited:
+            parts.append("✎ edited")
         return " · ".join(parts)
 
 
@@ -105,6 +114,7 @@ def read_entry(meta_path):
     e.status = meta.get("status") or ""
     e.started = _started_from_name(p.name) or str(meta.get("started_at") or "")[:19]
     e.refresh_verdict()
+    e.refresh_edited()
     return e
 
 

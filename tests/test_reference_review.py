@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from limbtrack import analysis, reference  # noqa: E402
+from limbtrack import analysis, reference, review_layer  # noqa: E402
 from limbtrack.engine import Engine  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.review import ReferenceDialog, ReferenceValidationDialog, ReviewTab, Trial  # noqa: E402
@@ -46,10 +46,11 @@ def quiet(monkeypatch):
     return shown
 
 
-def test_the_tab_is_there_between_force_and_calibration(tmp_path):
+def test_the_reference_readings_are_part_of_the_angles_panel(tmp_path):
     app = QApplication.instance() or QApplication([])
     tab = ReviewTab(tmp_path)
-    assert [tab.tabs.tabText(i) for i in range(tab.tabs.count())] == ["Check", "Angles", "Force", "Reference", "Calibration", "Dots and pull"]
+    assert not hasattr(tab, "tabs")                                         # (0.32.0: no tab of their own)
+    assert tab.angle_tree.reference_button is not None and tab.left_split.widget(1).isAncestorOf(tab.angle_tree.reference_button)   # the Reference angle button is in the angle table's header
 
 
 def test_a_trial_without_readings_says_how_to_add_one(tmp_path):
@@ -57,7 +58,7 @@ def test_a_trial_without_readings_says_how_to_add_one(tmp_path):
     meta = knee_trial(tmp_path, stamp=False)
     tab = ReviewTab(tmp_path)
     tab.load(str(meta))
-    assert "No reading for this trial" in tab.ref_text.text() and "Live tab" in tab.ref_text.text()
+    assert "No reading for this trial" in tab.angle_tree.text(everything=True) and "Live tab" in tab.angle_tree.text(everything=True)
 
 
 def test_the_tab_shows_the_typed_reading_beside_the_app_at_the_same_moment(tmp_path):
@@ -65,7 +66,7 @@ def test_the_tab_shows_the_typed_reading_beside_the_app_at_the_same_moment(tmp_p
     meta = knee_trial(tmp_path, typed={"knee": [63.0, 64.0], "hip": [90.0]})
     tab = ReviewTab(tmp_path)
     tab.load(str(meta))
-    text = tab.ref_text.text()
+    text = tab.angle_tree.text(everything=True)
     assert "Knee flexion" in text and "63.5" in text and "recorded with the trial" in text and "Goniometer (read to 1 deg)" in text
     assert reference.APP_BASIS_STAMP in text and "Moment of the reading:" in text and "error of its own" in text
     rows = {r["key"]: r for r in Trial(meta).reference_rows()}
@@ -77,7 +78,7 @@ def test_without_a_stamped_moment_the_text_says_the_first_second_stands_in(tmp_p
     meta = knee_trial(tmp_path, typed={"knee": [61.0]}, stamp=False)
     tab = ReviewTab(tmp_path)
     tab.load(str(meta))
-    assert reference.APP_BASIS_FIRST_SECOND in tab.ref_text.text() and "No moment was kept" in tab.ref_text.text()
+    assert reference.APP_BASIS_FIRST_SECOND in tab.angle_tree.text(everything=True) and "No moment was kept" in tab.angle_tree.text(everything=True)
 
 
 def test_readings_added_in_review_go_to_a_side_file_and_the_trial_files_are_untouched(tmp_path, quiet):
@@ -97,7 +98,8 @@ def test_readings_added_in_review_go_to_a_side_file_and_the_trial_files_are_unto
     assert side.exists() and json.loads(side.read_text())["readings"]["knee"]["values_deg"] == [58.5, 59.0]
     assert (meta.read_bytes(), csv_path.read_bytes()) == before
     tab.update_summary()
-    assert "added later in Review" in tab.ref_text.text() and "58.8" in tab.ref_text.text() and "Digital inclinometer" in tab.ref_text.text()
+    shown = tab.angle_tree.text(everything=True)
+    assert "added later in Review" in shown and "58.8" in shown and "Digital inclinometer" in shown
     assert Trial(meta).reference_rows()[0]["reference_deg"] == pytest.approx(58.75)               # a new load sees it
 
 
@@ -222,7 +224,7 @@ def test_the_agreement_dialog_lists_every_angle_plots_the_pairs_and_saves_the_ta
     items = dlg.plot.plotItem.items
     assert any(getattr(i, "xData", None) is not None and len(i.xData) == 3 for i in items)            # the three pairs
     dlg.save_table()
-    out = tmp_path / "reference_validation.csv"
+    out = tmp_path / "review" / "reference_validation.csv"                      # the review folder of the recordings folder (0.30.0)
     assert out.exists() and len(list(csv.DictReader(open(out, newline="")))) == 3 and quiet[-1][0] == "info"
 
 
@@ -249,11 +251,12 @@ def test_readings_that_cannot_be_saved_say_so_and_the_dialog_stays_open(tmp_path
 
     def locked(src, dst):
         raise PermissionError(13, "Permission denied", str(dst))
-    monkeypatch.setattr(reference.os, "replace", locked)
+    monkeypatch.setattr(review_layer.os, "replace", locked)
     dlg._save()
     assert quiet and quiet[-1][0] == "warning" and "could not be saved" in quiet[-1][1]
     assert dlg.result() == 0 and dlg.boxes["knee"].text() == "58"                    # not closed, what was typed is still there
-    assert not reference.sidecar_path(meta).exists() and not list(meta.parent.glob("*.tmp"))
+    side = reference.sidecar_path(meta)
+    assert not side.exists() and not list(side.parent.glob("*.tmp")) and not list(meta.parent.glob("*.tmp"))
 
 
 def test_a_box_that_cannot_be_read_is_named_in_the_message(tmp_path, quiet):

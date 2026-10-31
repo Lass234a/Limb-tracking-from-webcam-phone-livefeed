@@ -22,6 +22,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from . import review_layer
+
 VALID, COMPROMISED = "valid", "compromised"
 REASONS = {                                  # key -> what the window and the files say
     "wrong_dots": "wrong dots",
@@ -33,19 +35,32 @@ ON_SITE, IN_REVIEW = "on site (Live tab)", "Review"
 
 
 def verdict_path(meta_path):
-    """`<trial>_verdict.json` next to `<trial>_meta.json`."""
+    """`<trial>_verdict.json` next to `<trial>_meta.json`: the verdict judged on site (Live tab), written once with the trial."""
     p = Path(meta_path)
     return p.with_name(p.name[: -len("_meta.json")] + "_verdict.json")
 
 
-def read_verdict(meta_path):
-    """The verdict of a trial as a dict (verdict, reasons, note, judged_at, judged_in, history), or None when it was never judged or the
-    file cannot be read."""
+def review_verdict_path(meta_path):
+    """`verdict.json` in the trial's review layer (0.30.0): what was judged or changed in Review. Review never writes beside the trial's files."""
+    return review_layer.review_file(meta_path, "verdict.json")
+
+
+def _read_file(path):
     try:
-        data = json.loads(verdict_path(meta_path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def read_verdict(meta_path):
+    """The verdict of a trial as a dict (verdict, reasons, note, judged_at, judged_in, history), or None when it was never judged or the
+    file cannot be read. Two files can hold one: the on-site verdict beside the trial and the one made in Review (review layer). The later
+    one counts (the one with the longer `history`: each change keeps the one before it; a tie goes to Review), and its history holds the other."""
+    site, review = _read_file(verdict_path(meta_path)), _read_file(review_verdict_path(meta_path))
+    if site is None or review is None:
+        return review if site is None else site
+    return review if len(review.get("history") or []) >= len(site.get("history") or []) else site
 
 
 def check(verdict, reasons):
@@ -80,6 +95,9 @@ def write_verdict(meta_path, verdict, reasons=(), note="", where=ON_SITE):
         "meaning": "valid: the trial was completely well done (judged by the operator); compromised: not counted (session plan, 10 % "
                    "check), with the reasons; null: not judged. Earlier verdicts are in history (0.28.0).",
     }
+    if where == IN_REVIEW:                             # 0.30.0: Review writes only in the review layer
+        review_layer.write_json(review_verdict_path(meta_path), data)
+        return data
     path = verdict_path(meta_path)
     tmp = path.with_name(path.name + ".tmp")
     try:

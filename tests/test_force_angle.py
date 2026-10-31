@@ -175,9 +175,11 @@ def test_a_trial_that_has_no_picture_with_both_numbers_says_so(tmp_path):
 
 def test_showing_it_changes_no_number(tmp_path):
     tab, _ = review_with_ramp(tmp_path)
-    before = (tab.stats.text(), tab.force_text.text(), tab.check_text.toPlainText())
+    def numbers():
+        return (tab.angle_tree.text(everything=True), tab.force_tree.text(everything=True), tab.checks.text(everything=True), tab.angle_tree.text(everything=True))
+    before = numbers()
     tab.plot_view.setCurrentIndex(tab.plot_view.findData("fa"))
-    assert (tab.stats.text(), tab.force_text.text(), tab.check_text.toPlainText()) == before
+    assert numbers() == before
 
 
 def test_the_large_dots_are_the_pictures_whose_force_lies_in_the_window(tmp_path):

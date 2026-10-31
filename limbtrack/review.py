@@ -2,6 +2,7 @@
 import csv
 import json
 import math
+import os
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,16 +10,21 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QLineEdit, QMenu, QSplitter, QStackedWidget, QTabWidget, QTextEdit, QToolButton, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QLineEdit, QMenu, QSplitter, QStackedWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import overlay, privacy, reference, review_nav, session_memory
+from . import dot_edits, overlay, privacy, reference, review_layer, review_nav, session_memory
 from . import verdict as verdicts
-from .panels import VerdictBar
+from .twoaxis import TwoAxisPlot
+from .review_checks import ChecksChip
+from .review_decide import VerdictControl
+from .review_force import ForceTree
+from .review_angles import AngleDotTree
+from .review_fixdots import FixDotsPane
 from .review_overview import OverviewPage
-from .review_style import MetricCard, build_stylesheet
+from .review_style import ElidedLabel, build_stylesheet
 from .displacement import window_displacements
 from . import analysis
 from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, WINDOW_PEAK_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
@@ -28,14 +34,16 @@ from .angles import measure, segment_pairs
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
-from .engine import TRAIL_MIN_STEP_PX
+from .engine import SOFTWARE_VERSION, TRAIL_MIN_STEP_PX
 from .tracker import WEAK_BELOW
 
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
 CURSOR_COLOUR = "#ffd43b"        # the line that follows the video position: it was black on the black plot background until 0.14.0
 EVENT_GREY = (190, 190, 190)     # MVIC start/end and other markers (was dark grey (90, 90, 90), hard to see on black)
-DEFAULT_TOP_SPLIT = [400, 600]   # video and controls : graphs (the graphs get the larger part)
-DEFAULT_MAIN_SPLIT = [620, 380]  # video and graphs : the number tabs
+DEFAULT_TOP_SPLIT = [450, 550]   # the trial (video, key numbers, number panels) : the signal (checks, graphs, controls)
+DEFAULT_MAIN_SPLIT = [560, 380]  # video and its controls : the table of angles and their dots under it
+RIGHT_LEAST_WIDTH, FIX_LEAST_WIDTH = 460, 320   # the narrowest the graphs side and the dot tools may be made by the divider
+FIX_TOP_SPLIT = [700, 300]       # while the dots are fixed: the video gets about 70 %, the dot tools the rest
 
 
 def _f(s):
@@ -80,6 +88,9 @@ def read_force_csv(path):
     return column("t_s"), column("volts"), column("newtons")
 
 
+PEAK_20MS_S = 0.02         # 0.31.0: 'peak (20 ms)': the highest 20 ms average of the raw force, the same at any Smoothing: one mains cycle, so the
+                           # 50 Hz line and every multiple of it (100, 200, 400 Hz ...) cancel exactly. The nearest thing to 'the highest single sample' that
+                           # hum does not decide (a raw single sample is median 11 N, up to 45 N, too high in the 30 Oct hum: LoadCellCalibration/noise, PR 5)
 PLATEAU_TRIM = 0.2         # the plateau of a hold is its middle part: the first and last 20 % of the window are left out
 REST_SECONDS = 1.0         # without a clear push in the force: "rest" is the second before the window starts
 REST_MIN_FRAMES = 5
@@ -97,10 +108,19 @@ REST_UNSTEADY_FRACTION = 0.10   # a rest whose spread (SD) is more than this sha
 class Trial:
     """A recorded trial loaded from disk."""
 
-    def __init__(self, meta_path, open_video=True):
-        """`open_video` False: for numbers only (the participant overview and the exports of 0.29.0); no video is opened, `frame` gives None."""
+    def __init__(self, meta_path, open_video=True, source="original"):
+        """`open_video` False: for numbers only (the participant overview and the exports of 0.29.0); no video is opened, `frame` gives None.
+        `source` (0.30.0): 'original' reads the recorded numbers as they are; 'reviewed' reads them through the trial's edit list in the
+        review layer (limbtrack/review_layer.py): the force zero typed or taken in Review and the dot fixes. The files on disk are never changed
+        either way: the edits are applied to the copy of the numbers held here."""
         meta_path = Path(meta_path)
         self.meta_path = meta_path
+        self.source = source if source in ("original", "reviewed") else "original"
+        self.review = None                                               # review_layer.Review in reviewed mode
+        self.edited = {}                                                 # {dot: [picture numbers]} whose position was fixed in Review
+        self.edited_sets = {}                                            # the same as sets (to ask 'was this picture fixed?')
+        self.zero_edit = None                                            # the force zero set in Review (a dict), or None
+        self.review_notes = []                                           # plain lines about what the review changed
         self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
         self.reference_side = reference.read_sidecar(meta_path)        # reference readings added or changed later in Review (never in meta.json)
         self._reference_rows = None                                      # (worked out on first use, see reference_rows)
@@ -135,21 +155,7 @@ class Trial:
         self.ruler_cm = (self.meta.get("scale") or {}).get("ruler_length_cm")
         self.pull = ({c: np.array([_f(r[c]) for r in self.rows]) for c in PULL_COLUMNS} if PULL_COLUMNS[0] in self.rows[0] else None)
         # trails: per dot, segments of (frame index array, xy array); a lost dot ends a segment (as when recording)
-        self.trail_segments = {}
-        for n in self.dot_names:
-            segs, cur = [], None
-            for i, r in enumerate(self.rows):
-                if r[f"{n}_x"] == "" or r[f"{n}_lost"] == "1":
-                    cur = None
-                    continue
-                x, y = _f(r[f"{n}_x"]), _f(r[f"{n}_y"])
-                if cur is None:
-                    cur = ([i], [(x, y)])
-                    segs.append(cur)
-                elif (x - cur[1][-1][0]) ** 2 + (y - cur[1][-1][1]) ** 2 >= TRAIL_MIN_STEP_PX ** 2:
-                    cur[0].append(i)
-                    cur[1].append((x, y))
-            self.trail_segments[n] = [(np.array(a), np.array(b)) for a, b in segs]
+        self.trail_segments = {n: self.build_trail(n) for n in self.dot_names}
         # PARKED-GHOST: self.ghost = self.meta.get("locked_positions_px")
         # PARKED-GHOST: self.ghost_anchor = self.meta.get("ghost_anchor")
         self.cap = cv2.VideoCapture(str(folder / self.meta["files"]["raw.mp4"])) if open_video else None
@@ -171,6 +177,72 @@ class Trial:
         pv = self.meta.get("privacy") or {}        # a cropped video is put back at its place on a black full-size picture
         self.crop = tuple(pv["crop_xywh"]) if pv.get("crop_xywh") else None
         self.full_size = tuple(pv["full_picture_size"]) if pv.get("full_picture_size") else None
+        self._cal_recorded = dict(self.force_cal) if self.force_cal else None      # what was recorded, kept when a zero is set in Review
+        if self.source == "reviewed":
+            self.apply_review(review_layer.Review.load(meta_path))
+
+    def build_trail(self, n):
+        """Segments of (picture numbers, positions) of dot `n` from the rows as they are now; a lost dot ends a segment (as when recording)."""
+        segs, cur = [], None
+        for i, r in enumerate(self.rows):
+            if r[f"{n}_x"] == "" or r[f"{n}_lost"] == "1":
+                cur = None
+                continue
+            x, y = _f(r[f"{n}_x"]), _f(r[f"{n}_y"])
+            if cur is None:
+                cur = ([i], [(x, y)])
+                segs.append(cur)
+            elif (x - cur[1][-1][0]) ** 2 + (y - cur[1][-1][1]) ** 2 >= TRAIL_MIN_STEP_PX ** 2:
+                cur[0].append(i)
+                cur[1].append((x, y))
+        return [(np.array(a), np.array(b)) for a, b in segs]
+
+    # ------------------------------------------------------------------ the review layer (0.30.0)
+    def apply_review(self, review):
+        """Read the trial through `review` (a review_layer.Review): the force zero first (the newtons everything else uses), then the dot fixes.
+        Only the copy of the numbers in this object changes."""
+        self.review = review
+        problems = []
+        z = review.zero
+        if z and self.has_force():
+            problem = self._apply_zero_edit(z)
+            if problem:
+                problems.append(problem)
+        if review.dots:
+            res = dot_edits.apply(self, review)
+            problems += [f"dot {n}: not a dot of this trial, the edit is ignored" for n in res["skipped"]]
+        if review.exists():
+            changed = review.originals_changed()
+            if changed:
+                problems.append("WARNING: the original file(s) changed after this review was made: " + ", ".join(changed))
+        self.edited_sets = {d: set(v) for d, v in self.edited.items()}
+        self.review_notes = review.summary_lines() + problems
+        if not review.has_edits():
+            self.source = "original"                                     # nothing was changed: this is the recorded trial, and says so
+
+    def _apply_zero_edit(self, z):
+        """Newtons from the recorded volts with the zero set in Review. Returns a sentence when it could not be applied, else None."""
+        n_per_v = z.get("n_per_v")
+        if not n_per_v:
+            return "The force zero edit has no slope: the force stays as recorded."
+        cal = ForceCalibration(n_per_v=float(n_per_v), method=f"slope {z.get('from', 'recorded')}" + (f" ({z['regression_id']})" if z.get("regression_id") else ""),
+                               regression_id=z.get("regression_id") or "", zero_set=False)
+        cal.set_zero(float(z["zero_v"]))
+        self.apply_calibration(cal, f"applied later: zero set in Review ({z.get('source')}) {z['zero_v']:+.4f} V; slope {z.get('from', 'recorded')}"
+                                    + (f", regression {z['regression_id']}" if z.get("regression_id") else ""))
+        self.zero_edit = dict(z)
+        return None
+
+    def slope_for_zero(self):
+        """The slope a zero set in Review is combined with: the one recorded with the trial, else the active load cell regression's, else None
+        (no newtons can be given). {'n_per_v', 'regression_id', 'from'}."""
+        rec = self._cal_recorded or {}
+        if rec.get("n_per_v"):
+            return {"n_per_v": float(rec["n_per_v"]), "regression_id": rec.get("regression_id") or "", "from": "recorded"}
+        reg = active_regression()
+        if reg is not None:
+            return {"n_per_v": float(reg.n_per_v), "regression_id": reg.id, "from": "active"}
+        return None
 
     @property
     def primary_angle(self):
@@ -270,7 +342,11 @@ class Trial:
         # PARKED-GHOST: if self.ghost and r["locked"] == "1":
             # PARKED-GHOST: live = {k: (d.x, d.y) for k, d in dots.items() if not d.lost}
             # PARKED-GHOST: ghost = anchored_ghost({k: tuple(v) for k, v in self.ghost.items()}, live, self.ghost_anchor)
-        return overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None, scale=self.scale_overlay(), derived=derived)
+        img = overlay.draw(img, dots, angles, [head], trails=self.trails_upto(i) if trails else None, scale=self.scale_overlay(), derived=derived)
+        for d, frames in self.edited_sets.items():              # a magenta ring round a dot whose position was fixed in Review (screen and overlay video)
+            if i in frames and d in dots and not dots[d].lost and not (math.isnan(dots[d].x) or math.isnan(dots[d].y)):
+                cv2.circle(img, (int(round(dots[d].x)), int(round(dots[d].y))), 17, (255, 0, 255), 2, cv2.LINE_AA)
+        return img
         # PARKED-GHOST: # with the ghost: overlay.draw(img, dots, angles, [head], ghost=ghost, ghost_segments=segment_pairs(self.angle_defs), trails=...)
 
     def apply_calibration(self, cal, note):
@@ -282,11 +358,33 @@ class Trial:
     def recorded_zero_v(self):
         """(zero volts, where it came from): the zero the operator took for this trial, else the resting level of the recording
         (the 2nd percentile of the 100 ms smoothed signal: the strap at rest, before and after the pull)."""
-        c = self.force_cal or {}
+        c = self._cal_recorded or {}                      # (what was recorded: a zero set in Review does not replace it)
         if c.get("zero_set", True) and c.get("zero_v") is not None:
             return float(c["zero_v"]), "the zero taken when this trial was recorded"
         rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
         return float(np.percentile(smooth_signal(self.force_v, rate, 0.1), 2)), "the resting level of the recording (no zero was taken)"
+
+    def current_zero_v(self):
+        """(zero volts, where it came from) as the numbers now use it: the zero set in Review if there is one, else the recorded one."""
+        if self.zero_edit:
+            return float(self.zero_edit["zero_v"]), f"the zero set in Review ({self.zero_edit.get('source')})"
+        return self.recorded_zero_v()
+
+    def zero_source(self):
+        """'typed', 'stretch', 'rest' (set in Review), 'recorded' (taken when the trial was recorded), 'resting level' (none was taken) or 'none' (no force)."""
+        if not self.has_force():
+            return "none"
+        if self.zero_edit:
+            return str(self.zero_edit.get("source") or "typed")
+        c = self._cal_recorded or {}
+        return "recorded" if c.get("zero_set", True) and c.get("zero_v") is not None else "resting level"
+
+    def raw_volts_mean(self, t0, t1):
+        """Mean of the raw volts in [t0, t1] seconds, or NaN (used to take a zero from a stretch of the recording)."""
+        if not self.has_force():
+            return math.nan
+        m = (self.force_t >= min(t0, t1)) & (self.force_t <= max(t0, t1)) & np.isfinite(self.force_v)
+        return float(np.mean(self.force_v[m])) if m.any() else math.nan
 
     def relaxed_level(self, unit):
         """(level in `unit`, note): the relaxed level the operator took with Zero 2 (0.22.0), as the force reads it, or (NaN, note) when
@@ -426,6 +524,8 @@ class Trial:
             rest_s, rest_note = (float(rm.sum()) / (1.0 / float(np.median(np.diff(self.force_t)))) if rm.any() and len(self.force_t) > 2 else 0.0), ""
             rest_basis = "mean of the second before the window (no clear push)"
         raw = self.force_n if unit == "N" else self.force_v
+        rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
+        y20 = smooth_signal(raw, rate, PEAK_20MS_S)                            # 0.31.0: the highest 20 ms average, whatever the Smoothing box says
         main = self.main_angle
         angle = math.nan
         if main is not None:
@@ -448,6 +548,7 @@ class Trial:
                 "peak_minus_relaxed": float(yw[k]) - relaxed if not math.isnan(relaxed) else math.nan,
                 "rest_minus_relaxed": rest - relaxed if not (math.isnan(rest) or math.isnan(relaxed)) else math.nan,
                 "raw_peak": float(np.nanmax(raw[m])), "smoothing_s": self.force_smooth_s,
+                "peak_20ms": float(np.nanmax(y20[m])) if np.isfinite(y20[m]).any() else math.nan,
                 "mains_hum_v": hum, "mains_hum_pct_of_peak": hum_pct,
                 "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle, "picture_delay_s": picture_delay,
                 "samples_in_window": int(m.sum())}
@@ -588,11 +689,12 @@ def after_trial_check(meta_path):
             "trial": meta_path.name[: -len("_meta.json")]}
 
 
-def trial_row(meta_path, smooth_s=SMOOTH_DEFAULT_S, window_s=WINDOW_PEAK_DEFAULT_S):
+def trial_row(meta_path, smooth_s=SMOOTH_DEFAULT_S, window_s=WINDOW_PEAK_DEFAULT_S, source="original"):
     """The export row of one trial (analysis.session_row), worked out without opening its video: `(row, "")`, or `(None, why)` when the
-    trial cannot be read. Safe to run off the window's thread (it only reads files). The overview and the exports use it."""
+    trial cannot be read. `source`: 'original' (as recorded) or 'reviewed' (read through the edits made in Review). Safe to run off the
+    window's thread (it only reads files). The overview and the exports use it."""
     try:
-        tr = Trial(meta_path, open_video=False)
+        tr = Trial(meta_path, open_video=False, source=source)
     except Exception as e:  # noqa: BLE001 - named on the trial's line, not hidden
         return None, f"{type(e).__name__}: {e}"
     try:
@@ -670,11 +772,14 @@ class _CalibrationPane(QWidget):
             w.setLabel("left", left)
         self.res.setLabel("bottom", "Mass on the cell (kg)")
         self.text = _TextPane(wrap=True)
-        lay = QHBoxLayout(self)          # side by side: this tab now sits in a wide, short strip under the graphs
+        self.text.setMaximumHeight(190)
+        lay = QVBoxLayout(self)          # since 0.32.0 a graph view in the graph area: the two plots side by side, the words under them
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.fit, 2)
-        lay.addWidget(self.res, 2)
-        lay.addWidget(self.text, 3)
+        plots = QHBoxLayout()
+        plots.addWidget(self.fit, 1)
+        plots.addWidget(self.res, 1)
+        lay.addLayout(plots, 1)
+        lay.addWidget(self.text)
 
     def show_regression(self, reg, lines, marks_kg=()):
         """reg: a Regression or None; lines: the text under the plots; marks_kg: [(kg, label)] of this trial (peak, plateau) as vertical lines."""
@@ -702,6 +807,42 @@ class _CalibrationPane(QWidget):
                 w.addItem(pg.InfiniteLine(pos=k, angle=90, pen=pg.mkPen("#e03131", width=2, style=Qt.DashLine),
                                           label=label, labelOpts={"position": 0.9, "color": "#e03131"}))
         self.res.setXLink(self.fit)
+
+
+class _VideoLabel(QLabel):
+    """The picture of the trial. A click gives the place in full-picture pixels (the picture is shown scaled and centred in the label), so
+    a dot can be put right on the video (0.30.0, Fix dots). Since 0.32.0 the picture is scaled to the screen's own pixels (on a screen set to
+    125 or 150 % it was scaled small and stretched, so blurry), and a click takes the keyboard, so the picture keys work after it."""
+    clicked = Signal(float, float)
+
+    def __init__(self):
+        super().__init__()
+        self.picture_size = None                          # (width, height) of the picture last shown, in pixels
+        self.view_rect = None                             # (x, y, w, h) of the part of the picture on show when it is magnified, else None (all of it)
+        self.setFocusPolicy(Qt.ClickFocus)
+
+    def show_picture(self, pm):
+        """Show a pixmap made from the picture, scaled to fit this label as large as it goes, in physical pixels."""
+        dpr = self.devicePixelRatioF()
+        out = pm.scaled(int(self.width() * dpr), int(self.height() * dpr), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        out.setDevicePixelRatio(dpr)
+        self.setPixmap(out)
+
+    def mousePressEvent(self, e):
+        pm = self.pixmap()
+        if e.button() == Qt.LeftButton and self.picture_size and pm is not None and not pm.isNull():
+            w, h = self.picture_size
+            shown = pm.deviceIndependentSize()           # (logical size: the same as the pixmap's own on a screen at 100 %)
+            off_x, off_y = (self.width() - shown.width()) / 2.0, (self.height() - shown.height()) / 2.0
+            px, py = e.position().x() - off_x, e.position().y() - off_y
+            if 0 <= px < shown.width() and 0 <= py < shown.height():
+                if self.view_rect is not None:                 # (magnified: the shown part is a window onto the picture)
+                    vx, vy, vw, vh = self.view_rect
+                    self.clicked.emit(vx + px * vw / shown.width(), vy + py * vh / shown.height())
+                else:
+                    self.clicked.emit(px * w / shown.width(), py * h / shown.height())
+                return
+        super().mousePressEvent(e)
 
 
 class _NoWheelSpin(QDoubleSpinBox):
@@ -835,14 +976,16 @@ class ReferenceValidationDialog(QDialog):
                 self.plot.addLine(y=v, pen=pg.mkPen("#ff922b", width=1.5, style=Qt.DashLine))
 
     def save_table(self):
+        target = self.folder / review_layer.REVIEW_FOLDER / "reference_validation.csv"        # (0.30.0: the review folder of the recordings folder)
         try:
-            out = reference.write_csv(self.rows, self.folder / "reference_validation.csv")
+            review_layer.guard(target).parent.mkdir(parents=True, exist_ok=True)
+            out = reference.write_csv(self.rows, target)
         except OSError as e:                              # most often: the file is open in Excel, which locks it on Windows
-            QMessageBox.warning(self, "Not saved", f"reference_validation.csv could not be written in {self.folder}:\n{e}\n\n"
+            QMessageBox.warning(self, "Not saved", f"reference_validation.csv could not be written in {target.parent}:\n{e}\n\n"
                                 "If the file is open in Excel or another program, close it and press Save again. "
                                 "The file on disk is still the earlier one.")
             return
-        QMessageBox.information(self, "Saved", f"Saved {out.name} in {self.folder}: {len(self.rows)} readings.")
+        QMessageBox.information(self, "Saved", f"Saved {out.name} in {target.parent}: {len(self.rows)} readings.")
 
 
 class ReviewTab(QWidget):
@@ -890,15 +1033,38 @@ class ReviewTab(QWidget):
         self.btn_view_trial.clicked.connect(lambda: self.show_view("trial"))
         self.btn_view_overview.clicked.connect(lambda: self.show_view("overview"))
         self.btn_view_overview.setToolTip("One line per trial of this participant: verdict, force numbers, checks. Sort, filter and export.")
+        # the data every number, graph and export reads (0.30.0): the recorded trial, or the recorded trial read through the edits made in Review
+        self._source = "reviewed"
+        self.btn_data_original, self.btn_data_reviewed = QPushButton("Original"), QPushButton("Reviewed")
+        self.btn_data_original.setObjectName("segLeft")
+        self.btn_data_reviewed.setObjectName("segRight")
+        self.btn_data_original.setToolTip("The trial exactly as it was recorded. Everything on screen and every export uses it.")
+        self.btn_data_reviewed.setToolTip("The trial read through the fixes made in Review (force zero, dot positions). The recorded files are never "
+                                          "changed; with no fixes this is the same as Original.")
+        data_group = QButtonGroup(self)
+        for b in (self.btn_data_original, self.btn_data_reviewed):
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            data_group.addButton(b)
+        self.btn_data_reviewed.setChecked(True)
+        self.btn_data_original.clicked.connect(lambda: self.set_source("original"))
+        self.btn_data_reviewed.clicked.connect(lambda: self.set_source("reviewed"))
         self.act_export_all = QAction("All trials of this participant (CSV)", self)
         self.act_export_all.setToolTip("One row per trial (verdict, force peak, sliding-window peak, time to peak, plateau, the angle at the peak, "
-                                       "torque if possible, checks) and whether two trials of the same position differ by more than 10 %. Saved as "
-                                       "<participant>_session_summary.csv in the participant's folder.")
+                                       "torque if possible, checks) and whether two trials of the same position differ by more than 10 %. Uses the data "
+                                       "chosen under Data (Original or Reviewed). Saved in the review folder, in exports, as "
+                                       "<participant>_session_summary_<original or reviewed>.csv.")
         self.act_export_valid = QAction("Valid trials only (CSV)", self)
-        self.act_export_valid.setToolTip("The same, with only the trials you marked valid. Saved as <participant>_session_summary_valid.csv.")
+        self.act_export_valid.setToolTip("The same, with only the trials you marked valid. Saved as <participant>_session_summary_<...>_valid.csv.")
         self.act_export_trial = QAction("This trial: summary CSV", self)
+        self.act_export_trial.setToolTip("Summary of the open trial (and its dot movement) for the data chosen under Data, in the trial's review folder. "
+                                         "For Reviewed data with fixes it also writes reviewed_data.csv and reviewed_force.csv: the edited numbers for other software.")
         self.act_export_video = QAction("This trial: overlay video", self)
-        self.act_export_video.setToolTip("Draws the angles and trails on every frame and saves a video (for sharing or a presentation).")
+        self.act_export_video.setToolTip("Draws the angles and trails on every frame and saves a video (for sharing or a presentation). "
+                                         "Dots you fixed are drawn where you put them.")
+        self.act_open_review = QAction("Open the review folder", self)
+        self.act_open_review.setToolTip("Where everything Review saves is kept: fixes, verdicts, reference readings and exports. The recorded files are not in it.")
+        self.act_open_review.triggered.connect(self.open_review_folder)
         self.act_refval = QAction("Reference validation...", self)
         self.act_refval.setToolTip("How far the app's angles are from the goniometer or inclinometer readings, over all trials in the recordings "
                                    "folder (average difference, spread, an agreement plot, and a table to save).")
@@ -909,36 +1075,63 @@ class ReviewTab(QWidget):
         self.act_export_video.triggered.connect(self.export_overlay_video)
         self.act_refval.triggered.connect(self.show_reference_validation)
         self.act_open_file.triggered.connect(self.open_dialog)
-        self.btn_export = QToolButton()
-        self.btn_export.setText("Export")
-        self.btn_export.setPopupMode(QToolButton.InstantPopup)
-        export_menu = QMenu(self.btn_export)
+        # Export and More are in the participant overview since 0.32.0 (the menus are built here, the overview shows them)
+        self.export_menu = QMenu(self)
         for a in (self.act_export_all, self.act_export_valid):
-            export_menu.addAction(a)
-        export_menu.addSeparator()
+            self.export_menu.addAction(a)
+        self.export_menu.addSeparator()
         for a in (self.act_export_trial, self.act_export_video):
-            export_menu.addAction(a)
-        export_menu.setToolTipsVisible(True)
-        self.btn_export.setMenu(export_menu)
-        self.btn_more = QToolButton()
-        self.btn_more.setText("More")
-        self.btn_more.setPopupMode(QToolButton.InstantPopup)
-        more_menu = QMenu(self.btn_more)
-        more_menu.setToolTipsVisible(True)
-        more_menu.addAction(self.act_refval)
-        more_menu.addAction(self.act_open_file)
-        self.btn_more.setMenu(more_menu)
-        self.title = QLabel("Choose a participant, then a trial.")
+            self.export_menu.addAction(a)
+        self.export_menu.setToolTipsVisible(True)
+        self.more_menu = QMenu(self)
+        self.more_menu.setToolTipsVisible(True)
+        self.more_menu.addAction(self.act_open_review)
+        self.more_menu.addAction(self.act_refval)
+        self.more_menu.addAction(self.act_open_file)
+        self.title = ElidedLabel("Choose a participant, then a trial.")
         self.title.setObjectName("trialSubtitle")
-        self.title.setWordWrap(True)
+        self.btn_fix = QPushButton("Fix dots")                  # opens the Fix dots workspace over the video (0.32.0)
+        self.btn_fix.setObjectName("fixToggle")
+        self.btn_fix.setCheckable(True)
+        self.btn_fix.setFocusPolicy(Qt.NoFocus)
+        self.btn_fix.setToolTip("Put a dot right after the trial: the video grows and the dot tools take the right side. Press again, or Esc, to go back.")
+        self.btn_fix.setEnabled(False)
+        self.btn_fix.clicked.connect(lambda on: self.set_fix_mode(on))
         self.btn_play = QPushButton("Play")
         self.btn_play.setCheckable(True)
         self.btn_play.clicked.connect(self.toggle_play)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.valueChanged.connect(self.show_frame)
+        self.btn_step_back, self.btn_step_fwd = QPushButton("◀"), QPushButton("▶")                  # one picture at a time (arrow keys, and , and .)
+        for b, tip in ((self.btn_step_back, "One picture back (Left arrow or ,)"), (self.btn_step_fwd, "One picture on (Right arrow or .)")):
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setFixedSize(30, self.btn_play.sizeHint().height())
+        self.btn_step_back.clicked.connect(lambda: self.step_picture(-1))
+        self.btn_step_fwd.clicked.connect(lambda: self.step_picture(1))
+        self.frame_label = QLabel("")                           # which picture is on screen, for going through them one by one
+        self.frame_label.setObjectName("hint")
+        self.frame_label.setMinimumWidth(190)
+        self.frame_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.nav_label = QLabel("")                             # where in the list the open trial is: '12 of 64 · 20 left'
+        self.nav_label.setObjectName("hint")
+        self.showing_label = QLabel("Showing")                  # the Data switch is in the header: it changes every number and graph
+        self.showing_label.setObjectName("hint")
+        self.edits_label = QLabel("")                           # '✎ 2 fixes' when the trial has fixes made in Review
+        self.edits_label.setObjectName("hint")
+        self.zoom_label = QLabel("Zoom")                        # only while dots are fixed (0.32.0)
+        self.zoom_combo = QComboBox()
+        for text, factor in (("Fit", 1.0), ("2x", 2.0), ("3x", 3.0), ("4x", 4.0)):
+            self.zoom_combo.addItem(text, factor)
+        self.zoom_combo.setFocusPolicy(Qt.NoFocus)
+        self.zoom_combo.setToolTip("Magnify the picture around the dot you are fixing. Clicks still give the dot's place in the whole picture.")
+        self.zoom_combo.currentIndexChanged.connect(lambda _: self.trial is not None and self.show_frame(self.slider.value()))
+        self.zoom_label.setVisible(False)
+        self.zoom_combo.setVisible(False)
 
-        self.video = QLabel()
-        self.video.setMinimumSize(480, 270)
+        self.video = _VideoLabel()
+        self.video.clicked.connect(self._video_clicked)
+        self.video.setMinimumSize(320, 180)
         self.video.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)      # the picture is scaled to the label, not the label to the picture: the dividers can shrink it
         self.video.setAlignment(Qt.AlignCenter)
         self.video.setStyleSheet("background: black;")
@@ -953,6 +1146,7 @@ class ReviewTab(QWidget):
         self.force_plot.getAxis("left").enableAutoSIPrefix(False)
         self.force_plot.showGrid(x=True, y=True, alpha=0.25)
         self.force_plot.setXLink(self.plot)
+        self.force_plot.setTitle("Blue band = analysis window (drag its edges) · yellow bar = sliding-window peak · grey stretch = where the zero is taken", size="8pt")
         self.force_plot.setVisible(False)
         self.plot.setLabel("bottom", "Time (s)")
         # the same recording as force against angle: how far the joint moved while the force rose (slack, stretch, the position slipping)
@@ -974,9 +1168,13 @@ class ReviewTab(QWidget):
         self.plot_view = QComboBox()
         self.plot_view.addItem("Graphs against time", "time")
         self.plot_view.addItem("Force against angle", "fa")
+        self.plot_view.addItem("Force and angle together (two axes)", "both")
+        self.plot_view.addItem("Load-cell calibration", "calib")
         self.plot_view.setToolTip("Force against angle draws the joint's angle on one axis and the force on the other, picture by picture, "
                                   "from purple (the start of the trial) to yellow (the end). It shows how far the joint moved while the force "
-                                  "rose. Needs a trial with force.")
+                                  "rose. Force and angle together draws both against time in one graph: the angle on the left axis, the force "
+                                  "(smoothed as the Smoothing box says) on the right. Load-cell calibration shows the line the newtons come from, "
+                                  "with this trial's peak and plateau on it. These need a trial with force.")
         self.plot_view.currentIndexChanged.connect(lambda _: self._apply_plot_view())
         self.plot_view.setEnabled(False)
         self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
@@ -987,37 +1185,53 @@ class ReviewTab(QWidget):
         for line in self.window_peak_mark.lines:
             line.setPen(pg.mkPen(CURSOR_COLOUR, width=1))
         self.window_peak_mark.setZValue(5)
+        self.zero_region = pg.LinearRegionItem(brush=(150, 150, 150, 70), movable=True)               # where the zero is taken from (0.30.0)
+        for line in self.zero_region.lines:
+            line.setPen(pg.mkPen((170, 170, 170), width=1, style=Qt.DashLine))
+        self.zero_region.setZValue(4)
         self.window.sigRegionChanged.connect(self._mirror_window)
         self.window.sigRegionChanged.connect(self.update_summary)
+        # force and angle together, one graph with two vertical axes (0.31.0): the angle on the left, the force (smoothed as the Smoothing box says)
+        # on the right, on the same time axis as the other graphs. Its window is movable too and moves the same window.
+        self.both_plot = TwoAxisPlot()
+        self.both_plot.setLabel("left", "Angle (deg)")
+        self.both_plot.setLabel("bottom", "Time (s)")
+        self.both_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.both_plot.getAxis("left").enableAutoSIPrefix(False)
+        self.both_plot.addLegend(offset=(10, 5))
+        self.both_plot.use_right(True)
+        self.both_plot.setXLink(self.plot)
+        self.both_plot.setVisible(False)
+        self.both_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
+        self.window_both = pg.LinearRegionItem(brush=(30, 120, 220, 40))
+        self.window_peak_both = pg.LinearRegionItem(brush=(255, 212, 59, 110), movable=False)
+        for line in self.window_peak_both.lines:
+            line.setPen(pg.mkPen(CURSOR_COLOUR, width=1))
+        self.window_peak_both.setZValue(5)
+        self.window_both.sigRegionChanged.connect(self._both_window_moved)
+        self._both_items = []                              # the curves in the left and right view boxes (made again when the trial or the smoothing changes)
+        self._both_right_items = []
         self.chk_trails = QCheckBox("Show trails")
         self.chk_trails.setChecked(True)
         self.chk_trails.toggled.connect(lambda _: self.show_frame(self.slider.value()))
         self.event_combo = QComboBox()
+        self.event_combo.setPlaceholderText("Go to marker")
         self.event_combo.activated.connect(self.jump_to_event)
-        self.btn_hold = QPushButton("Window = MVIC start to end")
+        self.btn_hold = QPushButton("Window: MVIC markers")
         self.btn_hold.clicked.connect(self.snap_window)
 
-        # the numbers, one tab each
-        self.check_text, self.stats, self.force_text, self.disp = _TextPane(wrap=True), _TextPane(), _TextPane(wrap=True), _TextPane()
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self.check_text, "Check")
-        self.tabs.addTab(self.stats, "Angles")
-        self.tabs.addTab(self.force_text, "Force")
-        self.ref_text = _TextPane(wrap=False)                  # what a person read off a goniometer or inclinometer, beside the app's angle
-        self.btn_ref_edit = QPushButton("Add or change the reference readings...")
-        self.btn_ref_edit.setToolTip("Type what a goniometer or an inclinometer said for this trial. Saved in a small file next to the trial; "
-                                     "the trial's own files are never rewritten.")
-        self.btn_ref_edit.clicked.connect(self.edit_reference)
-        ref_pane = QWidget()
-        rpl = QVBoxLayout(ref_pane)
-        rpl.setContentsMargins(0, 0, 0, 0)
-        rpl.addWidget(self.btn_ref_edit, 0, Qt.AlignLeft)
-        rpl.addWidget(self.ref_text, 1)
-        self.tabs.addTab(ref_pane, "Reference")
-        self.calib = _CalibrationPane()
-        self.tabs.addTab(self.calib, "Calibration")
-        self.tabs.addTab(self.disp, "Dots and pull")
-        self.tabs.setMinimumHeight(170)       # the tabs sit in a wide strip under the graphs (0.14.0)
+        # The checks, always in view above the graphs (0.32.0: they were the first of seven tabs, so the operator had to click back to see them),
+        # and the numbers as panels under the video: Angles, Force and Dots. The reference readings are part of Angles, the calibration is a graph
+        # view (Graphs: Load-cell calibration), and Fix dots is a workspace of its own (the Fix dots button).
+        self.checks = ChecksChip()                             # the chip in the bottom bar; its pop-up holds the whole list
+        self.checks.actionRequested.connect(self._check_action)
+        self.angle_tree = AngleDotTree()                       # every angle with the dots that make it (the reference reading button is in its header)
+        self.angle_tree.fixDotRequested.connect(lambda dot: self.set_fix_mode(True, dot=dot))
+        self.angle_tree.referenceRequested.connect(self.edit_reference)
+        self.calib = _CalibrationPane()                       # a graph view now: the line the newtons come from, with this trial's peak on it
+        self.calib.setVisible(False)
+        self._fix_mode = False                                 # (before the pane: it reports to the tab while it is being made)
+        self.fix_dots = FixDotsPane(self)                     # put a dot right after the trial (0.30.0); a workspace since 0.32.0
 
         # force settings (shown only for a trial with force)
         self.picture_delay = _NoWheelSpin()
@@ -1034,12 +1248,26 @@ class ReviewTab(QWidget):
         self.zero_spin.setDecimals(4)
         self.zero_spin.setSingleStep(0.001)
         self.zero_spin.setSuffix(" V")
-        self.zero_spin.setToolTip("The voltage that counts as 0 N for this trial. It starts as the zero taken when the trial was recorded (or the "
-                                  "resting level of the recording if none was taken). Change it if the zero was wrong.")
-        self.btn_apply_cal = QPushButton("Recalculate newtons")
-        self.btn_apply_cal.setToolTip("Computes newtons from the recorded volts with this zero and the ACTIVE load cell regression (also for a "
-                                      "regression made after the recording). The volts in the files are never changed.")
+        self.zero_spin.setToolTip("The voltage that counts as 0 N for this trial. Type it, or take it from the graph with the buttons next to it. It starts as "
+                                  "the zero in use (the one set in Review, else the one taken when the trial was recorded, or the resting level of the "
+                                  "recording if none was taken). Nothing changes until you press Apply zero.")
+        self.btn_apply_cal = QPushButton("Apply zero")
+        self.btn_apply_cal.setToolTip("Use this zero for the trial. Newtons are worked out from the recorded volts with this zero and the slope recorded with the trial "
+                                      "(the active load cell regression if none was recorded). Saved in the review folder, so every number and export follows; "
+                                      "the volts in the recorded files are never changed.")
         self.btn_apply_cal.clicked.connect(self.apply_force_calibration)
+        self.btn_zero_stretch = QPushButton("Zero = grey stretch")
+        self.btn_zero_stretch.setToolTip("Drag the grey stretch on the force graph to a place where nothing was pulling, then press this: the zero is the mean "
+                                         "of the recorded volts in it (a stretch that is a multiple of 20 ms cancels 50 Hz hum exactly).")
+        self.btn_zero_stretch.clicked.connect(self.zero_from_stretch)
+        self.btn_zero_rest = QPushButton("Zero = rest before the push")
+        self.btn_zero_rest.setToolTip("The mean of the recorded volts over the rest before the push (the stretch SOP 9.10 asks for).")
+        self.btn_zero_rest.clicked.connect(self.zero_from_rest)
+        self.btn_zero_reset = QPushButton("Recorded zero")
+        self.btn_zero_reset.setToolTip("Take the zero set in Review back: the zero recorded with the trial is used again.")
+        self.btn_zero_reset.clicked.connect(self.zero_reset)
+        self.zero_label = QLabel("")
+        self.zero_label.setObjectName("hint")
         self.force_smooth = _NoWheelSpin()
         self.force_smooth.setRange(0, 1000)
         self.force_smooth.setDecimals(0)
@@ -1060,25 +1288,22 @@ class ReviewTab(QWidget):
                                          "single sample. The peak in the PeerJ paper behind it (Slade et al. 2026) is the dynamometer's own peak; "
                                          "the paper gives no window length, 500 ms is this program's choice.")
         self.window_peak_spin.valueChanged.connect(self.on_window_peak)
-        self.btn_force_win = QPushButton("Window = force above half of peak")
+        self.btn_force_win = QPushButton("Window: force > half peak")
         self.btn_force_win.setToolTip("Set the analysis window from the force itself: the stretch around the peak where the smoothed force is above half "
                                       "of the way from rest to peak (the hold). Use it when the MVIC markers were pressed early or late.")
         self.btn_force_win.clicked.connect(self.snap_to_force)
-        self.force_box = QGroupBox("Force")
-        fb = QGridLayout(self.force_box)                       # two rows (0.29.0): one row of four boxes made the window wider than it was
-        for col, (text, box) in enumerate((("Smoothing", self.force_smooth), ("Sliding window", self.window_peak_spin), ("Picture delay", self.picture_delay))):
-            fb.addWidget(QLabel(text), 0, 2 * col)
-            fb.addWidget(box, 0, 2 * col + 1)
-        fb.addWidget(QLabel("Zero"), 1, 0)
-        fb.addWidget(self.zero_spin, 1, 1)
-        fb.addWidget(self.btn_apply_cal, 1, 2, 1, 2)
-        fb.setColumnStretch(6, 1)
-        self.force_box.setVisible(False)
+        # The force numbers and what they depend on, one table under the force graph (0.32.0): the settings widgets made above live inside its rows.
+        self.force_tree = ForceTree({"sliding": self.window_peak_spin, "smoothing": self.force_smooth, "delay": self.picture_delay, "zero": self.zero_spin,
+                                     "apply": self.btn_apply_cal, "zero_stretch": self.btn_zero_stretch, "zero_rest": self.btn_zero_rest,
+                                     "zero_reset": self.btn_zero_reset, "zero_label": self.zero_label})
+        self.force_tree.calibrationRequested.connect(lambda: self._show_plot_view("calib"))
+        self.force_tree.setVisible(False)
 
-        # Graph-first layout (0.14.0; until then the graphs were a strip along the bottom and the number tabs sat top right):
-        # video and its play controls top left, the graphs top right (the larger part), the number tabs in a wide strip below.
-        # What acts on the analysis window or the force curve sits under the graphs it belongs to; the file buttons are in the top bar.
-        # Both dividers can be dragged; where they are is remembered (attach_memory).
+        # The layout of 0.32.0 (from 0.14.0 the number tabs sat in a strip under video and graphs, which left both small):
+        # LEFT, the trial itself: the video and its controls, the key numbers in one slim row, and under them the number panels (Angles, Force,
+        # Dots). RIGHT, the signal: the checks (always in view), the graphs (the biggest part), and what acts on the analysis window and the
+        # force zero. 'Fix dots' swaps the right side for the dot workspace and gives the video more room. The dividers can be dragged and
+        # where they are is remembered (attach_memory). Export and More are in the participant overview.
         self.header = QFrame()
         self.header.setObjectName("reviewHeader")
         top = QHBoxLayout(self.header)
@@ -1092,96 +1317,119 @@ class ReviewTab(QWidget):
         top.addWidget(self.trial_combo, 1)
         top.addWidget(self.btn_prev)
         top.addWidget(self.btn_next)
-        top.addWidget(self.btn_next_unjudged)
+        top.addWidget(self.nav_label)
+        top.addSpacing(10)
+        top.addWidget(self.showing_label)
+        top.addWidget(self.btn_data_original)
+        top.addWidget(self.btn_data_reviewed)
+        top.addWidget(self.edits_label)
         top.addSpacing(10)
         top.addWidget(self.btn_view_trial)
         top.addWidget(self.btn_view_overview)
-        top.addSpacing(10)
-        top.addWidget(self.btn_export)
-        top.addWidget(self.btn_more)
         ctrl = QHBoxLayout()
+        ctrl.setSpacing(6)
         ctrl.addWidget(self.btn_play)
+        ctrl.addWidget(self.btn_step_back)
+        ctrl.addWidget(self.btn_step_fwd)
         ctrl.addWidget(self.slider, 1)
+        ctrl.addWidget(self.frame_label)
         ctrl.addWidget(self.chk_trails)
-        erow = QHBoxLayout()
-        erow.addWidget(QLabel("Markers:"))
-        erow.addWidget(self.event_combo, 1)
-        erow.addWidget(self.btn_hold)
-        erow.addWidget(self.btn_force_win)
-        hint = QLabel("Blue band on the plots = analysis window (drag its edges on the upper plot). The numbers use it. "
-                      "Yellow bar on the force = the sliding-window peak.")
-        hint.setObjectName("hint")
-        hint.setWordWrap(True)
+        ctrl.addWidget(self.btn_fix)
+        ctrl.addWidget(self.zoom_label)
+        ctrl.addWidget(self.zoom_combo)
+        self.zero_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        # the key numbers in one slim row under the video (built below, with the cards); the number panels under that
         left = QVBoxLayout()
+        left.setSpacing(4)
         left.addWidget(self.video, 1)
         left.addLayout(ctrl)
-        left_w = QWidget()
+        video_block = QWidget()
         left.setContentsMargins(0, 0, 6, 0)
-        left_w.setLayout(left)
+        video_block.setLayout(left)
+        self.left_split = QSplitter(Qt.Vertical)
+        self.left_split.addWidget(video_block)
+        self.left_split.addWidget(self.angle_tree)
+        self.left_split.setStretchFactor(0, 3)
+        self.left_split.setStretchFactor(1, 2)
+        self.left_split.setChildrenCollapsible(False)
+        self.left_split.setSizes(DEFAULT_MAIN_SPLIT)
+        self.splitter = self.left_split                    # (the name the divider had before 0.32.0)
         plots = QWidget()
         pl = QVBoxLayout(plots)
         pl.setContentsMargins(6, 0, 0, 0)
+        pl.setSpacing(4)
         vrow = QHBoxLayout()
-        vrow.addWidget(QLabel("Graphs:"))
         vrow.addWidget(self.plot_view)
         vrow.addStretch(1)
+        vrow.addWidget(self.btn_hold)                      # the analysis window and the markers belong to the graphs: on their row
+        vrow.addWidget(self.btn_force_win)
+        vrow.addWidget(self.event_combo)
         pl.addLayout(vrow)
         pl.addWidget(self.plot, 3)
         pl.addWidget(self.force_plot, 2)
         pl.addWidget(self.fa_plot, 5)
-        pl.addLayout(erow)
-        pl.addWidget(self.force_box)
-        pl.addWidget(hint)
+        pl.addWidget(self.both_plot, 5)
+        pl.addWidget(self.calib, 5)
+        pl.addWidget(self.force_tree, 3)
+        # the Fix dots workspace: the right side while the dots are being fixed (the Done button, or Esc, goes back)
+        self.btn_fix_done = QPushButton("Done")
+        self.btn_fix_done.setText("Done  Esc")
+        self.btn_fix_done.setToolTip("Back to the graphs (Esc). Everything you saved stays.")
+        self.btn_fix_done.clicked.connect(lambda: self.set_fix_mode(False))
+        fix_page = QWidget()
+        fl = QVBoxLayout(fix_page)
+        fl.setContentsMargins(6, 0, 0, 0)
+        fl.addWidget(self.fix_dots, 1)
+        self._plots_page, self._fix_page = plots, fix_page
+        for page in (plots, fix_page):                          # (a stack is as wide as its widest page: only the page on show says how narrow it may be, so the
+            page.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)      # divider can go further right while dots are fixed)
+        plots.setMinimumWidth(RIGHT_LEAST_WIDTH)
+        self.right_stack = QStackedWidget()
+        self.right_stack.addWidget(plots)
+        self.right_stack.addWidget(fix_page)
         self.top_splitter = QSplitter(Qt.Horizontal)
-        self.top_splitter.addWidget(left_w)
-        self.top_splitter.addWidget(plots)
+        self.top_splitter.addWidget(self.left_split)
+        self.top_splitter.addWidget(self.right_stack)
         self.top_splitter.setStretchFactor(0, 2)
         self.top_splitter.setStretchFactor(1, 3)
         self.top_splitter.setChildrenCollapsible(False)
         self.top_splitter.setSizes(DEFAULT_TOP_SPLIT)
-        self.splitter = QSplitter(Qt.Vertical)
-        self.splitter.addWidget(self.top_splitter)
-        self.splitter.addWidget(self.tabs)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 2)
-        self.splitter.setChildrenCollapsible(False)
-        self.splitter.setSizes(DEFAULT_MAIN_SPLIT)
+        self._top_sizes = {"normal": list(DEFAULT_TOP_SPLIT), "fix": list(FIX_TOP_SPLIT)}      # the divider between video and right side, per mode
         # the operator's verdict on the open trial (0.28.0): shown, and changed here when a trial turns out compromised (or fine) later
-        self.verdict_bar = VerdictBar()
-        self.verdict_bar.setVisible(False)
+        self.verdict_bar = VerdictControl()
+        self.verdict_bar.setEnabled(False)
         self.verdict_bar.changed.connect(self._verdict_changed)
-        # the key numbers of the window, large (0.29.0): they follow the blue window
-        self.cards = {
-            "peak": MetricCard("Peak force", "The highest value of the smoothed force (the moving average chosen under Smoothing) in the blue window."),
-            "window_peak": MetricCard("Sliding-window peak", "The highest mean of the raw force over a stretch as long as the Sliding window box says."),
-            "time_to_peak": MetricCard("Time to peak", "Seconds from the start of the push to the peak. The start of the push is where the force was last "
-                                                       "within 10 % of its rise above the level before the push."),
-            "plateau": MetricCard("Plateau mean", "The mean force over the middle 60 % of the blue window."),
-            "above_rest": MetricCard("Peak above rest", "The peak minus the resting force before the push (SOP 9.10)."),
-            "angle": MetricCard("Angle at peak", "The main joint's angle at the moment of the peak force."),
-        }
-        self.angle_cards = {                               # a trial without force shows these instead
-            "hold": MetricCard("Hold angle", "The main joint's mean angle over the middle 60 % of the blue window."),
-            "target": MetricCard("Target", "The angle the position was set to, and how far the hold angle is from it."),
-            "shift": MetricCard("Rest to hold", "How far the main joint moved from its angle at rest to its angle in the hold."),
-        }
-        cards_row = QHBoxLayout()
-        cards_row.setSpacing(8)
-        for c in list(self.cards.values()) + list(self.angle_cards.values()):
-            cards_row.addWidget(c, 1)
-            c.setVisible(False)
-        info_row = QHBoxLayout()
-        info_row.setSpacing(10)
-        info_row.addWidget(self.title, 1)
-        info_row.addWidget(self.verdict_bar, 0, Qt.AlignTop)
+        # the bottom bar (it never moves): in Trial mode the checks chip, the verdict and Next not judged; while dots are fixed, what is being done and Done
+        decide = QFrame()
+        decide.setObjectName("bottomBar")
+        dl = QHBoxLayout(decide)
+        dl.setContentsMargins(8, 4, 8, 4)
+        dl.setSpacing(8)
+        dl.addWidget(self.checks, 1)
+        dl.addWidget(self.verdict_bar)
+        dl.addWidget(self.btn_next_unjudged)
+        fixbar = QFrame()
+        fixbar.setObjectName("bottomBar")
+        fl2 = QHBoxLayout(fixbar)
+        fl2.setContentsMargins(8, 4, 8, 4)
+        fl2.setSpacing(8)
+        self.fix_bar_label = ElidedLabel("")
+        fl2.addWidget(self.fix_bar_label, 1)
+        fl2.addWidget(self.btn_fix_done)
+        self.bottom_stack = QStackedWidget()
+        self.bottom_stack.addWidget(decide)
+        self.bottom_stack.addWidget(fixbar)
+        self.title.setObjectName("flagLine")               # only for an UNFINISHED or STOPPED trial (nothing else says it): hidden otherwise
+        self.title.setVisible(False)
         self.trial_page = QWidget()
         tp = QVBoxLayout(self.trial_page)
-        tp.setContentsMargins(0, 6, 0, 0)
-        tp.setSpacing(6)
-        tp.addLayout(info_row)
-        tp.addLayout(cards_row)
-        tp.addWidget(self.splitter, 1)
-        self.overview = OverviewPage(trial_row)
+        tp.setContentsMargins(0, 4, 0, 0)
+        tp.setSpacing(4)
+        tp.addWidget(self.title)
+        tp.addWidget(self.top_splitter, 1)
+        tp.addWidget(self.bottom_stack)
+        self.overview = OverviewPage(trial_row, parallel=True)         # (the numbers are worked out in worker processes: the window stays free)
+        self.overview.set_menus(self.export_menu, self.more_menu)
         self.overview.openRequested.connect(self.open_base)
         self.overview.exportRequested.connect(lambda valid_only: self.export_session(valid_only=valid_only))
         self.stack = QStackedWidget()
@@ -1190,12 +1438,30 @@ class ReviewTab(QWidget):
         lay = QVBoxLayout(self)
         lay.addWidget(self.header)
         lay.addWidget(self.stack, 1)
-        self.tabs.setObjectName("numberTabs")
         # keys that work only inside the Review tab (the Live tab keeps its letter keys)
         for seq, slot in (("Alt+Left", self.prev_trial), ("Alt+Right", self.next_trial), ("Alt+N", self.next_unjudged)):
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.WidgetWithChildrenShortcut)
             sc.activated.connect(slot)
+        # The picture keys work on the Trial page only (the overview's table keeps its arrow keys), and not while a number is being typed (a spin
+        # box or the note keeps its own keys): the arrows and , . step one picture, with Shift ten; Esc leaves the Fix dots workspace.
+        for seq, d in ((",", -1), (".", 1), ("Left", -1), ("Right", 1), ("Shift+Left", -10), ("Shift+Right", 10)):
+            sc = QShortcut(QKeySequence(seq), self.trial_page)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda d=d: self.step_picture(d))
+        sc = QShortcut(QKeySequence("F"), self.trial_page)
+        sc.setContext(Qt.WidgetWithChildrenShortcut)
+        sc.activated.connect(lambda: self.set_fix_mode(not self._fix_mode) if self.btn_fix.isEnabled() else None)
+        sc = QShortcut(QKeySequence("1"), self.trial_page)
+        sc.setContext(Qt.WidgetWithChildrenShortcut)
+        sc.activated.connect(lambda: self.verdict_bar.btn_valid.click() if self.verdict_bar.isEnabled() and not self._fix_mode else None)
+        for n, key in enumerate(verdicts.REASONS, start=2):
+            sc = QShortcut(QKeySequence(str(n)), self.trial_page)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda k=key: self.verdict_bar.reason_buttons[k].click() if self.verdict_bar.isEnabled() and not self._fix_mode else None)
+        sc = QShortcut(QKeySequence("Escape"), self.trial_page)
+        sc.setContext(Qt.WidgetWithChildrenShortcut)
+        sc.activated.connect(lambda: self.set_fix_mode(False) if self._fix_mode else None)
         self._entries = []                  # review_nav.TrialEntry of the open participant
         self._folder = None                 # the open participant's folder
         self._index = -1                    # the entry that is open in the Trial view
@@ -1217,23 +1483,40 @@ class ReviewTab(QWidget):
         self._layout_timer.setSingleShot(True)
         self._layout_timer.setInterval(800)             # saved a moment after the last drag
         self._layout_timer.timeout.connect(self._save_layout)
-        for sp in (self.top_splitter, self.splitter):
-            sp.splitterMoved.connect(lambda *_: self._layout_timer.start())
+        self.top_splitter.splitterMoved.connect(lambda *_: self._top_moved())
+        self.left_split.splitterMoved.connect(lambda *_: self._layout_timer.start())
+
+    def shutdown(self):
+        """The program is closing: stop the overview's worker processes (they would end by themselves when this window's pipes close, but not at once)."""
+        self.overview.shutdown()
 
     # ------------------------------------------------------------- remembered layout
+    def _top_moved(self):
+        self._top_sizes["fix" if self._fix_mode else "normal"] = self.top_splitter.sizes()
+        self._layout_timer.start()
+
     def layout_state(self):
-        """The two divider positions: {'top': [video, graphs], 'main': [top row, number tabs]}."""
-        return {"top": self.top_splitter.sizes(), "main": self.splitter.sizes()}
+        """The divider positions: {'top': [left, right side], 'main': [video, number panels], 'fix': [left, right side] while fixing dots}."""
+        top = dict(self._top_sizes)
+        top["fix" if self._fix_mode else "normal"] = self.top_splitter.sizes()
+        return {"top": top["normal"], "main": self.left_split.sizes(), "fix": top["fix"]}
 
     def apply_layout_state(self, state):
         """Put remembered divider positions back. Anything that does not fit is ignored."""
-        try:
-            for sp, key in ((self.top_splitter, "top"), (self.splitter, "main")):
+        def good(key):
+            try:
                 sizes = [int(x) for x in state[key]]
-                if len(sizes) == 2 and all(s > 0 for s in sizes):
-                    sp.setSizes(sizes)
-        except (KeyError, TypeError, ValueError):
-            pass
+            except (KeyError, TypeError, ValueError):
+                return None
+            return sizes if len(sizes) == 2 and all(s > 0 for s in sizes) else None
+        top, main, fix = good("top"), good("main"), good("fix")
+        if top:
+            self._top_sizes["normal"] = top
+        if fix:
+            self._top_sizes["fix"] = fix
+        if main:
+            self.left_split.setSizes(main)
+        self.top_splitter.setSizes(self._top_sizes["fix" if self._fix_mode else "normal"])
 
     def attach_memory(self, path):
         """Remember between launches (own top-level parts of settings.json): the divider positions ('review_ui') and the participant and
@@ -1428,6 +1711,7 @@ class ReviewTab(QWidget):
         left = review_nav.next_unjudged(self._entries, self._index)
         self.btn_next_unjudged.setEnabled(left is not None)
         counts = review_nav.counts(self._entries)
+        self.nav_label.setText((f"{self._index + 1} of {n} · {counts['not judged']} left" if 0 <= self._index < n else f"{n} trials · {counts['not judged']} left") if n else "")
         self.btn_next_unjudged.setToolTip(
             f"Jump to the next trial that has no verdict yet (Alt+N). {counts['not judged']} of {n} not judged yet." if left is not None
             else ("Every readable trial of this participant has a verdict." if n else "Choose a participant first."))
@@ -1463,14 +1747,17 @@ class ReviewTab(QWidget):
     def show_view(self, name):
         """'trial' or 'overview'."""
         over = name == "overview"
+        if over and self._fix_mode:
+            self.set_fix_mode(False)
         self.btn_view_overview.setChecked(over)
         self.btn_view_trial.setChecked(not over)
+        self.btn_fix.setVisible(not over)
         self.stack.setCurrentIndex(1 if over else 0)
         self._after_view_change()
 
     def _after_view_change(self):
         if self.stack.currentIndex() == 1:
-            self.overview.set_settings(self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0)
+            self.overview.set_settings(self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0, self._source)
             self.overview.ensure_rows()
             if 0 <= self._index < len(self._entries):
                 self.overview.select_base(self._entries[self._index].base)
@@ -1522,31 +1809,38 @@ class ReviewTab(QWidget):
             except Exception as e:  # noqa: BLE001
                 QMessageBox.warning(self, "Cannot open trial", str(e))
 
-    def load(self, meta_path):
+    def load(self, meta_path, keep_view=False):
+        """Open a trial (for the data chosen under Data). `keep_view`: the same trial again after a fix, with the blue window and the picture where they were."""
+        kept_window = tuple(self.window.getRegion()) if keep_view and self.trial is not None else None
+        kept_picture = self.slider.value() if keep_view and self.trial is not None else 0
         self.btn_play.setChecked(False)
         self.timer.stop()
-        tr = Trial(meta_path)
+        tr = Trial(meta_path, source=self._source)
         old, self.trial = self.trial, tr
         if old is not None:
             old.close()                                    # (the previous trial's video was never let go of before 0.29.0)
         tr.window_peak_s = float(self.window_peak_spin.value()) / 1000.0
         m = tr.meta
         self.verdict_bar.set_verdict(verdicts.read_verdict(tr.meta_path), title="Verdict on this trial:", tip=tr.base)
-        self.verdict_bar.setVisible(True)
-        self.title.setText(f"{m['participant']}  |  {m['test_label']}  |  "
-                           + (f"target {m['target_deg']:g} deg  |  " if isinstance(m.get("target_deg"), (int, float)) else "")
-                           + f"{m['frames']} frames, {m['duration_s']} s"
-                           + (f"  |  ruler {tr.ruler_cm:g} cm = {tr.px_per_cm:.2f} px/cm" if tr.px_per_cm and tr.ruler_cm else "  |  no ruler scale")
-                           + ("  |  UNFINISHED: the program stopped before saving; the video may not open" if tr.unfinished else "")
-                           + (f"  |  STOPPED: {m['stopped_because']}" if m.get("stopped_because") else "")
-                           + (f"  |  GAPS: {m['gaps']['count']} (longest {m['gaps']['max_s']:.2f} s, no frames)" if (m.get('gaps') or {}).get('count') else ""))
+        self.verdict_bar.setEnabled(True)
+        flags = ((["UNFINISHED: the program stopped before saving; the video may not open"] if tr.unfinished else [])
+                 + ([f"STOPPED: {m['stopped_because']}"] if m.get("stopped_because") else []))
+        self.title.setText("  |  ".join(flags))                  # (the one line that says what nothing else says; hidden when there is none)
+        self.title.setVisible(bool(flags))
+        self.video.setToolTip(f"{m['participant']}  |  {m['test_label']}"
+                              + (f"  |  target {m['target_deg']:g} deg" if isinstance(m.get("target_deg"), (int, float)) else "")
+                              + f"\n{m['frames']} frames, {m['duration_s']} s"
+                              + (f"  |  ruler {tr.ruler_cm:g} cm = {tr.px_per_cm:.2f} px/cm" if tr.px_per_cm and tr.ruler_cm else "  |  no ruler scale")
+                              + (f"\n{m['gaps']['count']} gaps with no pictures, the longest {m['gaps']['max_s']:.2f} s" if (m.get("gaps") or {}).get("count") else "")
+                              + (f"\n✎ Reviewed data: {'; '.join(tr.review_notes)}" if tr.source == "reviewed" and tr.review_notes else ""))
+        self._show_edits(tr)
         self.plot.clear()
         self.plot.addItem(self.cursor)
         self.plot.addItem(self.window)
         tr.force_smooth_s = float(self.force_smooth.value()) / 1000.0     # before the force is drawn (it was set after, so the strip used the default)
         self._show_force_curve(tr)
         has_f = tr.has_force()
-        self.force_box.setVisible(has_f)
+        self.force_tree.setVisible(has_f)
         self._apply_plot_view(draw=False)
         self.plot.setLabel("bottom", "" if has_f else "Time (s)")         # the time axis label is under the lower plot when there are two
         for k, a in enumerate(tr.angle_defs):
@@ -1567,21 +1861,49 @@ class ReviewTab(QWidget):
             self.plot.addItem(line)
             if tr.has_force():
                 self.force_plot.addItem(pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen(EVENT_GREY, style=Qt.DashLine)))
+        self.event_combo.setCurrentIndex(-1)                                    # (a list to jump from: nothing is chosen until it is used)
         self.btn_hold.setEnabled(tr.hold_window() is not None)
         self.btn_force_win.setEnabled(tr.has_force())
         self.force_smooth.setEnabled(tr.has_force())
         self.window_peak_spin.setEnabled(tr.has_force())
-        if tr.has_force():
-            zero, _ = tr.recorded_zero_v()
-            self.zero_spin.setValue(zero)
-        self.window.setRegion(tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
+        self.btn_fix.setEnabled(tr.cap is not None)                              # (the dots are fixed on the video)
+        if self._fix_mode and tr.cap is None:
+            self.set_fix_mode(False)
+        self._show_zero(tr)
+        if not keep_view:
+            self._place_zero_region(tr)
+        self.window.setRegion(kept_window or tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
+        self._draw_both()                                                      # the two-axis graph (shown only when chosen)
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(tr.rows) - 1)
-        self.slider.setValue(0)
+        self.slider.setValue(min(kept_picture, len(tr.rows) - 1))
         self.slider.blockSignals(False)
-        self.show_frame(0)
+        self.fix_dots.set_trial(tr)
+        self.show_frame(self.slider.value())
         self.update_summary()
         self._sync_navigation(tr.meta_path)                                    # the header says which participant and trial this is
+
+    def _show_edits(self, tr):
+        """The header says how many fixes this trial has in the review layer ('✎ 2 fixes'), and when they are not in the numbers shown."""
+        rv = review_layer.Review.load(tr.meta_path)
+        n = len(rv.dots) + (1 if rv.zero else 0)
+        if not n:
+            self.edits_label.setText("")
+            self.edits_label.setToolTip("")
+            return
+        shown = tr.source == "reviewed"
+        self.edits_label.setText(f"✎ {n} fix{'' if n == 1 else 'es'}" + ("" if shown else " (not shown)"))
+        self.edits_label.setToolTip("; ".join(tr.review_notes) if shown and tr.review_notes else "Fixes made in Review. Choose Reviewed to see the trial with them.")
+
+    def _show_zero(self, tr):
+        """The Zero box and the line next to it: the zero in use, and where it came from."""
+        if not tr.has_force():
+            self.zero_label.setText("")
+            return
+        zero, where = tr.current_zero_v()
+        self.zero_spin.setValue(zero)
+        self.zero_label.setText(where)
+        self.btn_zero_reset.setEnabled(tr.zero_edit is not None)
 
     # ------------------------------------------------------------ playback
     def _apply_plot_view(self, draw=True):
@@ -1590,9 +1912,15 @@ class ReviewTab(QWidget):
         has_f = self.trial is not None and self.trial.has_force()
         self.plot_view.setEnabled(has_f)
         fa = has_f and self.plot_view.currentData() == "fa"
-        self.plot.setVisible(not fa)
-        self.force_plot.setVisible(has_f and not fa)
+        both = has_f and self.plot_view.currentData() == "both"
+        calib = has_f and self.plot_view.currentData() == "calib"
+        self.plot.setVisible(not (fa or both or calib))
+        self.force_plot.setVisible(has_f and not (fa or both or calib))
         self.fa_plot.setVisible(fa)
+        self.both_plot.setVisible(both)
+        self.calib.setVisible(calib)
+        if both and draw:
+            self._draw_both()
         if fa and draw:
             if self._fa_dirty or self._fa_path is None:
                 self._update_force_angle()
@@ -1672,6 +2000,7 @@ class ReviewTab(QWidget):
         fp.addItem(self.force_cursor)
         fp.addItem(self.force_window_mirror)
         fp.addItem(self.window_peak_mark)
+        fp.addItem(self.zero_region)
         unit, ys, _ = tr.force_signal()
         raw = tr.force_n if unit == "N" else tr.force_v
         faint = pg.PlotDataItem(tr.force_t, raw, pen=pg.mkPen((220, 60, 60, 45), width=1))
@@ -1690,23 +2019,265 @@ class ReviewTab(QWidget):
 
     def _mirror_window(self, *_):
         self.force_window_mirror.setRegion(self.window.getRegion())
+        self.window_both.setRegion(self.window.getRegion())              # (a no-op when it is already there: nothing loops)
 
+    # ------------------------------------------------------------- the review layer: what is changed is saved there, never in the trial
+    def set_source(self, name):
+        """'original' or 'reviewed': what every number, graph and export reads. The open trial is read again for it."""
+        if name not in ("original", "reviewed"):
+            return
+        self._source = name
+        self.btn_data_original.setChecked(name == "original")
+        self.btn_data_reviewed.setChecked(name == "reviewed")
+        if self.trial is not None:
+            self.load(self.trial.meta_path, keep_view=True)
+        self._after_view_change()
+
+    def _save_review(self, rv):
+        """Write the edit list in the review layer. A failure is shown and nothing is changed."""
+        try:
+            rv.save(software_version=SOFTWARE_VERSION)
+        except OSError as e:                              # a locked or read-only folder (OriginalsProtected is one too)
+            QMessageBox.warning(self, "Not saved", f"The change could not be saved in the review folder:\n{e}\n\nNothing was changed.")
+            return False
+        return True
+
+    def _after_edit(self):
+        """A fix was saved: show the reviewed data (a fix is invisible in Original), read the trial again where it was, mark it in the list."""
+        if self._source != "reviewed":
+            self._source = "reviewed"
+            self.btn_data_original.setChecked(False)
+            self.btn_data_reviewed.setChecked(True)
+        path = self.trial.meta_path
+        self.load(path, keep_view=True)
+        if 0 <= self._index < len(self._entries) and self._same(self._entries[self._index].meta_path, path):
+            e = self._entries[self._index]
+            e.refresh_edited()
+            self.trial_combo.setItemText(self._index, e.label)
+        self._after_view_change()
+
+    def current_index(self):
+        return self.slider.value()
+
+    def current_time(self):
+        return float(self.trial.t[self.slider.value()]) if self.trial is not None else 0.0
+
+    def step_picture(self, d):
+        if self.trial is not None:
+            self.slider.setValue(max(0, min(self.slider.maximum(), self.slider.value() + d)))
+
+    def rewind_video(self):
+        if self.trial is not None:
+            self.trial._pos = -2                           # (something else read the video: the next picture is looked up, not assumed)
+
+    # ------------------------------------------------------------- the Fix dots workspace and what the checks ask for (0.32.0)
+    def set_fix_mode(self, on, dot=None):
+        """Open (or close) the Fix dots workspace: the video takes about two thirds of the width, the dot tools replace the checks, graphs and
+        number panels. `dot`: the dot to work on. Needs a trial with a video."""
+        on = bool(on) and self.trial is not None and self.trial.cap is not None and self.stack.currentIndex() == 0
+        if on != self._fix_mode:
+            self._top_sizes["fix" if self._fix_mode else "normal"] = self.top_splitter.sizes()      # (where the divider was in the mode that ends)
+            self._fix_mode = on
+            self.right_stack.setCurrentIndex(1 if on else 0)
+            self._plots_page.setMinimumWidth(0 if on else RIGHT_LEAST_WIDTH)
+            self._fix_page.setMinimumWidth(FIX_LEAST_WIDTH if on else 0)
+            self.bottom_stack.setCurrentIndex(1 if on else 0)
+            self.zoom_label.setVisible(on)
+            self.zoom_combo.setVisible(on)
+            self.angle_tree.setVisible(not on)
+            self.top_splitter.setSizes(self._top_sizes["fix" if on else "normal"])
+            if on:
+                self.fix_dots.refresh()
+        self.btn_fix.setChecked(self._fix_mode)
+        if on and dot is not None:
+            i = self.fix_dots.dot.findText(dot)
+            if i >= 0:
+                self.fix_dots.dot.setCurrentIndex(i)
+        self._update_fix_bar()
+        if self.trial is not None:
+            self.show_frame(self.slider.value())          # (the dot's cross and the clicks are drawn on the picture only in this mode)
+        if on:
+            self.video.setFocus()                           # (so the picture keys work at once)
+
+    def _update_fix_bar(self):
+        """The line in the bottom bar while dots are fixed: which dot, what is waiting to be saved, and the keys."""
+        if not self._fix_mode:
+            return
+        dot, pending = self.fix_dots.current_dot(), len(self.fix_dots.pending)
+        self.fix_bar_label.setText(f"Fixing {dot or 'a dot'}"
+                                   + (f"  ·  {pending} picture{'' if pending == 1 else 's'} clicked, not saved" if pending else "")
+                                   + "  ·  arrow keys or , . step one picture, Shift ten")
+
+    def _show_plot_view(self, key):
+        """Choose a graph view by its name ('time', 'fa', 'both', 'calib'), when the trial has the force it needs."""
+        i = self.plot_view.findData(key)
+        if i >= 0 and self.plot_view.isEnabled():
+            self.plot_view.setCurrentIndex(i)
+
+    def _check_action(self, action, arg):
+        """A button on a check was pressed (review_checks.ChecksPanel): go to what puts it right."""
+        if self.trial is None:
+            return
+        if action == "fix_dots":
+            self.set_fix_mode(True, dot=arg or None)
+        elif action == "zero":
+            self.force_tree.open_zero()                    # the Above rest row opens and the Zero box takes the keyboard
+        elif action == "window":
+            self.snap_to_force()
+        elif action == "calibration":
+            self._show_plot_view("calib")
+
+    # ---- force zero
     def apply_force_calibration(self):
-        """Newtons from the saved volts with the zero in the box and the active load cell regression."""
+        """Use the zero in the box (typed, or put there by a button): newtons from the recorded volts with this zero and the slope recorded with the
+        trial (else the active load cell regression's). Saved in the review layer, so every number and export follows."""
+        self._save_zero(self.zero_spin.value(), "typed")
+
+    def _save_zero(self, zero_v, source, region=None):
+        tr = self.trial
+        if tr is None or not tr.has_force():
+            return False
+        slope = tr.slope_for_zero()
+        if slope is None:
+            QMessageBox.information(self, "No calibration", "This trial has no slope (it was recorded in volts) and there is no load cell regression yet "
+                                    "(limbtrack/load_cell_calibrations.json). Add one with LoadCellCalibration/add_calibration.py; "
+                                    "the recordings can be converted afterwards.")
+            return False
+        rv = review_layer.Review.load(tr.meta_path)
+        rv.set_zero(zero_v, source, slope, region)
+        if not self._save_review(rv):
+            return False
+        self._after_edit()
+        return True
+
+    def zero_from_stretch(self):
         tr = self.trial
         if tr is None or not tr.has_force():
             return
-        reg = active_regression()
-        if reg is None:
-            QMessageBox.information(self, "No calibration", "There is no load cell regression yet (limbtrack/load_cell_calibrations.json). "
-                                    "Add one with LoadCellCalibration/add_calibration.py; the recordings can be converted afterwards.")
+        t0, t1 = (float(v) for v in self.zero_region.getRegion())
+        v = tr.raw_volts_mean(t0, t1)
+        if math.isnan(v):
+            QMessageBox.information(self, "No force there", "The grey stretch holds no force samples: drag it onto the force graph.")
             return
-        cal = ForceCalibration.load_cell(reg)
-        cal.set_zero(self.zero_spin.value())
-        _, where = tr.recorded_zero_v()
-        tr.apply_calibration(cal, f"applied later: regression {reg.id}, zero {cal.offset_v:+.4f} V (the box; it started as {where})")
-        self._show_force_curve(tr)
-        self.update_summary()
+        self._save_zero(v, "stretch", (t0, t1))
+        if abs((t1 - t0) / 0.02 - round((t1 - t0) / 0.02)) > 0.05:
+            self.zero_label.setText(self.zero_label.text() + f"  (the stretch is {1000 * (t1 - t0):.0f} ms: not a multiple of 20 ms, so mains hum does not cancel exactly)")
+
+    def zero_from_rest(self):
+        tr = self.trial
+        if tr is None or not tr.has_force():
+            return
+        ri = tr.force_rest()
+        if ri is None or math.isnan(ri["level"]):
+            QMessageBox.information(self, "No rest found", "There is no clear rest before the push in this trial (less than half a second of force before it). "
+                                    "Drag the grey stretch to a place where nothing was pulling and use 'Zero = grey stretch'.")
+            return
+        v = tr.raw_volts_mean(ri["t_from"], ri["t_to"])
+        if not math.isnan(v):
+            self._save_zero(v, "rest", (ri["t_from"], ri["t_to"]))
+
+    def zero_reset(self):
+        tr = self.trial
+        if tr is None or tr.zero_edit is None:
+            return
+        rv = review_layer.Review.load(tr.meta_path)
+        rv.clear_zero()
+        if self._save_review(rv):
+            self._after_edit()
+
+    def _place_zero_region(self, tr):
+        """The grey stretch starts on the rest before the push, else on the first second of the force."""
+        if not tr.has_force():
+            return
+        ri = tr.force_rest()
+        if ri is not None and not math.isnan(ri["level"]) and ri["t_to"] > ri["t_from"]:
+            self.zero_region.setRegion((ri["t_from"], ri["t_to"]))
+        else:
+            self.zero_region.setRegion((float(tr.force_t[0]), float(tr.force_t[0]) + 1.0))
+
+    # ---- dots
+    def commit_dot_edit(self, dot, kind, rows=None, **params):
+        """Save a fix of `dot` (see dot_edits.py) in the review layer and read the trial again with it. True when it was saved."""
+        tr = self.trial
+        if tr is None:
+            return False
+        rv = review_layer.Review.load(tr.meta_path)
+        rv.add_dot_edit(dot, kind, rows=rows, **params)
+        if not self._save_review(rv):
+            return False
+        self._after_edit()
+        return True
+
+    def undo_dot_edit(self, dot):
+        tr = self.trial
+        rv = review_layer.Review.load(tr.meta_path) if tr is not None else None
+        if rv is None or not rv.undo_dot_edit(dot):
+            return False
+        if self._save_review(rv):
+            self._after_edit()
+            return True
+        return False
+
+    def reset_dot(self, dot):
+        tr = self.trial
+        rv = review_layer.Review.load(tr.meta_path) if tr is not None else None
+        if rv is None or not any(e["dot"] == dot for e in rv.dots):
+            return False
+        rv.reset_dot(dot)
+        if self._save_review(rv):
+            self._after_edit()
+            return True
+        return False
+
+    def _video_clicked(self, x, y):
+        if self.trial is not None and self._fix_mode:
+            self.fix_dots.on_video_click(x, y)
+
+    def _zoom_rect(self, w, h, i):
+        """(x, y, width, height) of the part of the picture to show when it is magnified (Fix dots only), centred on the dot being fixed: where you
+        last clicked, else where the program has the dot in this picture, else its usual place. None for Fit. Never leaves the picture."""
+        factor = float(self.zoom_combo.currentData() or 1.0)
+        if not self._fix_mode or factor <= 1.0 or self.trial is None:
+            return None
+        cx, cy = self.fix_dots.focus_point(i) if hasattr(self.fix_dots, "focus_point") else (None, None)
+        if cx is None:
+            dot = self.fix_dots.current_dot()
+            tr = self.trial
+            if dot in tr.tracks and not math.isnan(tr.tracks[dot][0][i]):
+                cx, cy = float(tr.tracks[dot][0][i]), float(tr.tracks[dot][1][i])
+        if cx is None:
+            cx, cy = w / 2.0, h / 2.0
+        cw, ch = max(int(round(w / factor)), 16), max(int(round(h / factor)), 16)
+        x0 = int(round(min(max(cx - cw / 2.0, 0), w - cw)))
+        y0 = int(round(min(max(cy - ch / 2.0, 0), h - ch)))
+        return x0, y0, cw, ch
+
+    def _draw_review_marks(self, img, i):
+        """What the Fix dots workspace shows on the picture: the dot it works on, and the clicks. (The ring round a dot that was fixed is drawn by Trial.drawn.)"""
+        tr = self.trial
+        if self._fix_mode:
+            dot = self.fix_dots.current_dot()
+            if dot in tr.tracks and not math.isnan(tr.tracks[dot][0][i]):
+                x, y = int(round(tr.tracks[dot][0][i])), int(round(tr.tracks[dot][1][i]))
+                cv2.line(img, (x - 24, y), (x + 24, y), (255, 255, 0), 1, cv2.LINE_AA)
+                cv2.line(img, (x, y - 24), (x, y + 24), (255, 255, 0), 1, cv2.LINE_AA)
+            for x, y, text, colour in self.fix_dots.marks(i):
+                cv2.circle(img, (int(round(x)), int(round(y))), 11, colour, 2, cv2.LINE_AA)
+                if text:
+                    cv2.putText(img, text, (int(round(x)) + 14, int(round(y)) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1, cv2.LINE_AA)
+
+    def open_review_folder(self):
+        """Show the folder where this participant's review files are kept (nothing is created here)."""
+        meta = self.trial.meta_path if self.trial is not None else (self._entries[0].meta_path if self._entries else None)
+        if meta is None:
+            QMessageBox.information(self, "No participant", "Choose a participant first.")
+            return
+        d = review_layer.participant_review_dir(meta)
+        if not d.is_dir():
+            QMessageBox.information(self, "Nothing saved yet", f"Nothing has been saved in the review layer for this participant yet.\nIt will be in:\n{d}")
+            return
+        if hasattr(os, "startfile"):
+            os.startfile(d)
 
     def show_frame(self, i):
         if self.trial is None:
@@ -1714,13 +2285,25 @@ class ReviewTab(QWidget):
         img = self.trial.drawn(i, trails=self.chk_trails.isChecked())
         self.cursor.setValue(self.trial.t[i])
         self.force_cursor.setValue(self.trial.t[i])
+        self.both_cursor.setValue(self.trial.t[i])
         self._update_fa_cursor(i)
+        self.frame_label.setText(f"{i + 1} / {len(self.trial.t)}  ·  {self.trial.t[i]:.2f} / {self.trial.t[-1]:.2f} s")
         if img is None:
             return
+        self._draw_review_marks(img, i)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
-        pm = QPixmap.fromImage(QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy())
-        self.video.setPixmap(pm.scaled(self.video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.video.picture_size = (w, h)
+        rect = self._zoom_rect(w, h, i)
+        self.video.view_rect = rect
+        if rect is not None:
+            x0, y0, cw, ch = rect
+            rgb = np.ascontiguousarray(rgb[y0:y0 + ch, x0:x0 + cw])
+        ph, pw = rgb.shape[:2]
+        self.video.show_picture(QPixmap.fromImage(QImage(rgb.data, pw, ph, 3 * pw, QImage.Format_RGB888).copy()))
+        if self._fix_mode:
+            self.fix_dots.update_where()
+            self._update_fix_bar()
 
     def toggle_play(self):
         if self.btn_play.isChecked() and self.trial is not None:
@@ -1749,6 +2332,7 @@ class ReviewTab(QWidget):
             return
         self.trial.force_smooth_s = float(ms) / 1000.0
         self._show_force_curve(self.trial)
+        self._draw_both()
         self.update_summary()
 
     def snap_to_force(self):
@@ -1770,38 +2354,23 @@ class ReviewTab(QWidget):
         if self.trial is None:
             return
         rows, (t0, t1) = self._rows()
-        lines = [f"Window {t0:.2f} - {t1:.2f} s", f"{'':22s}{'mean':>7s}{'SD':>6s}{'min':>7s}{'max':>7s}{'start>end':>10s}{'maxdev':>8s}{'in tol':>8s}{'lost':>6s}"]
-        for r in rows:
-            lines.append(f"{r['angle'][:21]:22s}{r['mean_deg']:7.1f}{r['sd_deg']:6.2f}{r['min_deg']:7.1f}{r['max_deg']:7.1f}"
-                         f"{r['change_start_to_end_deg']:+10.1f}{r['max_abs_dev_deg']:8.1f}{r['pct_in_tolerance']:7.0f}%{r['frames_lost']:6d}")
-        lines += ["", f"Hold: the angle during the contraction, not the set angle  (plateau = middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window; rest = the {REST_SECONDS:g} s before it)",
-                  f"{'':22s}{'plateau':>9s}{'median':>8s}{'target':>8s}{'plat-tgt':>9s}{'rest':>8s}{'rest>hold':>10s}"]
-        for r in rows:
-            def f(v, w, signed=False):
-                return f"{'-':>{w}s}" if math.isnan(v) else f"{v:>+{w}.1f}" if signed else f"{v:>{w}.1f}"
-            pt = r["plateau_mean_deg"] - r["target_deg"] if not (math.isnan(r["plateau_mean_deg"]) or math.isnan(r["target_deg"])) else math.nan
-            lines.append(f"{r['angle'][:21]:22s}{f(r['plateau_mean_deg'], 9)}{f(r['median_deg'], 8)}{f(r['target_deg'], 8)}{f(pt, 9, True)}"
-                         f"{f(r['rest_mean_deg'], 8)}{f(r['rest_to_hold_shift_deg'], 10, True)}")
-        if not self.trial.hold_window():
-            lines.append("(no MVIC start/end markers in this trial: the numbers use the window as set)")
-        self.stats.setText("\n".join(lines))
         fs = self.trial.force_summary(t0, t1, self.picture_delay.value())      # (None without force) for the users below
         ft = analysis.force_timing(self.trial, t0, t1) if fs is not None else None
         fp = analysis.force_peaks(self.trial, t0, t1, timing=ft)               # the sliding-window peak and the times to peak (0.29.0)
-        self._update_cards(rows, fs, fp)
         self._update_window_peak_mark(fp)
         if self.plot_view.currentData() == "fa" and self.trial.has_force():
             if self._fa_dirty:
                 self._update_force_angle(fs)                 # the force or the picture delay changed: the whole path
             else:
                 self._update_force_angle_window(fs)          # only the window moved: its dots and the star
-        ref = self._reference_text()
-        if ref != self.ref_text.text():                      # it does not follow the window: re-set (and scrolled to the top) only on a change
-            self.ref_text.setText(ref)
-        self.force_text.setText(self._force_text(t0, t1, fs, ft, fp))
+        self.angle_tree.set_data(self.trial, rows, fs, (t0, t1))
+        if self.trial.has_force() and fs is not None:
+            self.force_tree.set_data(self.trial, t0, t1, fs, ft, fp, self.picture_delay.value())
+        else:
+            self.force_tree.set_none("No force was recorded in this trial." if not self.trial.has_force()
+                                      else "Force was recorded but there are no samples in this window.")
         self._update_calibration(t0, t1, fs)
-        self.disp.setText(self._displacement_text(t0, t1))
-        self.check_text.setHtml(self._check_html(t0, t1))
+        self.checks.set_items(analysis.trial_check_items(self.trial, t0, t1))
 
     def on_window_peak(self, ms):
         if self.trial is None:
@@ -1810,97 +2379,59 @@ class ReviewTab(QWidget):
         self.update_summary()
 
     def _update_window_peak_mark(self, fp):
-        """The yellow bar on the force plot: the stretch the sliding-window peak was taken from."""
+        """The yellow bar on the force plot (and on the two-axis graph): the stretch the sliding-window peak was taken from."""
         if math.isnan(fp["window_peak_start_s"]):
             self.window_peak_mark.setVisible(False)
+            self.window_peak_both.setVisible(False)
             return
-        self.window_peak_mark.setRegion((fp["window_peak_start_s"], fp["window_peak_end_s"]))
-        self.window_peak_mark.setVisible(True)
+        for mark in (self.window_peak_mark, self.window_peak_both):
+            mark.setRegion((fp["window_peak_start_s"], fp["window_peak_end_s"]))
+            mark.setVisible(True)
 
-    def _update_cards(self, rows, fs, fp):
-        """The key numbers above the graphs: the force numbers when there is force, else the hold angle of the main joint."""
-        cards, angle_cards = self.cards, self.angle_cards
-        has_f = self.trial.has_force()
-        for c in cards.values():
-            c.setVisible(has_f)
-        for c in angle_cards.values():
-            c.setVisible(not has_f)
-        if not has_f:
-            main = next((r for r in rows if r["role"] == "main"), rows[0] if rows else None)
-            deg = lambda v: "-" if v is None or math.isnan(v) else f"{v:.1f} °"                                  # noqa: E731
-            if main is None:
-                for c in angle_cards.values():
-                    c.set_value("-", "")
-                return
-            plateau, tgt = main["plateau_mean_deg"], main["target_deg"]
-            dev = math.nan if (math.isnan(plateau) or math.isnan(tgt)) else plateau - tgt
-            tol = self.trial.meta.get("tolerance_deg") or 5.0
-            angle_cards["hold"].set_value(deg(plateau), f"{main['angle']} during the hold")
-            angle_cards["target"].set_value(deg(tgt), "" if math.isnan(dev) else f"{dev:+.1f} ° from the target",
-                                            None if math.isnan(dev) else "good" if abs(dev) <= tol else "warn")
-            angle_cards["shift"].set_value(deg(main["rest_to_hold_shift_deg"]), "from rest to the hold")
-            return
-        if fs is None:
-            for c in cards.values():
-                c.set_value("-", "no force in the window")
-            return
-        u = fs["unit"]
-        d = 3 if u == "V" else 1
-        f = lambda v: "-" if v is None or math.isnan(v) else f"{v:.{d}f}"                                      # noqa: E731
-        sm = f"{fs['smoothing_s'] * 1000:.0f} ms average" if fs["smoothing_s"] > 0 else "raw samples"
-        cards["peak"].set_value(f"{f(fs['peak'])} {u}", f"at {fs['t_peak_s']:.2f} s · {sm}")
-        if math.isnan(fp["window_peak"]):
-            cards["window_peak"].set_value("-", f"window shorter than {self.trial.window_peak_s * 1000:.0f} ms", "warn")
-        else:
-            cards["window_peak"].set_value(f"{f(fp['window_peak'])} {u}",
-                                           f"{fp['window_peak_ms']:.0f} ms window · {fp['window_peak_start_s']:.2f} to {fp['window_peak_end_s']:.2f} s")
-        if math.isnan(fp["time_to_peak_s"]):
-            cards["time_to_peak"].set_value("-", "no clear push in the window", "warn")
-        else:
-            also = "" if math.isnan(fp["time_to_window_peak_s"]) else f" · {fp['time_to_window_peak_s']:.2f} s to window peak"
-            cards["time_to_peak"].set_value(f"{fp['time_to_peak_s']:.2f} s", f"from the push start{also}")
-        cards["plateau"].set_value(f"{f(fs['plateau_mean'])} {u}", f"middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window")
-        if math.isnan(fs["peak_minus_rest"]):
-            cards["above_rest"].set_value("-", "no resting level before the push", "warn")
-        else:
-            cards["above_rest"].set_value(f"{f(fs['peak_minus_rest'])} {u}", f"rest {f(fs['rest_mean'])} {u}", "warn" if fs["rest_note"] else None)
-        a = fs["main_angle_at_peak_deg"]
-        cards["angle"].set_value("-" if math.isnan(a) else f"{a:.1f} °", fs["main_angle"] or "")
+    def _both_window_moved(self):
+        r = self.window_both.getRegion()
+        if tuple(r) != tuple(self.window.getRegion()):
+            self.window.setRegion(r)
 
-    def _reference_text(self):
-        """The reference readings of the open trial beside the app's angle at the same moment."""
-        tr = self.trial
-        rows = tr.reference_rows()
-        saved = tr.meta.get("reference_readings") or {}
-        lines = ["Reference readings: numbers a person typed from a goniometer or an inclinometer. They are not measured by this program."]
-        if saved.get("not_used"):
-            was = saved["not_used"].get("entered_for") or {}
-            who = f" (participant {was['participant']})" if was.get("participant") else ""
-            lines.append(f"Readings typed for {was.get('test_key')} {was.get('target_deg')}{who} were NOT saved with this trial "
-                         "(they belong to another position or participant).")
-        if not rows:
-            lines += ["", "No reading for this trial. Type it in the Live tab (section Reference reading) before recording, or add it here."]
-            return "\n".join(lines)
-        lines += ["", f"{'':26s}{'reference':>10s}{'n':>3s}{'app':>8s}{'app-ref':>9s}  instrument, from"]
-        for r in rows:
-            app = "-" if r["app_deg"] is None else f"{r['app_deg']:.1f}"
-            diff = "-" if r["difference_deg"] is None else f"{round(r['difference_deg'], 1) + 0.0:+.1f}"          # (no "-0.0")
-            lines.append(f"{r['title'][:25]:26s}{r['reference_deg']:10.1f}{r['n_readings']:3d}{app:>8s}{diff:>9s}  "
-                         f"{reference.INSTRUMENTS.get(r['instrument'], r['instrument'])} (read to {r['resolution_deg']:g} deg), {r['source']}")
-        bases = sorted({r["app_basis"] for r in rows if r["app_basis"]})
-        lines.append("")
-        if bases:
-            lines += [f"The app's angle is {b}." for b in bases]
-        if any(r["app_deg"] is None and r["key"] in {a.name for a in tr.angle_defs} for r in rows):
-            lines.append("For an angle without an app value there was no moment kept and no usable first second.")
-        if saved.get("stamped_at"):
-            lines.append(f"Moment of the reading: {saved['stamped_at']}.")
-        else:
-            lines.append("No moment was kept ('Reading taken now' was not pressed): the first second of the recording stands in, which is only "
-                         "like for like if the participant did not move between the reading and the start.")
-        lines.append("A hand instrument is read to about a degree and has an error of its own of a few degrees; a difference of that size is "
-                     "not an error of the app.")
-        return "\n".join(lines)
+    def _draw_both(self):
+        """Force and angle together: every angle (the main one bold, with the tolerance band) on the left axis, the force on the right axis
+        (newtons if calibrated, else volts; smoothed as the Smoothing box says), the markers, the blue window (draggable here too), the yellow
+        sliding-window bar and the line that follows the picture. Made again when the trial or the smoothing changes; moving the window or the
+        picture only moves their lines."""
+        pl, tr = self.both_plot, self.trial
+        pl.clear()
+        for it in self._both_right_items:
+            pl.remove_right(it)
+        self._both_items, self._both_right_items = [], []
+        if tr is None or not tr.has_force():
+            return
+        m = tr.meta
+        for k, a in enumerate(tr.angle_defs):
+            self._both_items.append(pl.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5), name=a.title,
+                                            connect="finite"))
+            if a.primary and m.get("target_deg") is not None:
+                tol = m["tolerance_deg"]
+                band = pg.LinearRegionItem(values=(m["target_deg"] - tol, m["target_deg"] + tol), orientation="horizontal", brush=(60, 180, 60, 45), movable=False)
+                for line in band.lines:
+                    line.setPen(pg.mkPen((60, 150, 60), style=Qt.DashLine))
+                pl.addItem(band)
+        unit, ys, _ = tr.force_signal()
+        y = ys if tr.force_smooth_s > 0 else (tr.force_n if unit == "N" else tr.force_v)
+        curve = pg.PlotDataItem(tr.force_t, y, pen=pg.mkPen((235, 70, 70), width=2.5))
+        curve.setDownsampling(auto=True, method="peak")                          # (not setClipToView: pyqtgraph 0.14 fails when it is set before the item has a view)
+        self._both_right_items.append(pl.add_right(curve))
+        pl.set_right_label(f"Force ({unit}{', smoothed ' + format(tr.force_smooth_s * 1000, '.0f') + ' ms' if tr.force_smooth_s > 0 else ', raw'})", "#eb4646")
+        if np.isfinite(y).any():
+            lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+            pad = 0.06 * max(hi - lo, 1e-9)
+            pl.set_right_range(lo - pad, hi + pad)
+        for i, t, lab in tr.events:
+            pl.addItem(pg.InfiniteLine(pos=t, angle=90, pen=pg.mkPen(EVENT_GREY, style=Qt.DashLine)))
+        for item in (self.window_both, self.window_peak_both, self.both_cursor):
+            pl.addItem(item)
+        self.window_both.setRegion(self.window.getRegion())
+        if self.trial is not None and len(tr.t):
+            self.both_cursor.setValue(float(tr.t[min(self.slider.value(), len(tr.t) - 1)]))
 
     def edit_reference(self):
         if self.trial is None:
@@ -1918,73 +2449,6 @@ class ReviewTab(QWidget):
                                     "the Reference tab of a trial.")
             return
         ReferenceValidationDialog(folder, rows, self).exec()
-
-    def _force_text(self, t0, t1, fs=None, ft=None, fp=None):
-        """`ft` / `fp`: force_timing and force_peaks of the window if the caller already has them (update_summary does)."""
-        tr = self.trial
-        if not tr.has_force():
-            return "No force was recorded in this trial."
-        fs = fs if fs is not None else tr.force_summary(t0, t1, self.picture_delay.value())
-        if fs is None:
-            return "Force was recorded but there are no samples in this window."
-        u = fs["unit"]
-        fmt = lambda v, d=1: "-" if v is None or math.isnan(v) else f"{v:.{d}f}"                    # noqa: E731
-        d = 3 if u == "V" else 1
-        sm = f"{fs['smoothing_s'] * 1000:.0f} ms moving average" if fs["smoothing_s"] > 0 else "raw samples"
-        if fp is None:
-            ft = analysis.force_timing(tr, t0, t1)
-            fp = analysis.force_peaks(tr, t0, t1, timing=ft)
-        if math.isnan(fp["window_peak"]):
-            wp_line = (f"  sliding-window peak -      (the window is shorter than the {tr.window_peak_s * 1000:.0f} ms sliding window, "
-                       "or has gaps in the force)")
-        else:
-            wp_line = (f"  sliding-window peak {fmt(fp['window_peak'], d)}      (highest mean over {fp['window_peak_ms']:.0f} ms of the raw samples, "
-                       f"{fp['window_peak_start_s']:.2f} to {fp['window_peak_end_s']:.2f} s)")
-        lines = [f"Force in the window ({u}{'' if u == 'N' else ', not calibrated'}; {sm})",
-                 f"  peak                {fmt(fs['peak'], d)} at {fs['t_peak_s']:.2f} s",
-                 wp_line,
-                 f"  plateau mean        {fmt(fs['plateau_mean'], d)}   (middle {100 - 200 * PLATEAU_TRIM:.0f} % of the window)",
-                 f"  rest before         {fmt(fs['rest_mean'], d)}      peak above rest {fmt(fs['peak_minus_rest'], d)}",
-                 f"                      ({fs['rest_basis']}, {fs['rest_seconds']:.1f} s of force)"]
-        if fs["rest_note"]:
-            lines.append("  " + fs["rest_note"])
-        if not math.isnan(fs["relaxed"]):
-            ease = fs["rest_minus_relaxed"]
-            lines += [f"  relaxed (Zero 2)    {fmt(fs['relaxed'], d)}      peak above relaxed {fmt(fs['peak_minus_relaxed'], d)}",
-                      "                      (taken with the participant relaxed in the strap, before the trial)"
-                      + ("" if math.isnan(ease) else f"; the rest before the push was {abs(ease):.{d}f} {u} "
-                         f"{'higher' if ease > 0 else 'lower'} than that")]
-        elif fs["relaxed_note"]:
-            lines.append("  " + fs["relaxed_note"])
-        if fs["smoothing_s"] > 0:
-            lines.append(f"  raw single-sample max {fmt(fs['raw_peak'], d)}   (a noisy single sample overstates the peak)")
-        lines += ["", f"  {fs['main_angle']} at the peak force: {fmt(fs['main_angle_at_peak_deg'])} deg"
-                  + (f"   (pictures read {fs['picture_delay_s']:+.3f} s after the peak)" if fs["picture_delay_s"] else "")
-                  + "   (the plateau mean angle is on the Angles tab)",
-                  f"  Calibration: {tr.force_cal_note}" + (f"  (regression {tr.regression.id}, see the Calibration tab)" if tr.regression else "")]
-        if ft is not None:
-            lines += ["", "Timing and steadiness (smoothed force)",
-                      f"  onset                 {ft['onset_s']:.2f} s   (force last within 10 % of its rise above the level before the push)",
-                      f"  time to peak          {ft['time_to_peak_s']:.2f} s   (from the onset to the peak)"
-                      + ("" if math.isnan(fp["time_to_window_peak_s"]) else f"; to the middle of the sliding-window peak {fp['time_to_window_peak_s']:.2f} s"),
-                      f"  10 % to 90 % of rise  {ft['time_to_90pct_s']:.2f} s",
-                      f"  steepest rise         {fmt(ft['rise_rate_per_s'], d)} {u}/s  (over 100 ms)",
-                      f"  held above 90 % of peak for {ft['hold_above_90pct_s']:.2f} s, steadiness (SD / mean) {fmt(ft['hold_cv_pct'])} %"]
-        tq = analysis.torque_summary(tr, t0, t1, self.picture_delay.value())
-        if tq is not None:
-            lines += ["", "Torque at the joint (force x moment arm)",
-                      f"  peak {tq['peak_nm']:.1f} N.m at {tq['t_peak_s']:.2f} s   |   at the peak force {tq['at_peak_force_nm']:.1f} N.m   |   plateau {fmt(tq['plateau_nm'])} N.m",
-                      f"  moment arm at the peak force {tq['arm_at_peak_force_cm']:.1f} cm (mean {tq['mean_arm_cm']:.1f} cm)"
-                      + (f"; the strap dot was not seen in {tq['pictures_with_stand_in']} of {tq['pictures']} pictures: the ankle dot stood in for it"
-                         if tq["pictures_with_stand_in"] else "")]
-        else:
-            why = ("the force is not calibrated" if u != "N" else "there is no ruler scale" if not tr.px_per_cm
-                   else "the anchor dot was not used" if "anchor" not in tr.tracks else "no moment arm could be measured")
-            lines += ["", f"Torque: not available ({why})."]
-        if not math.isnan(fs["mains_hum_pct_of_peak"]) and fs["mains_hum_pct_of_peak"] > analysis.HUM_WARN_PCT:
-            lines += ["", f"50 Hz mains interference: {fs['mains_hum_v'] * 1000:.0f} mV = {fs['mains_hum_pct_of_peak']:.0f} % of the rise above rest",
-                      "  (check shielding and grounding; a smoothing window that is a multiple of 20 ms removes it)"]
-        return "\n".join(lines)
 
     def _update_calibration(self, t0, t1, fs=None):
         """The Calibration tab: the regression behind this trial's newtons (or the active one when the trial has none), and its precision."""
@@ -2026,27 +2490,19 @@ class ReviewTab(QWidget):
             lines.append("No load cell regression is stored.")
         self.calib.show_regression(reg, lines, marks)
 
-    def _check_html(self, t0, t1):
-        colours = {"ok": ("#16a34a", "OK    "), "check": ("#dc2626", "CHECK "), "info": ("#6b7280", "info  ")}
-        rows = []
-        for level, text in analysis.trial_checks(self.trial, t0, t1):
-            c, tag = colours[level]
-            esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            rows.append(f"<p style='margin:2px 0'><b style='color:{c}'>{tag.replace(' ', '&nbsp;')}</b> {esc}</p>")
-        return "<div style='font-family: Segoe UI, sans-serif; font-size: 10pt'>" + "".join(rows) + "</div>"
-
     def export_overlay_video(self):
         """Render the overlay picture for every frame from the raw video and the CSV and save it as a video file."""
         if self.trial is None:
             return
         tr = self.trial
-        out = tr.folder / f"{tr.base}_overlay_export.mp4"
+        out = review_layer.review_file(tr.meta_path, f"{tr.base}_overlay_{tr.source}.mp4")           # (the review layer: never beside the trial's files)
         n = len(tr.rows)
         fps = tr.meta.get("video_fps_written") or tr.meta.get("measured_fps") or 30.0
         writer, done = None, 0
         progress = QProgressDialog("Drawing the overlay video...", "Cancel", 0, n, self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
+        part = review_layer.temp_video_path(out)
         try:
             for i in range(n):
                 img = tr.drawn(i, trails=self.chk_trails.isChecked())
@@ -2054,7 +2510,7 @@ class ReviewTab(QWidget):
                     break
                 if writer is None:
                     h, w = img.shape[:2]
-                    writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
+                    writer = cv2.VideoWriter(str(part), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
                     if not writer.isOpened():
                         raise RuntimeError("Could not open the video file for writing.")
                 writer.write(img)
@@ -2069,30 +2525,9 @@ class ReviewTab(QWidget):
             if writer is not None:
                 writer.release()
             progress.close()
-        QMessageBox.information(self, "Exported", f"Saved {out.name} ({done} of {n} frames).")
-
-    def _displacement_text(self, t0, t1):
-        tr = self.trial
-        cm = tr.px_per_cm is not None
-        unit = lambda px, c: f"{px:5.1f} px" + (f" ({c:4.2f} cm)" if cm else "")      # noqa: E731
-        rows = tr.displacement(t0, t1)
-        has_rel = any("rel_end_shift_px" in r for r in rows)
-        lines = ["Dot movement in the window (from the starting position; px" + (", cm from the ruler scale" if cm else ", no ruler scale") + ")",
-                 f"{'':16s}{'end shift':>20s}{'max shift':>20s}" + (f"{'end vs anchor':>20s}{'max vs anchor':>20s}" if has_rel else "")]
-        for r in rows:
-            def one(prefix):
-                px, c = r.get(f"{prefix}_px", math.nan), r.get(f"{prefix}_cm", math.nan)
-                return "-".rjust(20) if math.isnan(px) else unit(px, c).rjust(20)
-            line = f"{r['dot'][:15]:16s}{one('end_shift')}{one('max_shift')}"
-            if has_rel:
-                line += (one("rel_end_shift") + one("rel_max_shift")) if "rel_end_shift_px" in r else "-".rjust(20) * 2
-            lines.append(line)
-        pull = tr.pull_summary(t0, t1)
-        if pull:
-            lines += ["", "Pull (strap and anchor dots)", f"{'':22s}{'mean':>8s}{'min':>8s}{'max':>8s}{'start>end':>11s}"]
-            for q in pull:
-                lines.append(f"{q['quantity']:22s}{q['mean']:8.1f}{q['min']:8.1f}{q['max']:8.1f}{q['change_start_to_end']:+11.1f}")
-        return "\n".join(lines)
+        if done:
+            review_layer.finish_video(part, out)
+        QMessageBox.information(self, "Exported", f"Saved {out.name} in the review folder ({done} of {n} frames).")
 
     def _verdict_changed(self, v, reasons, note):
         """The verdict was changed in Review: saved next to the trial (its history keeps what was decided on site)."""
@@ -2123,7 +2558,7 @@ class ReviewTab(QWidget):
         entries = review_nav.list_trials(folder)
         smooth, window = self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0
         self.overview.cancel()
-        self.overview.set_settings(smooth, window)
+        self.overview.set_settings(smooth, window, self._source)
         rows, failed = [], []
         todo = sum(1 for e in entries if e.readable and self.overview.row_for(e.base) is None)
         progress = QProgressDialog("Working out the numbers of every trial...", "Cancel", 0, todo, self) if todo > 3 else None
@@ -2138,7 +2573,7 @@ class ReviewTab(QWidget):
                     continue
                 row = self.overview.row_for(e.base)
                 if row is None:
-                    row, err = trial_row(e.meta_path, smooth, window)
+                    row, err = trial_row(e.meta_path, smooth, window, self._source)
                     if row is None:
                         failed.append(f"{e.base}: {err}")
                         continue
@@ -2164,9 +2599,17 @@ class ReviewTab(QWidget):
             return
         analysis.repeatability(rows)
         pid = entries[0].participant if entries and entries[0].participant else folder.name
-        out = folder / f"{pid}_session_summary{'_valid' if valid_only else ''}.csv"
-        analysis.write_session_csv(rows, out)
-        text = f"Saved {out.name}: {len(rows)} trial{'' if len(rows) == 1 else 's'}"
+        tag = "reviewed" if any(r.get("data_source") == "reviewed" for r in rows) else "original"     # (what the numbers are: 'reviewed' only if a trial has fixes)
+        out = review_layer.exports_dir(entries[0].meta_path) / f"{pid}_session_summary_{tag}{'_valid' if valid_only else ''}.csv"
+        part = review_layer.guard(out.with_name(out.name + ".tmp"))                                     # (the review layer only; the file appears whole or not at all)
+        part.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            analysis.write_session_csv(rows, part)
+            os.replace(part, out)
+        except OSError as e:
+            QMessageBox.warning(self, "Not saved", f"{out.name} could not be written in the review folder:\n{e}\n\nIf it is open in Excel, close it and export again.")
+            return
+        text = f"Saved {out.name} in the review folder (exports): {len(rows)} trial{'' if len(rows) == 1 else 's'}"
         text += (" (the valid ones)." if valid_only else
                  f" ({judged['valid']} valid, {judged['compromised']} compromised, {judged['not judged']} not judged yet).")
         if judged["not judged"]:
@@ -2180,14 +2623,17 @@ class ReviewTab(QWidget):
         if self.trial is None:
             return
         rows, (t0, t1) = self._rows()
-        out = self.trial.folder / f"{self.trial.base}_summary.csv"
-        with open(out, "w", newline="", encoding="utf-8") as fh:
+        tag = self.trial.source                                                            # 'original', or 'reviewed' when the trial has fixes
+        out = review_layer.review_file(self.trial.meta_path, f"{self.trial.base}_summary_{tag}.csv")      # (the review layer: never beside the trial's files)
+        with review_layer.atomic(out, newline="") as fh:
             w = csv.writer(fh)
             ident = {"participant": self.trial.meta.get("participant"), "test_key": self.trial.meta.get("test_key"),
                      "trial": self.trial.base, "tolerance_deg": self.trial.meta.get("tolerance_deg"),
                      "software_version": self.trial.meta.get("software_version"),
                      "window_source": "MVIC markers" if self.trial.hold_window() and tuple(map(float, (t0, t1))) == tuple(self.trial.hold_window())
-                     else "window as set (not the MVIC markers)"}
+                     else "window as set (not the MVIC markers)",
+                     "data_source": tag, "review_edits": "; ".join(self.trial.review_notes),
+                     "force_zero_source": self.trial.zero_source()}
             v = verdicts.read_verdict(self.trial.meta_path) or {}                          # 0.29.0: the operator's verdict goes with the numbers
             ident.update(verdict=v.get("verdict") or "", verdict_reasons=", ".join(verdicts.REASONS.get(r, r) for r in v.get("reasons") or []),
                          verdict_note=v.get("note") or "")
@@ -2195,7 +2641,8 @@ class ReviewTab(QWidget):
             fnames = ["force_unit", "force_peak", "force_t_peak_s", "force_plateau_mean", "force_rest_mean", "main_angle_at_peak_force_deg",
                       "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note", "force_smoothing_ms", "force_mains_hum_pct_of_peak",
                       "force_raw_peak", "force_regression_id", "force_peak_95pct_n", "force_relaxed_level", "force_peak_above_relaxed",
-                      "force_window_peak", "force_window_peak_ms", "force_window_peak_at_s", "force_time_to_peak_s", "force_time_to_window_peak_s"]
+                      "force_window_peak", "force_window_peak_ms", "force_window_peak_at_s", "force_time_to_peak_s", "force_time_to_window_peak_s",
+                      "force_peak_20ms"]
             fp = analysis.force_peaks(self.trial, t0, t1)
             cal = self.trial.force_cal or {}
             reg = self.trial.regression
@@ -2205,20 +2652,48 @@ class ReviewTab(QWidget):
                       fs["picture_delay_s"], cal.get("n_per_v"), cal.get("offset_v"), self.trial.force_cal_note,
                       fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"],
                       reg.id if reg is not None else "", peak_ci, fs["relaxed"], fs["peak_minus_relaxed"],
-                      fp["window_peak"], fp["window_peak_ms"], fp["window_peak_at_s"], fp["time_to_peak_s"], fp["time_to_window_peak_s"]]
+                      fp["window_peak"], fp["window_peak_ms"], fp["window_peak_at_s"], fp["time_to_peak_s"], fp["time_to_window_peak_s"],
+                      fs["peak_20ms"]]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))
             for r in rows:
                 w.writerow(list(ident.values()) + [round(t0, 3), round(t1, 3)] + fvals
                            + [round(v, 3) if isinstance(v, float) else v for v in r.values()])
-        extra = self.trial.folder / f"{self.trial.base}_displacement.csv"
+        extra = review_layer.review_file(self.trial.meta_path, f"{self.trial.base}_displacement_{tag}.csv")
         drows = self.trial.displacement(t0, t1)
         keys = list(dict.fromkeys(k for r in drows for k in r))
-        with open(extra, "w", newline="", encoding="utf-8") as fh:
+        with review_layer.atomic(extra, newline="") as fh:
             w = csv.writer(fh)
             w.writerow(["window_start_s", "window_end_s"] + keys)
             for r in drows:
                 w.writerow([round(t0, 3), round(t1, 3)] + [("" if isinstance(r.get(k), float) and math.isnan(r[k]) else
                                                               round(r[k], 3) if isinstance(r.get(k), float) else r.get(k, "")) for k in keys])
-        QMessageBox.information(self, "Exported", f"Saved {out.name} and {extra.name}")
+        written = [out.name, extra.name] + self._write_reviewed_files()
+        QMessageBox.information(self, "Exported", f"Saved {' and '.join(written)} in the review folder")
+
+    def _write_reviewed_files(self):
+        """For reviewed data with fixes: the edited numbers as two files other programs can read, `reviewed_data.csv` (every picture, the dot
+        columns, angles and pull as fixed, and which dots were fixed) and `reviewed_force.csv` (every force sample, newtons with the zero in use)."""
+        tr = self.trial
+        if tr.source != "reviewed":
+            return []
+        head = list(tr.rows[0]) + ["dots_edited"]
+        out_d = review_layer.review_file(tr.meta_path, "reviewed_data.csv")
+        with review_layer.atomic(out_d, newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(head)
+            for i, r in enumerate(tr.rows):
+                w.writerow([r.get(k, "") for k in head[:-1]] + [";".join(d for d, f in tr.edited_sets.items() if i in f)])
+        names = [out_d.name]
+        if tr.has_force():
+            out_f = review_layer.review_file(tr.meta_path, "reviewed_force.csv")
+            with review_layer.atomic(out_f, newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(["t_s", "volts", "newtons", "zero_v", "zero_source"])
+                zero, _ = tr.current_zero_v()
+                src = tr.zero_source()
+                for t, v, n in zip(tr.force_t.tolist(), tr.force_v.tolist(), tr.force_n.tolist()):
+                    w.writerow([round(t, 5), round(v, 6), "" if n != n else round(n, 3), round(zero, 6), src])
+            names.append(out_f.name)
+        return names

@@ -76,16 +76,21 @@ def test_the_export_identifies_the_trial_and_says_where_the_window_came_from(tmp
     paths = record(tmp_path)
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert "Hold: the angle during the contraction" in tab.stats.text() and "plateau" in tab.stats.text()
+    shown = tab.angle_tree.text(everything=True)
+    assert "Hold is the angle during the contraction" in shown and "not the angle that was set" in shown
+    main = main_row(tab.trial.summary(*tab.window.getRegion()))
+    row = next(l for l in shown.splitlines() if l.startswith("Knee flexion (main joint):"))          # the hold angle (the plateau) of the main joint, in its table row
+    assert f"hold {main['plateau_mean_deg']:.1f} deg" in row and main["plateau_mean_deg"] == pytest.approx(80.0, abs=1.0)
     tab.export()
-    rows = list(csv.DictReader(open(tmp_path / "P01" / f"{tab.trial.base}_summary.csv", newline="")))
+    summary = tmp_path / "review" / "P01" / tab.trial.base / f"{tab.trial.base}_summary_original.csv"          # (the review folder, 0.30.0)
+    rows = list(csv.DictReader(open(summary, newline="")))
     knee = next(r for r in rows if r["role"] == "main")
     assert knee["participant"] == "P01" and knee["test_key"] == "knee_extension" and knee["trial"] == tab.trial.base
     assert knee["window_source"] == "MVIC markers" and knee["software_version"]
     assert float(knee["plateau_mean_deg"]) == pytest.approx(80.0, abs=1.0) and float(knee["rest_to_hold_shift_deg"]) < -8.0
     tab.window.setRegion((float(tab.trial.t[0]), float(tab.trial.t[-1])))     # whole trial
     tab.export()
-    rows = list(csv.DictReader(open(tmp_path / "P01" / f"{tab.trial.base}_summary.csv", newline="")))
+    rows = list(csv.DictReader(open(summary, newline="")))
     assert rows[0]["window_source"].startswith("window as set")
 
 
@@ -94,4 +99,4 @@ def test_without_markers_the_screen_says_so(tmp_path):
     paths = record(tmp_path, markers=False)
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert "no MVIC start/end markers" in tab.stats.text()
+    assert "No MVIC start/end markers in this trial: the numbers use the window as set" in tab.angle_tree.text(everything=True)

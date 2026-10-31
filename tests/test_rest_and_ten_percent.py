@@ -104,8 +104,10 @@ def test_review_says_where_the_rest_came_from(trial, tmp_path):
     tr = with_force(trial, t, ramp(t, 50.0, 5.0, 400.0))
     tab = ReviewTab(tmp_path)
     tab.trial = tr
-    text = tab._force_text(*tr.force_window())
-    assert "rest before" in text and f"median {REST_FROM_S:g} to {REST_TO_S:g} s before the push, 2.5 s of force" in text
+    tab.window.setRegion(tr.force_window())
+    tab.update_summary()
+    text = tab.force_tree.text(everything=True)
+    assert "Rest before" in text and f"median {REST_FROM_S:g} to {REST_TO_S:g} s before the push, 2.5 s of force" in text
 
 
 # ------------------------------------------------------------------------------------------------ the 10 % rule on export rows

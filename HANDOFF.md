@@ -205,7 +205,11 @@ Tests: 52 test files in `tests/` (49 before the 2026-10-13 work) (synthetic leg 
    *Export all trials of this participant* (one row per trial + the 10 % repeatability flag). Since 0.29.0: participant and trial
    drop-downs instead of *Open trial...*, a participant overview table, the sliding-window peak (`analysis.window_peak`, 500 ms
    default, adjustable) and time to peak (`analysis.force_peaks`), a valid-only export; code in `review.py`, `review_nav.py`,
-   `review_overview.py`, `review_style.py`; see CHANGELOG 0.29.0.
+   `review_overview.py`, `review_style.py`; see CHANGELOG 0.29.0. Since 0.30.0: the **review layer** (`review_layer.py`: the only writer, under
+   `recordings/review/`; the recorded files are never written by Review, proved by `tests/test_originals_untouched.py`), Data Original | Reviewed, a force zero that sticks
+   (typed / from a stretch / from the rest), the zero-drift check, **Fix dots** (`dot_edits.py`, `review_fixdots.py`: hold, lost, by hand, re-track), exports in the review
+   folder, `tools/protect_originals.py`. Since 0.32.0 the Review tab is laid out around the review task (CHANGELOG 0.32.0: the two tables in `review_angles.py` and `review_force.py`, the bottom bar in `review_decide.py` / `review_checks.py`, the Fix-dots workspace and zoom, the overview with worker processes and Approve review; mockups were agreed in chat first, measurements in `audit/evidence/SPEED_2026-10-31/`). The force filter / Noise tab is NOT built: it waits for recordings from the new room (the pilot's 10 N noise is 50 Hz hum, which a
+   multiple-of-20-ms moving average already removes).
 
 Torque (N.m) = smoothed force x moment arm: needs calibrated force + ruler scale + anchor dot; when the strap dot is not seen the ankle dot
 stands in (reported). It has only been exercised on synthetic geometry so far.

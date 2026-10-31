@@ -110,10 +110,12 @@ def test_review_tab_markers_ui(tmp_path, monkeypatch):
     tab.snap_window()
     lo, hi = tab.window.getRegion()
     assert lo == pytest.approx(1.0, abs=0.01) and hi == pytest.approx(85 / 30, abs=0.01)
-    assert "start>end" in tab.stats.text()
+    knee = next(r for r in tab.trial.summary(lo, hi) if r["angle"] == "Knee flexion")
+    start_to_end = next(l for l in tab.angle_tree.text(everything=True).splitlines() if "Start to end" in l)     # (a line of 'More numbers' under the knee row)
+    assert f"Start to end {knee['change_start_to_end_deg']:+.1f} deg" in start_to_end and knee["change_start_to_end_deg"] == pytest.approx(6.0, abs=0.7)
     tab.export()
-    out = list(Path(paths["meta.json"]).parent.glob("*_summary.csv"))
-    assert len(out) == 1
+    out = list((tmp_path / "review").rglob("*_summary_original.csv"))              # the review folder, not beside the trial (0.30.0)
+    assert len(out) == 1 and not list(Path(paths["meta.json"]).parent.glob("*_summary*.csv"))
     head = open(out[0], newline="").readline()
     assert "change_start_to_end_deg" in head and "window_start_s" in head
 

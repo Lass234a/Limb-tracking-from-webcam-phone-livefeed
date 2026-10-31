@@ -31,6 +31,7 @@ from .recorder import trial_metas
 from .rest import REST_AFTER_SUBMAX_S, RestTimer
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
+from .twoaxis import TwoAxisPlot
 from .review import ReviewTab, after_trial_check, fill_reference_choices, select_reference_choices
 
 BIG = "font-size: 15pt; font-weight: bold;"
@@ -966,7 +967,8 @@ class LiveTab(QWidget):
         self.trace_mode.addItem("Drift from set position, all joints", "drift")
         self.trace_mode.addItem("Force, last 15 s (when connected)", "force")
         self.trace_mode.addItem("Force voltage (V), last 15 s", "force_v")
-        self.trace = pg.PlotWidget()
+        self.trace_mode.addItem("Main angle + force, two axes, last 15 s", "both")     # 0.31.0: angle on the left axis, the smoothed force on the right
+        self.trace = TwoAxisPlot()
         self.trace.setMinimumHeight(170)
         self.trace.setMaximumHeight(230)
         self.trace.setLabel("bottom", "Seconds ago")
@@ -975,6 +977,7 @@ class LiveTab(QWidget):
         self.trace.setMouseEnabled(False, False)
         self.trace.addLegend(offset=(10, 5))
         self._trace_items = []
+        self._trace_right_items = []              # the force curve of the two-axis mode (it lives in the second view box)
         self.trace_timer = QTimer(self)
         self.trace_timer.timeout.connect(self.update_trace)
         self.trace_timer.start(TRACE_MS)         # 5 redraws a second: each costs the window thread, and with it the picture thread
@@ -2222,8 +2225,8 @@ class LiveTab(QWidget):
     def _start_recording_view(self):
         """'Recording first' (0.21.0): the trace once a second while recording (the picture: VideoWorker._show; the panel: refresh_status)."""
         if self.engine.recording_first:
-            self.trace_timer.setInterval(TRACE_MS_RECORDING)
-            self._panel_tick = 0
+            self.trace_timer.setInterval(TRACE_MS_RECORDING * (2 if self.trace_mode.currentData() == "both" else 1))      # (the two-axis graph costs the saved file
+            self._panel_tick = 0                                                                                            # about 5 % of its pictures: every 2 s)
 
     def _end_recording_view(self):
         self.trace_timer.setInterval(TRACE_MS)
@@ -2456,19 +2459,45 @@ class LiveTab(QWidget):
             pad = 0.1 * max(hi - lo, 1.0 if cal else 0.01)
             self.trace.setYRange(lo - pad, hi + pad, padding=0)
 
+    def _draw_force_right(self):
+        """The two-axis mode's force: the same smoothed, thinned force the Force mode draws (`ForceSource.recent`: a moving average of the
+        Display smoothing, about 1500 points), on the right axis. Display only: the saved force file holds every raw sample."""
+        src = self.force_source
+        if src is None:
+            self.trace.set_right_label("Force: not connected")
+            return
+        t, v = src.recent(15.0)
+        cal = src.calibration.calibrated
+        y = src.calibration.to_newton(v) if cal else v
+        curve = pg.PlotCurveItem(t, y, pen=pg.mkPen((220, 60, 60), width=2), connect="finite")
+        self.trace.add_right(curve)
+        self._trace_right_items.append(curve)
+        self.trace.set_right_label("Force (N)" if cal else "Force (V)", "#dc3c3c")
+        if y.size and np.isfinite(y).any():
+            lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+            pad = 0.1 * max(hi - lo, 1.0 if cal else 0.01)
+            self.trace.set_right_range(lo - pad, hi + pad)
+
     def update_trace(self):
         for it in self._trace_items:
             self.trace.removeItem(it)
         self._trace_items = []
-        if self.trace_mode.currentData() in ("force", "force_v"):
-            self._draw_force_trace(volts_only=self.trace_mode.currentData() == "force_v")
+        for it in self._trace_right_items:
+            self.trace.remove_right(it)
+        self._trace_right_items = []
+        mode = self.trace_mode.currentData()
+        self.trace.use_right(mode == "both")
+        if mode in ("force", "force_v"):
+            self._draw_force_trace(volts_only=mode == "force_v")
             return
         self.trace.setLabel("left", "deg")
+        if mode == "both":
+            self._draw_force_right()                                     # (then the main angle and its band, as in 'Main angle')
         h = self.engine.history(15.0)
         if h is None or self.worker is None:
             return
         tol, ntol, target = h["tolerance"], h["neighbour_tolerance"], h["target"]
-        drift = self.trace_mode.currentData() == "drift"
+        drift = mode == "drift"
         pens = {n: PENS[k % len(PENS)] for k, n in enumerate(h["values"])}
         names = [h["primary"]] + ([n for n in h["values"] if n != h["primary"]] if drift else [])
         series = h["deviations"] if drift else h["values"]
@@ -3726,4 +3755,5 @@ class MainWindow(QWidget):
     def closeEvent(self, e):
         self.live.save_session()                                 # before anything is switched off: what was connected is remembered
         self.live.shutdown()
+        self.review.shutdown()                                   # (the overview's worker processes)
         super().closeEvent(e)

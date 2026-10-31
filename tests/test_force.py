@@ -359,8 +359,8 @@ def test_review_recalculates_newtons_with_the_active_regression_and_exports_what
     eng, paths = uncalibrated_recording(tmp_path)
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert "volts only" in tab.force_text.text() and "not calibrated" in tab.force_text.text()
-    assert "in volts" in tab.calib.text.text()                                  # the Calibration tab says there are no newtons yet
+    assert "volts only" in tab.force_tree.text(everything=True) and "not calibrated" in tab.force_tree.text(everything=True)
+    assert "in volts" in tab.calib.text.text()                                  # the calibration view says there are no newtons yet
     assert tab.zero_spin.value() == pytest.approx(0.0123, abs=0.003)           # no zero was taken: the resting level
     real = review_mod.active_regression
     monkeypatch.setattr(review_mod, "active_regression", lambda *a: None)
@@ -369,12 +369,12 @@ def test_review_recalculates_newtons_with_the_active_regression_and_exports_what
     monkeypatch.setattr(review_mod, "active_regression", real)
     tab.zero_spin.setValue(0.0123)
     tab.apply_force_calibration()
-    txt, ctxt = tab.force_text.text(), tab.calib.text.text()
-    assert "applied later" in txt and "Force in the window (N" in txt
+    txt, ctxt = tab.force_tree.text(everything=True), tab.calib.text.text()
+    assert "applied later" in txt and "Force in the window: N" in txt
     reg = real()
     assert reg.id in ctxt and "peak" in ctxt and "about 95 %" in ctxt and "N per volt" in ctxt          # the regression and the precision of the peak
     tab.export()
-    summary = list(csv.DictReader(open(next(tmp_path.rglob("*_summary.csv")), newline="")))
+    summary = list(csv.DictReader(open(next(tmp_path.rglob("*_summary_*.csv")), newline="")))      # (the review folder; reviewed data: the zero was set in Review)
     assert summary[0]["force_unit"] == "N" and float(summary[0]["force_n_per_v"]) == pytest.approx(reg.n_per_v, abs=0.01)
     assert summary[0]["force_regression_id"] == reg.id and float(summary[0]["force_peak_95pct_n"]) > 1.0
     assert "applied later" in summary[0]["force_calibration_note"] and summary[0]["picture_delay_s"] == "0.0"

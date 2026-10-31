@@ -120,6 +120,35 @@ def window_peak(tr, t0, t1, window_s=WINDOW_PEAK_DEFAULT_S):
 _UNSET = object()
 
 
+ZERO_DRIFT_WARN_N = 10.0        # 0.30.0: the resting force before and after the push differing by more than this is called out
+ZERO_AFTER_S = 1.0              # ... the 'after' level is the last second of the recording, when the force had been back at rest before it
+
+
+def zero_drift(tr, t0, t1):
+    """Does the zero hold? The resting force before the push (`Trial.force_rest`) against the resting force in the last second of the
+    recording, taken only when the force had released and was back near its resting level by then. Returns {unit, before, after, drift}
+    (drift = after - before, in the force unit) or None (no force, no clear push, or the recording ended while the strap was still loaded)."""
+    if not tr.has_force():
+        return None
+    ri = tr.force_rest()
+    ft = force_timing(tr, t0, t1)
+    if ri is None or ft is None or math.isnan(ri["level"]):
+        return None
+    unit, y, _ = tr.force_signal()
+    t = tr.force_t
+    start = float(t[-1]) - ZERO_AFTER_S
+    if start <= ft["offset_s"]:
+        return None
+    m = (t >= start) & np.isfinite(y)
+    if m.sum() < 10:
+        return None
+    after = float(np.median(y[m]))
+    rise = ft["peak"] - ri["level"]
+    if after - ri["level"] > 0.10 * abs(rise):
+        return None                                                       # still loaded at the end: nothing to compare
+    return {"unit": unit, "before": float(ri["level"]), "after": after, "drift": after - float(ri["level"])}
+
+
 def force_peaks(tr, t0, t1, window_s=None, timing=_UNSET):
     """Everything the paper-style peak adds to a trial in one dict (0.29.0): the sliding-window peak (`window_peak`) and the times to the
     peaks, measured from the start of the push (`force_timing`'s onset: the force last within 10 % of its rise above the level before
@@ -240,53 +269,105 @@ def torque_summary(tr, t0, t1, picture_delay=0.0):
 
 
 # ------------------------------------------------------------------------------------------------ the check list
-def trial_checks(tr, t0=None, t1=None):
-    """[(level, text)] with level 'ok', 'check' or 'info': a quick go / no-go for the trial in plain English."""
+CHECK_TITLE_MAX = 36            # 0.32.0: the headline of a check (Review's checks panel) is at most this many characters
+CHECK_AREAS = ("recording", "dots", "position", "force", "review", "verdict")
+CHECK_ACTIONS = ("fix_dots", "zero", "window", "calibration")       # what a check can offer to do about it (None: nothing)
+
+
+def _title(*options):
+    """The first of the options that fits CHECK_TITLE_MAX characters, else the last one cut short."""
+    for o in options:
+        if len(o) <= CHECK_TITLE_MAX:
+            return o
+    return options[-1][:CHECK_TITLE_MAX - 1].rstrip() + "…"
+
+
+def _review_note_title(note):
+    """The headline of a line Review wrote about what it changed in the trial (Trial.review_notes)."""
+    low = note.lower()
+    if note.startswith("WARNING"):
+        return "Originals changed after review" if "original" in low else "Review warning"
+    if "no slope" in low:
+        return "Force zero not applied"
+    if low.startswith("force zero") or "force zero edit" in low:
+        return "Force zero set in Review"
+    if low.startswith("force filter"):
+        return "Force filtered in Review"
+    if low.startswith("dot "):
+        name = note[4:].split(":")[0]
+        return _title(f"Dot {name} edit ignored" if "ignored" in low else f"Dot {name} fixed in Review", "Dot fixed in Review")
+    return "Changed in Review"
+
+
+def trial_check_items(tr, t0=None, t1=None):
+    """0.32.0: the check list with what Review's checks panel needs to show it clearly. A list of dicts, in the order (and with the level and
+    text) of `trial_checks`: level 'ok', 'check' or 'info'; text, the full plain sentence; title, a short headline (at most
+    CHECK_TITLE_MAX characters); area, one of CHECK_AREAS (recording, dots, position, force, review, verdict); action, None or one of
+    CHECK_ACTIONS (the thing Review can open for this check: 'fix_dots', 'zero', 'window', 'calibration'); arg, the dot name for 'fix_dots'
+    when the check is about a dot (the first of a pair), else None."""
     out = []
     m = tr.meta
 
-    def add(level, text):
-        out.append((level, text))
+    def add(level, text, title, area, action=None, arg=None):
+        if len(title) > CHECK_TITLE_MAX:                                # (a headline is never longer than the panel can show)
+            title = title[:CHECK_TITLE_MAX - 1].rstrip() + "…"
+        out.append({"level": level, "text": text, "title": title, "area": area, "action": action, "arg": arg})
 
     # pictures and the computer
     fps = m.get("measured_fps")
     if fps is not None:
-        add("check" if fps < FPS_WARN else "ok",
-            f"Pictures: {fps:.1f} per second" + (f" (below {FPS_WARN:g}: fast movements are sampled coarsely)" if fps < FPS_WARN else ""))
+        if fps < FPS_WARN:
+            add("check", f"Pictures: {fps:.1f} per second" + f" (below {FPS_WARN:g}: fast movements are sampled coarsely)",
+                f"Pictures per second low ({fps:.1f})", "recording")
+        else:
+            add("ok", f"Pictures: {fps:.1f} per second", f"Pictures: {fps:.1f} per second", "recording")
     pt = m.get("pipeline_timing") or {}
     if pt and pt.get("process_share_of_interval", 0) > 0.8 and fps and fps < 26:
         add("check", f"The computer was the limit: its work took {pt['process_ms']['mean']:.0f} ms per picture while the pictures came "
-                     f"{pt['frame_interval_ms']['median']:.0f} ms apart. Close other programs, or use fewer dots.")
+                     f"{pt['frame_interval_ms']['median']:.0f} ms apart. Close other programs, or use fewer dots.",
+            "The computer was the limit", "recording")
     g = m.get("gaps") or {}
     if g.get("count"):
-        add("check", f"{g['count']} gap(s) with no pictures, longest {g.get('max_s', 0):.2f} s: the angles in them are unknown.")
+        add("check", f"{g['count']} gap(s) with no pictures, longest {g.get('max_s', 0):.2f} s: the angles in them are unknown.",
+            f"{g['count']} gap{'' if g['count'] == 1 else 's'} with no pictures", "recording")
     # tracking
     n = len(tr.rows)
     for d in tr.dot_names:
         lost = sum(r[f"{d}_lost"] == "1" for r in tr.rows)
         pct = 100.0 * lost / max(n, 1)
         if pct > LOST_WARN_PCT:
-            add("check", f"Dot '{d}' was lost in {pct:.0f} % of the pictures" + (" (the strap dot is often hidden by the buckle or a fold: put a bright sticker where it stays visible)" if d == "strap" else "."))
+            add("check", f"Dot '{d}' was lost in {pct:.0f} % of the pictures" + (" (the strap dot is often hidden by the buckle or a fold: put a bright sticker where it stays visible)" if d == "strap" else "."),
+                _title(f"Dot {d} lost {pct:.0f} %", f"Dot lost {pct:.0f} %"), "dots", "fix_dots", d)
     if m.get("partial_dot_frames"):
-        add("info", "Dots seen only partly (the centre may be a little off): " + ", ".join(f"{k} {v} pictures" for k, v in m["partial_dot_frames"].items()))
+        add("info", "Dots seen only partly (the centre may be a little off): " + ", ".join(f"{k} {v} pictures" for k, v in m["partial_dot_frames"].items()),
+            "Dots seen only partly", "dots")
     checks = m.get("checks") or {}                                     # 0.19.0
     for pair, c in (checks.get("dots_apart_frames") or {}).items():
+        names = pair.split("-")
         add("check", f"Dots {pair.replace('-', ' and ')} moved apart in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): "
-                     "a dot may have jumped to something else, so the angles using them are doubtful there. Look at the video.")
+                     "a dot may have jumped to something else, so the angles using them are doubtful there. Look at the video.",
+            _title(f"Dots {names[0]} and {names[-1]} moved apart", f"{names[0]} and {names[-1]} moved apart", "Two dots moved apart"), "dots", "fix_dots", names[0] or None)
     texts = checks.get("label_checks") or {}
     for code, c in (checks.get("label_check_frames") or {}).items():
-        add("check", f"CHECK LABELS in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): {texts.get(code, code)}.")
+        add("check", f"CHECK LABELS in {c['frames']} pictures ({c['first_t_s']:.1f} to {c['last_t_s']:.1f} s): {texts.get(code, code)}.",
+            "Dot labels may be swapped", "dots", "fix_dots")
+    for note in getattr(tr, "review_notes", []):                       # 0.30.0: what Review changed in this trial (reviewed source only)
+        add("check" if note.startswith("WARNING") else "info", ("" if note.startswith("WARNING") else "Reviewed: ") + note,
+            _review_note_title(note), "review")
     v = verdicts.read_verdict(tr.meta_path) if getattr(tr, "meta_path", None) else None        # 0.28.0: the operator's verdict
     if v and v.get("verdict") == verdicts.COMPROMISED:
-        add("check", f"Marked compromised ({v.get('judged_in')}): {verdicts.describe(v)[len('compromised: '):]}. Not counted.")
+        add("check", f"Marked compromised ({v.get('judged_in')}): {verdicts.describe(v)[len('compromised: '):]}. Not counted.",
+            "Marked compromised", "verdict")
     elif v and v.get("verdict") == verdicts.VALID:
-        add("ok", f"Marked valid ({v.get('judged_in')})" + (f": {v['note']}" if v.get("note") else ""))
+        add("ok", f"Marked valid ({v.get('judged_in')})" + (f": {v['note']}" if v.get("note") else ""), "Marked valid", "verdict")
     rb = m.get("rest_before")                                          # 0.27.0: the rest timed before the trial
     if rb and rb.get("short"):
-        add("check", f"Only {clock_text(rb['seconds'])} of rest before this trial (the SOP asks for {clock_text(rb['required_s'])} {rb.get('why', '')}).")
+        add("check", f"Only {clock_text(rb['seconds'])} of rest before this trial (the SOP asks for {clock_text(rb['required_s'])} {rb.get('why', '')}).",
+            _title(f"Only {clock_text(rb['seconds'])} of rest before the trial", "Short rest before the trial"), "recording")
     small = (m.get("dot_size_check") or {}).get("below_minimum")
     if small:
-        add("check", "Dots under the 2 cm minimum: " + ", ".join(small))
+        add("check", "Dots under the 2 cm minimum: " + ", ".join(small),
+            _title("Dots under 2 cm: " + ", ".join(small), f"{len(small)} dot{'' if len(small) == 1 else 's'} under 2 cm"), "dots", "fix_dots", str(small[0]))
     # position during the hold
     w = (t0, t1) if t0 is not None else (tr.force_window() if tr.has_force() else None) or tr.hold_window() or (float(tr.t[0]), float(tr.t[-1]))
     main = tr.primary_angle
@@ -299,76 +380,101 @@ def trial_checks(tr, t0=None, t1=None):
             hold = float(np.mean(core))
             tol = m.get("tolerance_deg", 3.0)
             dev = hold - m["target_deg"]
-            add("ok" if abs(dev) <= tol else "check", f"{main.title} during the hold: {hold:.1f} deg, {dev:+.1f} from the target {m['target_deg']:g} (tolerance {tol:g})")
+            joint = (main.title.split() or ["Joint"])[0]              # 'Knee flexion' -> 'Knee'
+            add("ok" if abs(dev) <= tol else "check", f"{main.title} during the hold: {hold:.1f} deg, {dev:+.1f} from the target {m['target_deg']:g} (tolerance {tol:g})",
+                _title(f"{joint} {hold:.1f} deg, target {m['target_deg']:g}", f"{hold:.1f} deg, target {m['target_deg']:g}"), "position")
             drift = float(np.mean(vals[-5:]) - np.mean(vals[:5]))
             if abs(drift) > DRIFT_WARN_DEG:
-                add("check", f"The joint moved {drift:+.1f} deg between the start and the end of the hold (slack in the strap, or the position slipped).")
+                add("check", f"The joint moved {drift:+.1f} deg between the start and the end of the hold (slack in the strap, or the position slipped).",
+                    f"Joint moved {drift:+.1f} deg in the hold", "position")
     # force
     if tr.has_force():
         f = m.get("force") or {}
         if not f.get("calibrated") and np.all(np.isnan(tr.force_n)):
-            add("info", "Force is in volts: no calibration was applied yet (Review can apply a later one).")
+            add("info", "Force is in volts: no calibration was applied yet (Review can apply a later one).", "Force is in volts", "force", "calibration")
         fs = tr.force_summary(*w)
         if fs is not None and fs["rest_note"]:                         # 0.20.0: SOP 9.10, 3 s at rest in the strap before each trial
-            add("check", fs["rest_note"])
+            add("check", fs["rest_note"], "Resting force not steady" if "not steady" in fs["rest_note"] else "Resting force doubtful", "force", "zero")
+        zd = zero_drift(tr, *w)                                        # 0.30.0: does the zero hold from before the push to the end?
+        if zd is not None and zd["unit"] == "N" and abs(zd["drift"]) > ZERO_DRIFT_WARN_N:
+            add("check", f"The resting force was {zd['before']:.0f} N before the push and {zd['after']:.0f} N at the end ({zd['drift']:+.0f} N): "
+                         "the zero moved during the trial. Set the zero in Review if you know where it should be.",
+                "Zero moved during the trial", "force", "zero")
         if fs is not None:
             hum = fs["mains_hum_pct_of_peak"]
             if not math.isnan(hum) and hum > HUM_WARN_PCT:
-                add("check", f"50 Hz mains interference is {hum:.0f} % of the force rise: check shielding and grounding (smoothing removes it from the numbers).")
+                add("check", f"50 Hz mains interference is {hum:.0f} % of the force rise: check shielding and grounding (smoothing removes it from the numbers).",
+                    f"Mains hum {hum:.0f} % of the rise", "force")
         if f.get("samples_at_range_limit"):
-            add("check", f"The force signal touched the edge of the input range ({f['samples_at_range_limit']} samples): the peak may be cut off.")
+            add("check", f"The force signal touched the edge of the input range ({f['samples_at_range_limit']} samples): the peak may be cut off.",
+                "Force hit the input limit", "force")
         if f.get("read_error"):
-            add("check", "The DAQ stopped during the recording: " + str(f["read_error"]))
+            add("check", "The DAQ stopped during the recording: " + str(f["read_error"]), "Force reading stopped", "recording")
         if f.get("frames_without_samples_over_0_5s"):
-            add("check", f"No force samples for more than 0.5 s in {f['frames_without_samples_over_0_5s']} pictures.")
+            add("check", f"No force samples for more than 0.5 s in {f['frames_without_samples_over_0_5s']} pictures.", "Force signal had gaps", "force")
         if f.get("no_rise_warning"):                                   # 0.19.0 (0.26.0: also without MVIC markers, over the whole recording)
             where = "during the whole recording (no MVIC start was marked)" if f.get("rise_basis") == "whole recording" else "during the MVIC"
             add("check", f"The force hardly moved {where} (at most {f['rise_n']:.0f} N): was the strap on the load cell and the "
-                         "amplifier on? The newtons of this trial are not a contraction.")
+                         "amplifier on? The newtons of this trial are not a contraction.", "Force hardly moved", "force", "window")
         reg = getattr(tr, "regression", None)
         if fs is not None and fs["unit"] == "N" and reg is not None and fs["peak"] / GRAVITY > reg.range_kg[1] * 1.001:     # 0.26.0
             add("check", f"The peak force ({fs['peak']:.0f} N = {fs['peak'] / GRAVITY:.0f} kg) is above the heaviest calibration load "
-                         f"({reg.range_kg[1]:g} kg): the newtons there are the calibration line extended, not measured.")
+                         f"({reg.range_kg[1]:g} kg): the newtons there are the calibration line extended, not measured.",
+                f"Peak above calibration ({fs['peak'] / GRAVITY:.0f} kg)", "force", "calibration")
         if fs is not None:
             rm = relaxed_mismatch(fs["unit"], fs["relaxed"], fs["rest_mean"], fs["peak_minus_rest"])                        # 0.26.0
             if rm:
-                add("check", rm)
+                add("check", rm, "Zero 2 does not fit this trial", "force", "zero")
         fw = tr.force_window()
         hw = tr.hold_window()
         if fw and hw:
             lag = fw[0] - hw[0]
             if abs(lag) > MARKER_LAG_WARN_S:
                 add("check", f"The MVIC start marker was pressed {abs(lag):.1f} s {'before' if lag > 0 else 'after'} the force rose. "
-                             "Use 'Window = force above half of peak' for the hold numbers.")
+                             "Use 'Window = force above half of peak' for the hold numbers.",
+                    f"Start marker {abs(lag):.1f} s {'early' if lag > 0 else 'late'}", "force", "window")
             else:
-                add("ok", f"MVIC marker and force onset agree within {abs(lag):.1f} s.")
+                add("ok", f"MVIC marker and force onset agree within {abs(lag):.1f} s.", "MVIC marker matches the force", "force")
         am = m.get("auto_mvic")
         if am:
             if am.get("start_marker_t_s") is not None:
                 late = am.get("start_marker_after_onset_s")
                 add("info", "The MVIC start and end were marked automatically from the force"
-                    + (f": the start {late:.2f} s after the force began to rise, the end {am['length_s']:g} s after the start." if late is not None else "."))
+                    + (f": the start {late:.2f} s after the force began to rise, the end {am['length_s']:g} s after the start." if late is not None else "."),
+                    "MVIC marked automatically", "force")
             elif am.get("state") == "manual":
-                add("info", "The automatic MVIC markers were on, but a marker was pressed by hand and took over.")
+                add("info", "The automatic MVIC markers were on, but a marker was pressed by hand and took over.", "MVIC marker pressed by hand", "force")
             else:
                 add("check", f"The automatic MVIC markers were on, but the force never rose by {am.get('threshold')} {am.get('unit')}: no start was marked. "
-                              "Use 'Window = force above half of peak'.")
+                              "Use 'Window = force above half of peak'.", "No automatic MVIC start marked", "force", "window")
     # strap and anchor
     if "anchor" in tr.tracks:
         ax, ay = tr.tracks["anchor"]
         if np.any(~np.isnan(ax)):
             wander = float(max(np.nanstd(ax), np.nanstd(ay)))
-            add("check" if wander > ANCHOR_WANDER_WARN_PX else "ok", f"Anchor dot wandered {wander:.1f} px" + (" (the camera or the anchor moved)" if wander > ANCHOR_WANDER_WARN_PX else " (steady)"))
+            if wander > ANCHOR_WANDER_WARN_PX:
+                add("check", f"Anchor dot wandered {wander:.1f} px (the camera or the anchor moved)", f"Anchor wandered {wander:.1f} px", "dots", "fix_dots", "anchor")
+            else:
+                add("ok", f"Anchor dot wandered {wander:.1f} px (steady)", f"Anchor steady ({wander:.1f} px)", "dots")
     if "strap" in tr.tracks:
         sx = tr.tracks["strap"][0]
         seen = 100.0 * float(np.sum(~np.isnan(sx))) / max(len(sx), 1)
-        add("check" if seen < STRAP_SEEN_WARN_PCT else "ok", f"Strap dot seen in {seen:.0f} % of the pictures"
-            + ("; the pull angle and moment arm are missing where it was not seen." if seen < STRAP_SEEN_WARN_PCT else "."))
+        if seen < STRAP_SEEN_WARN_PCT:
+            add("check", f"Strap dot seen in {seen:.0f} % of the pictures; the pull angle and moment arm are missing where it was not seen.",
+                f"Strap dot seen in only {seen:.0f} %", "dots", "fix_dots", "strap")
+        else:
+            add("ok", f"Strap dot seen in {seen:.0f} % of the pictures.", f"Strap dot seen in {seen:.0f} %", "dots")
     if tr.pull is not None and not tr.px_per_cm:
-        add("info", "No ruler scale: the moment arm is in pixels only, so no torque can be given.")
+        add("info", "No ruler scale: the moment arm is in pixels only, so no torque can be given.", "No ruler scale", "recording")
     if not out:
-        add("info", "Nothing to check.")
+        add("info", "Nothing to check.", "Nothing to check", "recording")
     return out
+
+
+def trial_checks(tr, t0=None, t1=None):
+    """[(level, text)] with level 'ok', 'check' or 'info': a quick go / no-go for the trial in plain English (the list of `trial_check_items`
+    without the headline, the area and the action)."""
+    return [(i["level"], i["text"]) for i in trial_check_items(tr, t0, t1)]
 
 
 # ------------------------------------------------------------------------------------------------ after a trial (0.26.0)
@@ -453,13 +559,15 @@ def position_angle_note(main, plateau, earlier, target, tolerance, previous=None
 # ------------------------------------------------------------------------------------------------ one row per trial, per participant
 SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "test_key", "target_deg", "software_version", "window",
                    "window_start_s", "window_end_s",
-                   "pictures_per_s", "rest_before_s", "force_unit", "force_peak", "force_t_peak_s",
+                   "pictures_per_s", "rest_before_s", "force_unit", "force_peak", "force_t_peak_s", "force_peak_20ms",                  # 0.31.0
                    "force_window_peak", "force_window_peak_ms", "force_window_peak_at_s",              # 0.29.0: the sliding-window peak
                    "force_plateau", "force_rest", "force_rest_s",
                    "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
                    "force_time_to_peak_s", "force_time_to_window_peak_s",                               # 0.29.0
                    "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
+                   "force_zero_v", "force_zero_source", "force_zero_drift_n",                                # 0.30.0
+                   "data_source", "review_edits", "dots_corrected_pictures",                                  # 0.30.0: original / reviewed, and what was edited
                    "checks_to_look_at", "verdict", "verdict_reasons", "verdict_note", "repeatability_pct_same_position", "third_trial_needed",
                    "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis"]
 
@@ -484,7 +592,7 @@ def session_row(tr):
         row.update(main_angle=main["angle"], plateau_angle_deg=main["plateau_mean_deg"], angle_rest_to_hold_deg=main["rest_to_hold_shift_deg"])
     fs = tr.force_summary(*win)
     if fs is not None:
-        row.update(force_unit=fs["unit"], force_peak=fs["peak"], force_t_peak_s=fs["t_peak_s"], force_plateau=fs["plateau_mean"],
+        row.update(force_unit=fs["unit"], force_peak=fs["peak"], force_t_peak_s=fs["t_peak_s"], force_peak_20ms=fs["peak_20ms"], force_plateau=fs["plateau_mean"],
                    force_rest=fs["rest_mean"], force_rest_s=fs["rest_seconds"], force_peak_above_rest=fs["peak_minus_rest"],
                    force_relaxed=fs["relaxed"], force_peak_above_relaxed=fs["peak_minus_relaxed"],
                    angle_at_peak_force_deg=fs["main_angle_at_peak_deg"], hum_pct_of_peak=fs["mains_hum_pct_of_peak"],
@@ -495,6 +603,16 @@ def session_row(tr):
         fp = force_peaks(tr, *win, timing=ft)
         row.update(force_window_peak=fp["window_peak"], force_window_peak_ms=fp["window_peak_ms"], force_window_peak_at_s=fp["window_peak_at_s"],
                    force_time_to_peak_s=fp["time_to_peak_s"], force_time_to_window_peak_s=fp["time_to_window_peak_s"])
+    row["data_source"] = getattr(tr, "source", "original")
+    row["review_edits"] = "; ".join(getattr(tr, "review_notes", []) or [])
+    row["dots_corrected_pictures"] = sum(len(v) for v in (getattr(tr, "edited", None) or {}).values()) or ""
+    if tr.has_force():
+        cal = tr.force_cal or {}
+        row["force_zero_v"] = cal.get("offset_v") if cal.get("zero_set", True) and cal.get("offset_v") is not None else ""
+        row["force_zero_source"] = tr.zero_source()
+        zd = zero_drift(tr, *win)
+        if zd is not None and zd["unit"] == "N":
+            row["force_zero_drift_n"] = zd["drift"]
     tq = torque_summary(tr, *win)
     if tq is not None:
         row.update(torque_peak_nm=tq["peak_nm"], torque_at_peak_force_nm=tq["at_peak_force_nm"], arm_at_peak_force_cm=tq["arm_at_peak_force_cm"],

@@ -76,15 +76,29 @@ def meta_with(readings=None, stamp=None, app=None, angles=("knee", "hip"), title
     return m
 
 
-def test_a_side_file_is_written_whole_and_next_to_the_trial(tmp_path):
-    meta_path = tmp_path / "P01_knee_extension_60deg_20261020-120000_meta.json"
+def test_a_side_file_is_written_whole_in_the_review_layer_never_beside_the_trial(tmp_path):
+    root = tmp_path / "recordings"
+    (root / "P01").mkdir(parents=True)
+    meta_path = root / "P01" / "P01_knee_extension_60deg_20261020-120000_meta.json"
     meta_path.write_text("{}")
     path = ref.write_sidecar(meta_path, "inclinometer", 0.1, {"knee": [59.0, 60.0], "hip": []})
-    assert path == tmp_path / "P01_knee_extension_60deg_20261020-120000_reference.json"
-    assert not list(tmp_path.glob("*.tmp"))
+    assert path == root / "review" / "P01" / "P01_knee_extension_60deg_20261020-120000" / "reference.json"        # 0.30.0
+    assert not list(path.parent.glob("*.tmp")) and sorted(p.name for p in (root / "P01").iterdir()) == [meta_path.name]   # nothing new beside the trial
     data = ref.read_sidecar(meta_path)
     assert data["readings"] == {"knee": {"values_deg": [59.0, 60.0], "mean_deg": 59.5}} and data["instrument"] == "inclinometer"
     assert meta_path.read_text() == "{}"                                      # the trial's own file is never touched
+
+
+def test_a_reference_file_an_older_version_left_beside_the_trial_is_still_read_and_the_review_one_wins(tmp_path):
+    root = tmp_path / "recordings"
+    (root / "P01").mkdir(parents=True)
+    meta_path = root / "P01" / "t_meta.json"
+    meta_path.write_text("{}")
+    (root / "P01" / "t_reference.json").write_text('{"instrument": "goniometer", "readings": {"knee": {"values_deg": [61.0], "mean_deg": 61.0}}}')
+    assert ref.read_sidecar(meta_path)["instrument"] == "goniometer"          # the legacy file
+    ref.write_sidecar(meta_path, "inclinometer", 0.1, {"knee": [58.0]})
+    assert ref.read_sidecar(meta_path)["instrument"] == "inclinometer"        # the review layer's wins
+    assert (root / "P01" / "t_reference.json").read_text().startswith('{"instrument": "goniometer"')    # and the old file is left as it was
 
 
 def test_the_side_file_keeps_only_what_differs_from_what_was_saved_with_the_trial(tmp_path):

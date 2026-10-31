@@ -169,8 +169,10 @@ def test_review_gives_the_peak_above_the_relaxed_level_beside_the_total_force(tm
     QApplication.instance() or QApplication([])
     tab = ReviewTab(tmp_path)
     tab.trial = tr
-    text = tab._force_text(*tr.force_window())
-    assert "relaxed (Zero 2)" in text and "peak above relaxed" in text and "lower than that" in text
+    tab.window.setRegion(tr.force_window())
+    tab.update_summary()
+    text = tab.force_tree.text(everything=True)
+    assert "Relaxed (Zero 2)" in text and "Peak above relaxed" in text and "lower than that" in text
 
 
 def test_review_follows_a_zero_recalculated_later_because_it_works_from_the_saved_volts(tmp_path):
@@ -188,7 +190,9 @@ def test_a_level_taken_for_another_position_is_not_used_and_review_says_so(tmp_p
     QApplication.instance() or QApplication([])
     tab = ReviewTab(tmp_path)
     tab.trial = tr
-    assert "another position" in tab._force_text(*tr.force_window())
+    tab.window.setRegion(tr.force_window())
+    tab.update_summary()
+    assert "another position" in tab.force_tree.text(everything=True)
 
 
 def test_a_trial_without_a_relaxed_level_is_as_before(tmp_path):

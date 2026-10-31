@@ -121,10 +121,12 @@ def test_the_window_defaults_to_the_hold_and_the_text_and_export_follow_it(tmp_p
     t0, t1 = tab.window.getRegion()
     hold = tab.trial.hold_window()
     assert hold is not None and (t0, t1) == pytest.approx(hold)                      # MVIC start to end, not the whole trial
-    text = tab.disp.text()
-    assert "Dot movement" in text and "strap" in text and "end vs anchor" in text and "Pull (strap and anchor dots)" in text
+    text = tab.angle_tree.text(everything=True)
+    assert "Movement of the dots in the window" in text and f"{t0:.2f} to {t1:.2f} s" in text      # the dot numbers are for the window, and say which
+    assert "strap" in text and "end vs anchor" in text and "max vs anchor" in text
+    assert "Angle of pull" in text and "Moment arm" in text and "Strap to joint" in text       # the pull numbers of the strap and anchor dots
     tab.export()
-    out = tmp_path / "P01" / f"{tab.trial.base}_displacement.csv"
+    out = tmp_path / "review" / "P01" / tab.trial.base / f"{tab.trial.base}_displacement_original.csv"      # (the review folder, 0.30.0)
     rows = list(csv.DictReader(open(out, newline="")))
     by = {r["dot"]: r for r in rows}
     assert float(by["strap"]["end_shift_px"]) == pytest.approx(12.0, abs=1.5)
@@ -155,5 +157,5 @@ def test_a_trial_without_strap_dots_has_no_pull_section_and_no_anchor_columns(tm
     eng.stop_trial()
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert "Pull (strap" not in tab.disp.text() and "vs anchor" not in tab.disp.text()
-    assert "no ruler scale" in tab.disp.text()
+    assert "Angle of pull" not in tab.angle_tree.text(everything=True) and "Moment arm" not in tab.angle_tree.text(everything=True) and "vs anchor" not in tab.angle_tree.text(everything=True)
+    assert "no ruler scale" in tab.angle_tree.text(everything=True)

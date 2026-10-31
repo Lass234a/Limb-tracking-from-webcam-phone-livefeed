@@ -38,7 +38,10 @@ def test_a_trial_whose_segment_dots_are_off_opens_and_has_no_torque(tmp_path):
     QApplication.instance() or QApplication([])
     tab = ReviewTab(tmp_path)
     tab.trial = tr
-    assert "Torque" not in tab._force_text(*tr.force_window()).split("Timing")[0]          # Review's force text is made (it raised before)
+    tab.window.setRegion(tr.force_window())
+    tab.update_summary()
+    text = tab.force_tree.text(everything=True)                           # Review's force panel is made (it raised before)
+    assert "Peak torque: not available" in text
 
 
 def test_with_the_segment_dots_there_the_torque_is_unchanged(tmp_path):

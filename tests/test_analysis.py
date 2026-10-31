@@ -152,12 +152,13 @@ def test_review_shows_force_in_its_own_strip_and_numbers_in_tabs(tmp_path, monke
     eng, paths = T.recording(tmp_path, seconds=2.0)
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert tab.tabs.count() == 6 and [tab.tabs.tabText(i) for i in range(6)] == ["Check", "Angles", "Force", "Reference", "Calibration", "Dots and pull"]
-    assert not tab.force_plot.isHidden() and not tab.force_box.isHidden()
-    assert "Pictures" in tab.check_text.text() or "Dot" in tab.check_text.text() or "calibration" in tab.check_text.text()
-    assert "Force in the window" in tab.force_text.text() and "Knee" in tab.stats.text() or "mean" in tab.stats.text()
+    assert tab.left_split.widget(1) is tab.angle_tree and not hasattr(tab, "tabs")       # (0.32.0: the checks are always in view, the reference readings are part of Angles, the calibration is a graph view)
+    assert not tab.force_plot.isHidden() and not tab.force_tree.isHidden()
+    assert "Pictures" in tab.checks.text(everything=True) or "Dot" in tab.checks.text(everything=True) or "calibration" in tab.checks.text(everything=True)
+    assert "Force in the window" in tab.force_tree.text(everything=True) and "Knee" in tab.angle_tree.text(everything=True)
+    assert "Mean" in tab.angle_tree.text(everything=True)                    # the statistics of every angle (the minor ones are behind 'More numbers')
     tab.export_session()                                                      # one trial in the folder: one row, no repeatability
-    out = next(tmp_path.rglob("*_session_summary.csv"))
+    out = next(tmp_path.rglob("*_session_summary_original.csv"))                   # (the review folder, exports; no fixes: the original data, 0.30.0)
     rows = list(csv.DictReader(open(out, newline="")))
     assert len(rows) == 1 and rows[0]["test_key"] == "knee_extension" and "Saved" in infos[-1]
 
@@ -177,5 +178,5 @@ def test_review_without_force_hides_the_force_strip(tmp_path):
     eng.stop_trial()
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
-    assert tab.force_plot.isHidden() and tab.force_box.isHidden()
-    assert "No force was recorded" in tab.force_text.text()
+    assert tab.force_plot.isHidden() and tab.force_tree.isHidden()
+    assert "No force was recorded" in tab.force_tree.text(everything=True)
