@@ -130,6 +130,7 @@ class Row:
     large: tuple = ()                          # columns whose number is large
     needs: list = field(default_factory=list)  # the reasons it needs a look
     details: list = field(default_factory=list)   # 'detail' rows, shown with More numbers
+    always: bool = False                       # a 'detail' row that is shown without More numbers (the dots' numbers of an angle with a reference)
     children: list = field(default_factory=list)
 
 
@@ -169,7 +170,12 @@ def _angle_row(trial, a, r, fs, owner, tols, stats, shifts, cm, has_rel, limit_w
     hold = r["plateau_mean_deg"] if r is not None else math.nan
     tgt = r["target_deg"] if r is not None else math.nan
     off = _off(r) if r is not None else math.nan
-    peak = fs["main_angle_at_peak_deg"] if (fs is not None and r is not None and r is owner) else math.nan
+    peak = math.nan                                                     # every angle has one since 0.33.0 (it was the main joint's only before)
+    if fs is not None and r is not None:
+        if r is owner:                                                  # the main joint's is the old number (the dots' angle), from the reference when it has one
+            peak = fs["main_angle_at_peak_deg"] - r.get("offset_deg", 0.0)
+        else:
+            peak = (fs.get("angles_at_peak_deg") or {}).get(a.title, math.nan)
     has_peak = not _nan(peak)
     peak_dev = peak - tgt if has_peak and not _nan(tgt) else math.nan
     peak_state, hold_state = _state(peak_dev, tol, judged), _state(off, tol, judged)
@@ -186,7 +192,7 @@ def _angle_row(trial, a, r, fs, owner, tols, stats, shifts, cm, has_rel, limit_w
                             + (f" The pictures are read {delay:+.3f} s after the force peak." if delay else "")
                             + (f" It is {off_words(peak_dev)} (tolerance {tol:g} deg)." if not _nan(peak_dev) else "")
                             + ("" if judged else " This angle is shown, not judged."))
-    elif fs is not None and r is owner:
+    elif fs is not None and r is not None:
         row.cells[C_PEAK] = UNKNOWN
         row.tips[C_PEAK] = "The joint angle at the moment of the highest force: it could not be worked out."
     row.cells[C_HOLD] = _deg(hold)
@@ -253,6 +259,20 @@ def _angle_row(trial, a, r, fs, owner, tols, stats, shifts, cm, has_rel, limit_w
     row.line = f"{a.title}{' (main joint)' if is_main else ''}: " + ", ".join(parts)
     row.suffix = f" - needs a look: {'; '.join(needs)}" if needs else ""
 
+    off = r.get("offset_deg", 0.0) if r is not None else 0.0
+    if off:                                                                 # 0.33.0: the numbers above are from the reference; the dots' own beside them
+        peak_dots = (fs.get("angles_at_peak_dots_deg") or {}).get(a.title, math.nan) if fs is not None else math.nan
+        hold_dots = r.get("plateau_mean_dots_deg", math.nan)
+        taken = "taken when the trial was recorded" if abs(trial.recorded_offsets.get(a.name, 0.0) - off) < 1e-9 else "chosen in Review from a reference reading"
+        shown = ("On the dots: " + (f"at the peak force {num(peak_dots)}°, " if has_peak else "") + f"hold {num(hold_dots)}°"
+                 + ("" if _nan(tgt) else f", target {_g(tgt + off)}°") + f". The dots read {num(off, signed=True)}° more than the joint ({taken}).")
+        plain = ("from the reference (the dots read " + num(off, signed=True) + " deg more than the joint; on the dots: "
+                 + (f"at the peak force {num(peak_dots)} deg, " if has_peak else "") + f"hold {num(hold_dots)} deg)")
+        row.details.insert(0, Row("detail", a.name, a.title, name=shown, line=plain, always=True, cells={C_NAME: shown},
+                                  tip="The angle is shown from a reference: the joint was called a known angle while the dots read something else. "
+                                      "The numbers above are from the reference; these are the dots' own."))
+        row.tip += f"\nFrom the reference: the dots read {num(off, signed=True)} deg more than the joint."
+        row.line += f" - {plain}"
     row.children = [_dot_row(d, stats[d], shifts, cm, has_rel, limit_words) for d in dots]
     return row
 
@@ -789,7 +809,7 @@ class AngleDotTree(QWidget):
 
     def _add(self, parent, row, pal, more):
         """One item for `row` (and the items under it). A 'detail' line is a quiet wrapped text across the whole row."""
-        if row.kind == "detail" and not more:
+        if row.kind == "detail" and not (more or row.always):
             return
         item = QTreeWidgetItem()
         parent.addChild(item)

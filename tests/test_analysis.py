@@ -153,6 +153,7 @@ def test_review_shows_force_in_its_own_strip_and_numbers_in_tabs(tmp_path, monke
     tab = ReviewTab(tmp_path)
     tab.load(str(paths["meta.json"]))
     assert tab.left_split.widget(1) is tab.angle_tree and not hasattr(tab, "tabs")       # (0.32.0: the checks are always in view, the reference readings are part of Angles, the calibration is a graph view)
+    tab.plot_view.setCurrentIndex(tab.plot_view.findData("time"))                        # (0.33.0: a trial opens on the two-axis graph; the force strip is the 'against time' view)
     assert not tab.force_plot.isHidden() and not tab.force_tree.isHidden()
     assert "Pictures" in tab.checks.text(everything=True) or "Dot" in tab.checks.text(everything=True) or "calibration" in tab.checks.text(everything=True)
     assert "Force in the window" in tab.force_tree.text(everything=True) and "Knee" in tab.angle_tree.text(everything=True)

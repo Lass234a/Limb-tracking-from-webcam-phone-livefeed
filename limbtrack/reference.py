@@ -160,13 +160,14 @@ def read_sidecar(meta_path):
     return _read_json_dict(sidecar_path(meta_path)) or _read_json_dict(legacy_sidecar_path(meta_path))
 
 
-def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="", recorded=None):
+def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="", recorded=None, apply=None):
     """Save readings next to the trial (atomically). `values_by_key`: key -> list of readings; an empty list is 'not measured'.
     `recorded`: what was saved with the trial (meta.json -> reference_readings), or None. Only what differs from it goes into the side
     file: a reading saved with the trial that is still the same (same numbers, same instrument and resolution) is left out, so it stays
     'recorded with the trial' and still counts once for the two trials of its position; an empty list for one of them is written as an
-    explicit 'removed in Review', so that the reading saved with the trial no longer counts. Returns the path. The trial's own
-    meta.json is never touched."""
+    explicit 'removed in Review', so that the reading saved with the trial no longer counts. `apply` (0.33.0): the angle names Review
+    should show and judge from their reading (the app's angle at the reading minus the reading is taken away from every number of that
+    angle, angle_reference.py); None leaves the list as it is in the side file now. Returns the path. The trial's own meta.json is never touched."""
     path = sidecar_path(meta_path)
     saved = recorded or {}
     saved_readings = saved.get("readings") or {}
@@ -184,6 +185,11 @@ def write_sidecar(meta_path, instrument, resolution_deg, values_by_key, note="",
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "note": note or "readings added or changed in Review; they win over the ones saved with the trial",
     }
+    keep = (read_sidecar(meta_path).get("apply") or []) if apply is None else apply
+    if keep:
+        data["apply"] = sorted({str(k) for k in keep})
+        data["apply_note"] = ("Review shows and judges these angles from the reading: the app's angle at the reading minus the reading is taken "
+                              "away from every number of the angle. Nothing recorded is changed.")
     review_layer.write_json(path, data)                # (atomic: no half-written file is left behind; the side file is as it was on an error)
     return path
 

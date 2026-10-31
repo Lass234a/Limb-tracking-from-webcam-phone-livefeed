@@ -717,7 +717,7 @@ def test_a_first_load_works_every_trial_out_once_and_saves_the_rows(part, page):
     work(ov)
     assert sorted(c[0] for c in CALLS) == sorted(part.bases) and ov.cache_hits == 0 and ov.last_run["trials"] == 7 and ov.last_run["mode"] == "thread"
     cache = read_cache(part)
-    assert cache["format"] == 1 and cache["written_at"] and sorted(cache["trials"]) == sorted(part.bases)
+    assert cache["format"] == FMT and cache["written_at"] and sorted(cache["trials"]) == sorted(part.bases)
     for meta in part.metas:
         (variant,) = cache["trials"][base_of(meta)]
         assert variant["key"] == list(ro.file_stamp(meta) + ro.settings_stamp(0.1, 0.5, "original"))                 # keyed by the files, the settings and the program
@@ -866,12 +866,15 @@ def test_a_changed_load_cell_calibration_file_works_everything_out_again(part, p
     assert len(ov.stale_entries()) == 7
 
 
+FMT = rl.OVERVIEW_CACHE_FORMAT
+
+
 @pytest.mark.parametrize("content", [
     b"{ not json", b"", b"[1, 2, 3]", b'"text"', b"null", b"\x00\xff\xfe",
-    json.dumps({"format": 2, "trials": {"T": [{"key": [1], "row": {"a": 1}}]}}).encode(),                              # another format
-    json.dumps({"format": 1, "trials": [1, 2]}).encode(),                                                            # no trials
-    json.dumps({"format": 1}).encode(),
-    json.dumps({"format": 1, "trials": {"T": [{"key": [1], "row": "not a row"}, {"row": {"a": 1}}, {"key": "x", "row": {"a": 1}}, {}]}}).encode(),
+    json.dumps({"format": FMT - 1, "trials": {"T": [{"key": [1], "row": {"a": 1}}]}}).encode(),                        # another format (the one before 0.33.0 too)
+    json.dumps({"format": FMT, "trials": [1, 2]}).encode(),                                                          # no trials
+    json.dumps({"format": FMT}).encode(),
+    json.dumps({"format": FMT, "trials": {"T": [{"key": [1], "row": "not a row"}, {"row": {"a": 1}}, {"key": "x", "row": {"a": 1}}, {}]}}).encode(),
 ])
 def test_a_cache_file_that_cannot_be_used_is_ignored_and_replaced(part, page, content):
     path = rl.overview_cache_path(part.folder)
@@ -882,7 +885,7 @@ def test_a_cache_file_that_cannot_be_used_is_ignored_and_replaced(part, page, co
     work(ov)
     assert len(CALLS) == 7 and all(ov.row_for(b) is not None for b in part.bases) and ov._done == 7
     cache = read_cache(part)
-    assert cache["format"] == 1 and sorted(cache["trials"]) == sorted(part.bases)                                    # the file is good again
+    assert cache["format"] == FMT and sorted(cache["trials"]) == sorted(part.bases)                                  # the file is good again
     for b, meta in zip(part.bases, part.metas):
         variants = cache["trials"][b]
         assert same(variants[0]["row"], plain_row(fake_row(str(meta), 0.1, 0.5, "original")[0])) and len(variants) <= rl.OVERVIEW_CACHE_VARIANTS   # (the newest first)
@@ -894,7 +897,7 @@ def test_a_cache_with_a_trial_entry_of_the_wrong_shape_is_ignored_too(part, page
     """Valid JSON in the right format, but an entry the program never wrote (a hand-edited file): it must cost a first load, not the participant."""
     path = rl.overview_cache_path(part.folder)
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"format": 1, "trials": {part.bases[0]: entry}}), encoding="utf-8")
+    path.write_text(json.dumps({"format": FMT, "trials": {part.bases[0]: entry}}), encoding="utf-8")
     ov = page(part.folder)
     assert len(ov.stale_entries()) == 7
     work(ov)
@@ -907,11 +910,11 @@ def test_reading_a_cache_that_is_not_there_or_not_right_gives_nothing(part):
     assert rl.read_overview_cache(part.folder) == {} and rl.read_overview_cache(part.root / "P55") == {}
     path = rl.overview_cache_path(part.folder)
     path.parent.mkdir(parents=True)
-    for content in (b"{", b"[]", b'{"format": 9, "trials": {}}', b'{"format": 1, "trials": []}'):
-        path.write_bytes(content)
+    for content in (b"{", b"[]", b'{"format": 9, "trials": {}}', b'{"format": 1, "trials": {}}', ('{"format": %d, "trials": []}' % FMT).encode()):
+        path.write_bytes(content)                                                                                   # (format 1: the cache of 0.32.0, without the other angles)
         assert rl.read_overview_cache(part.folder) == {}
-    path.write_text('{"format": 1, "trials": {}}', encoding="utf-8")
-    assert rl.read_overview_cache(part.folder) == {"format": 1, "trials": {}}
+    path.write_text('{"format": %d, "trials": {}}' % FMT, encoding="utf-8")
+    assert rl.read_overview_cache(part.folder) == {"format": FMT, "trials": {}}
 
 
 def test_the_cache_keeps_the_newest_variants_numbers_nan_and_plain_json(part):

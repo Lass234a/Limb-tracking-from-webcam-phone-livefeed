@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout  # noqa: E4
 
 from limbtrack.engine import Engine  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
-from limbtrack.review import ReviewTab, _CalibrationPane  # noqa: E402
+from limbtrack.review import LAYOUT_VERSION, ReviewTab, _CalibrationPane  # noqa: E402
 from limbtrack.synthetic import leg_points, render  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -104,7 +104,8 @@ def test_the_graphs_and_the_video_get_the_room_not_the_tables(tmp_path):
     tab.show()
     app.processEvents()
     left, right = tab.top_splitter.sizes()
-    assert right >= left * 1.0                                                   # the signal side is not the smaller part
+    assert left > right * 1.25                                                   # 0.33.0: the video side is the wider one (630 : 370), the graph side the narrower
+    assert right >= 460                                                          # ... but never narrower than the graphs need
     video_block, table = tab.left_split.sizes()
     assert video_block > table >= tab.angle_tree.minimumSizeHint().height()
     tab.close()
@@ -150,7 +151,7 @@ def test_divider_positions_are_remembered_and_the_rest_of_the_file_is_kept(tmp_p
     a.close()
     saved = json.loads(settings.read_text(encoding="utf-8"))
     assert saved["recordings_dir"] == "D:/data" and saved["session"]["test"] == "hip_flexion"
-    assert set(saved["review_ui"]) == {"top", "main", "fix"}
+    assert set(saved["review_ui"]) == {"v", "top", "main", "fix"} and saved["review_ui"]["v"] == LAYOUT_VERSION
 
     b = ReviewTab(tmp_path)
     b.attach_memory(settings)
@@ -164,8 +165,75 @@ def test_divider_positions_are_remembered_and_the_rest_of_the_file_is_kept(tmp_p
     b.close()
 
 
+def test_a_layout_saved_before_0_33_0_is_not_put_back_but_a_new_one_is(tmp_path):
+    app = _app()
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"review_ui": {"top": [516, 872], "main": [651, 400], "fix": [487, 901]}}), encoding="utf-8")   # the user's, from 0.32.0
+    old = ReviewTab(tmp_path)
+    old.attach_memory(settings)
+    old.resize(1400, 820)
+    old.show()
+    app.processEvents()
+    left, right = old.top_splitter.sizes()
+    assert left > right                                                          # the new proportions, not 516 : 872
+    old.close()
+    settings.write_text(json.dumps({"review_ui": {"v": LAYOUT_VERSION, "top": [500, 900], "main": [300, 300], "fix": [800, 600]}}), encoding="utf-8")
+    new = ReviewTab(tmp_path)
+    new.attach_memory(settings)
+    new.resize(1400, 820)
+    new.show()
+    app.processEvents()
+    left, right = new.top_splitter.sizes()
+    assert left < right                                                          # a layout of this version is kept
+    new.close()
+
+
+def test_the_table_hidden_while_dots_are_fixed_does_not_save_a_zero_share(tmp_path):
+    app = _app()
+    paths = _trial_with_markers(tmp_path)
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    tab = ReviewTab(tmp_path)
+    tab.attach_memory(settings)
+    tab.resize(1700, 950)
+    tab.show()
+    tab.load(str(paths["meta.json"]))
+    app.processEvents()
+    normal_main = list(tab.layout_state()["main"])
+    tab.set_fix_mode(True)
+    app.processEvents()
+    assert tab.angle_tree.isHidden() and 0 in tab.left_split.sizes()          # (the table is hidden: its share is 0 now)
+    tab.top_splitter.setSizes([900, 400])
+    tab._top_moved()
+    tab._save_layout()
+    saved = json.loads(settings.read_text(encoding="utf-8"))["review_ui"]
+    assert saved["main"] == normal_main and all(s > 0 for s in saved["main"] + saved["top"] + saved["fix"])
+    tab.set_fix_mode(False)
+    tab.trial.close()
+    tab.close()
+
+
+def test_a_trial_opens_on_one_graph_with_two_axes_and_a_trial_without_force_on_the_angle_graph(tmp_path):
+    from tests import test_force as T
+    app = _app()
+    eng, paths = T.recording(tmp_path / "with")
+    tab = ReviewTab(tmp_path / "with")
+    tab.resize(1500, 900)
+    tab.show()
+    assert tab.plot_view.currentData() == "time" and not tab.plot_view.isEnabled()      # nothing open: the angle graph, the chooser is off
+    tab.load(paths["meta.json"])
+    app.processEvents()
+    assert tab.plot_view.isEnabled() and tab.plot_view.currentData() == "both"
+    assert tab.both_plot.isVisible() and not tab.plot.isVisible() and not tab.force_plot.isVisible()
+    tab.plot_view.setCurrentIndex(tab.plot_view.findData("fa"))                          # the choice is kept for the next trial of the tab
+    assert tab._plot_choice == "fa"
+    tab.trial.close()
+    tab.close()
+
+
 @pytest.mark.parametrize("bad", [None, [], "x", {"top": "x"}, {"top": [1], "main": [1, 2]}, {"top": [0, 5], "main": [5, 5]},
-                                 {"top": ["a", "b"], "main": [3, 4]}])
+                                 {"top": ["a", "b"], "main": [3, 4]}, {"v": LAYOUT_VERSION, "top": [0, 5], "main": [5, 0]},
+                                 {"v": LAYOUT_VERSION, "top": ["a", "b"], "main": [3, 4]}])
 def test_unusable_remembered_positions_are_ignored(tmp_path, bad):
     app = _app()
     settings = tmp_path / "settings.json"

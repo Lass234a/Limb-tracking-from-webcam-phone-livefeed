@@ -242,7 +242,7 @@ def force_angle_path(tr, picture_delay=0.0):
         return None
     unit, ys, _ = tr.force_signal()
     t = np.asarray(tr.t, float)
-    angle = np.asarray(tr.deg[main.name], float)
+    angle = np.asarray(tr.deg_view(main.name), float)                                          # (from the reference when the trial has one)
     force = np.interp(t - picture_delay, tr.force_t, ys, left=np.nan, right=np.nan)           # no force is made up outside what was recorded
     return {"t": t, "angle": angle, "force": force, "force_t": t - picture_delay, "ok": np.isfinite(angle) & np.isfinite(force), "unit": unit,
             "angle_name": main.title}
@@ -373,7 +373,7 @@ def trial_check_items(tr, t0=None, t1=None):
     main = tr.primary_angle
     if main is not None and m.get("target_deg") is not None:
         mask = (tr.t >= w[0]) & (tr.t <= w[1])
-        vals = tr.deg[main.name][mask]
+        vals = tr.deg_view(main.name)[mask]                           # (from the reference when the trial has one: the target is asked for from it)
         vals = vals[~np.isnan(vals)]
         if vals.size >= 3:
             core = vals[int(0.2 * vals.size): max(int(0.8 * vals.size), int(0.2 * vals.size) + 1)]
@@ -381,7 +381,8 @@ def trial_check_items(tr, t0=None, t1=None):
             tol = m.get("tolerance_deg", 3.0)
             dev = hold - m["target_deg"]
             joint = (main.title.split() or ["Joint"])[0]              # 'Knee flexion' -> 'Knee'
-            add("ok" if abs(dev) <= tol else "check", f"{main.title} during the hold: {hold:.1f} deg, {dev:+.1f} from the target {m['target_deg']:g} (tolerance {tol:g})",
+            from_ref = f" (from the reference, the dots read {hold + tr.offset_of(main.name):.1f})" if tr.offset_of(main.name) else ""
+            add("ok" if abs(dev) <= tol else "check", f"{main.title} during the hold: {hold:.1f} deg{from_ref}, {dev:+.1f} from the target {m['target_deg']:g} (tolerance {tol:g})",
                 _title(f"{joint} {hold:.1f} deg, target {m['target_deg']:g}", f"{hold:.1f} deg, target {m['target_deg']:g}"), "position")
             drift = float(np.mean(vals[-5:]) - np.mean(vals[:5]))
             if abs(drift) > DRIFT_WARN_DEG:
@@ -500,13 +501,20 @@ def relaxed_mismatch(unit, relaxed, rest, rise):
             "Use the peak above rest, or press X again with the participant relaxed in the final position.")
 
 
+def row_plateau(row):
+    """The main joint's angle during the push that the checks compare with the target: from the reference when the trial has one
+    (`plateau_angle_from_reference_deg`: the target is asked for from the reference), else the dots' angle (`plateau_angle_deg`). A number or None."""
+    p = _num(row.get("plateau_angle_from_reference_deg"))
+    return p if p is not None else _num(row.get("plateau_angle_deg"))
+
+
 def hold_angle_note(row, tolerance):
     """What the main joint did in a trial (an export row from session_row): its angle during the push against the target, the angle at rest
     before the push and the shift under load, and, when the shift is larger than the tolerance, the angle to set at rest so that the push
     lands on the target (target minus the shift). '' without a push window or a main angle. Nothing is changed: these are the numbers
     Review shows. On 2026-10-28/29 only 36 of 116 trials were within 5 deg of the target during the push; the knee moved a median 19 deg
     (extension) and 18 deg (flexion) from rest under load, the ankle 20 deg (dorsiflexion); the live tab judges the angle at rest."""
-    main, p = row.get("main_angle"), _num(row.get("plateau_angle_deg"))
+    main, p = row.get("main_angle"), row_plateau(row)
     if not main or p is None or row.get("window") == "whole trial":
         return ""
     shift, tgt = _num(row.get("angle_rest_to_hold_deg")), _num(row.get("target_deg"))
@@ -564,12 +572,30 @@ SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "t
                    "force_plateau", "force_rest", "force_rest_s",
                    "force_peak_above_rest", "force_relaxed", "force_peak_above_relaxed", "force_onset_s",
                    "force_time_to_peak_s", "force_time_to_window_peak_s",                               # 0.29.0
-                   "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg", "plateau_angle_deg",
+                   "force_time_to_90pct_s", "force_hold_cv_pct", "hum_pct_of_peak", "force_samples_at_limit", "main_angle", "angle_at_peak_force_deg",
+                   "angle_at_peak_force_from_reference_deg",                                                # 0.33.0: blank without an angle reference
+                   "angle2_name", "angle2_at_peak_force_deg", "angle2_at_peak_from_reference_deg",           # 0.33.0: the other joints of the test at the peak force
+                   "angle3_name", "angle3_at_peak_force_deg", "angle3_at_peak_from_reference_deg",
+                   "plateau_angle_deg", "plateau_angle_from_reference_deg", "angle_reference_offset_deg",
                    "angle_rest_to_hold_deg", "torque_peak_nm", "torque_at_peak_force_nm", "arm_at_peak_force_cm", "torque_stand_in_pictures",
                    "force_zero_v", "force_zero_source", "force_zero_drift_n",                                # 0.30.0
                    "data_source", "review_edits", "dots_corrected_pictures",                                  # 0.30.0: original / reviewed, and what was edited
                    "checks_to_look_at", "verdict", "verdict_reasons", "verdict_note", "repeatability_pct_same_position", "third_trial_needed",
                    "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis"]
+
+
+def other_angles_at_peak(fs):
+    """The export cells of the joints other than the main one at the peak force (`force_summary`'s angles, in the trial's order):
+    angle2_name / angle2_at_peak_force_deg (as the dots read it) / angle2_at_peak_from_reference_deg (blank without a reference), and the
+    same for angle 3. Blank where the trial has fewer angles."""
+    out = {}
+    dots = fs.get("angles_at_peak_dots_deg") or fs.get("angles_at_peak_deg") or {}
+    offsets = fs.get("angle_offsets_deg") or {}
+    for n, (title, v) in zip((2, 3), [(t, v) for t, v in dots.items() if t != fs.get("main_angle")]):
+        out[f"angle{n}_name"], out[f"angle{n}_at_peak_force_deg"] = title, v
+        if offsets.get(title):
+            out[f"angle{n}_at_peak_from_reference_deg"] = v - offsets[title]
+    return out
 
 
 def session_row(tr):
@@ -589,13 +615,18 @@ def session_row(tr):
     ang = tr.summary(*win)
     main = next((r for r in ang if r["role"] == "main"), ang[0] if ang else None)
     if main is not None:
-        row.update(main_angle=main["angle"], plateau_angle_deg=main["plateau_mean_deg"], angle_rest_to_hold_deg=main["rest_to_hold_shift_deg"])
+        row.update(main_angle=main["angle"], plateau_angle_deg=main["plateau_mean_dots_deg"], angle_rest_to_hold_deg=main["rest_to_hold_shift_deg"])
+        if main["offset_deg"]:                                  # 0.33.0: an angle reference: the dots' angle stays in its column, the other beside it
+            row.update(plateau_angle_from_reference_deg=main["plateau_mean_deg"], angle_reference_offset_deg=main["offset_deg"])
     fs = tr.force_summary(*win)
     if fs is not None:
         row.update(force_unit=fs["unit"], force_peak=fs["peak"], force_t_peak_s=fs["t_peak_s"], force_peak_20ms=fs["peak_20ms"], force_plateau=fs["plateau_mean"],
                    force_rest=fs["rest_mean"], force_rest_s=fs["rest_seconds"], force_peak_above_rest=fs["peak_minus_rest"],
                    force_relaxed=fs["relaxed"], force_peak_above_relaxed=fs["peak_minus_relaxed"],
                    angle_at_peak_force_deg=fs["main_angle_at_peak_deg"], hum_pct_of_peak=fs["mains_hum_pct_of_peak"],
+                   **other_angles_at_peak(fs),
+                   **({"angle_at_peak_force_from_reference_deg": fs["angles_at_peak_deg"][fs["main_angle"]]}
+                      if fs["main_angle"] in (fs.get("angle_offsets_deg") or {}) else {}),
                    force_samples_at_limit=(m.get("force") or {}).get("samples_at_range_limit", ""))      # (0.26.0: > 0 = the peak is cut off)
         ft = force_timing(tr, *win)
         if ft is not None:

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
 from . import privacy, reference, session_memory
 from . import verdict as verdicts
 from .session_log import SessionLog
+from .angle_reference_box import AngleReferenceBox
 from .panels import Accordion, ReminderBar, Section, StepStrip, VerdictBar
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
@@ -595,6 +596,7 @@ class LiveTab(QWidget):
         f.addRow(self.chk_smooth)
         self.settings_form = f
         self._update_view_rows()
+        self.angle_ref_box = AngleReferenceBox(engine, self.say)     # 0.33.0: "the joint is at 0 now, the dots read 10", next to the target it changes the meaning of
 
         # --- dot colour: up with the dots, because a wrong colour is the commonest reason for dots that will not mark or are followed badly
         self.kind_note = QLabel()
@@ -1203,7 +1205,7 @@ class LiveTab(QWidget):
                                             ("2", "force", "Force", [fc]),
                                             ("3", "markers", "Markers and sound", [mkb]),
                                             ("4", "participant", "Participant", [pc]),
-                                            ("5", "position", "Position and angles", [plan_box, tg]),
+                                            ("5", "position", "Position and angles", [plan_box, tg, self.angle_ref_box]),
                                             ("6", "privacy", "Privacy and saved files", [pv]),
                                             ("7", "ruler", "Ruler for centimetres", [sc]),
                                             ("8", "dots", "Dots, landmarks and lock", [mk]),
@@ -3643,6 +3645,7 @@ class LiveTab(QWidget):
                 return
         self.update_force_box()
         self.update_reference_box(recording)
+        self.angle_ref_box.refresh(recording)
         self._update_rest()
         self._show_cleared_pelvis_facts()            # (the engine clears them when a recording ends with another participant code)
         self.plan.setEnabled(not recording)

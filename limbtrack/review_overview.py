@@ -36,8 +36,8 @@ FILTERS = [("all", "All trials"), ("unjudged", "Not judged yet"), ("valid", "Val
            ("checks", "With checks to look at"), ("edited", "Edited in Review"), ("changed", "Changed since approved")]
 # 0.32.0: the time of the test is among the first columns, the angle at the peak sits beside the target, and the sliding-window peak, the time
 # to peak and the edits are at the right
-COLUMNS = ["Verdict", "Trial", "Time", "Pos", "Test", "Target", "Angle at peak (deg)", "Peak", "Checks", "10 % check", "Window peak",
-           "Time to peak (s)", "Edits"]
+COLUMNS = ["Verdict", "Trial", "Time", "Pos", "Test", "Target", "Angle at peak (deg)", "Other angle at peak", "Peak", "Checks", "10 % check",
+           "Window peak", "Time to peak (s)", "Edits"]                 # (0.33.0: the other joints of the test at the peak force sit beside the main one)
 RIGHT_ALIGNED = {"Trial", "Time", "Pos", "Target", "Angle at peak (deg)", "Peak", "Checks", "Window peak", "Time to peak (s)"}
 COLUMN_TIPS = {
     "Verdict": "What you judged: valid, compromised (the reasons are in the tip of the cell) or not judged yet.",
@@ -47,6 +47,8 @@ COLUMN_TIPS = {
     "Test": "The test. Hover a cell for the file name.",
     "Target": "The joint angle the participant was asked to hold.",
     "Angle at peak (deg)": "The joint angle at the moment of the peak force. Hover a cell for the joint.",
+    "Other angle at peak": "The other joint or joints of the test at the same moment (the hip in a knee test, the knee in a hip test). "
+                           "Hover a cell for the full names.",
     "Peak": "The highest force of the trial, as in the export.",
     "Checks": "How many automatic checks say this trial needs a look. Hover a number to read them.",
     "10 % check": "How far apart the peaks of the trials of one position are, as a share of their mean (SOP 10.6). "
@@ -986,8 +988,22 @@ class OverviewPage(QWidget):
                             f"highest mean over {row.get('force_window_peak_ms'):.0f} ms" if _num(row.get("force_window_peak_ms")) else "", None, False)
         c["Time to peak (s)"] = (_fmt(row.get("force_time_to_peak_s"), unit, 2), _num(row.get("force_time_to_peak_s")),
                                  "from the start of the push to the peak", None, False)
-        c["Angle at peak (deg)"] = (_fmt(row.get("angle_at_peak_force_deg"), unit, 1), _num(row.get("angle_at_peak_force_deg")),
-                                    str(row.get("main_angle") or ""), None, False)
+        dots_peak, ref_peak = _num(row.get("angle_at_peak_force_deg")), _num(row.get("angle_at_peak_force_from_reference_deg"))
+        shown_peak = ref_peak if ref_peak is not None else dots_peak                # from the reference when the trial has one (0.33.0), the dots' angle in the tip
+        c["Angle at peak (deg)"] = (_fmt(shown_peak, unit, 1), shown_peak,
+                                    str(row.get("main_angle") or "") + (f"\nfrom the reference; the dots read {dots_peak:.1f}" if ref_peak is not None and dots_peak is not None else ""),
+                                    None, False)
+        others = []                                                   # (name, shown number, the dots' number or None when it is the same)
+        for n in (2, 3):
+            if row.get(f"angle{n}_name"):
+                dots, ref = _num(row.get(f"angle{n}_at_peak_force_deg")), _num(row.get(f"angle{n}_at_peak_from_reference_deg"))
+                others.append((str(row[f"angle{n}_name"]), ref if ref is not None else dots, dots if ref is not None else None))
+        if others:                                                    # "Hip flex 41.7°"; two others (the ankle tests) side by side, the full names in the tip
+            shown = [(name.split(" (")[0], v) for name, v, _d in others]
+            c["Other angle at peak"] = (" · ".join(f"{n} {v:.1f}°" if v is not None else f"{n} -" for n, v in shown), others[0][1],
+                                        "\n".join((f"{name}: {v:.1f}°" if v is not None else f"{name}: not known")
+                                                  + (f" (from the reference; the dots read {d:.1f}°)" if d is not None and v is not None else "") for name, v, d in others),
+                                        None, False)
         checks = [x for x in (row.get("checks_to_look_at") or "").split(" | ") if x]
         c["Checks"] = (str(len(checks)), len(checks), "\n".join(checks), WARN if checks else None, bool(checks))
         pct, third = _num(row.get("repeatability_pct_same_position")), row.get("third_trial_needed")

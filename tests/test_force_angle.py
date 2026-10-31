@@ -110,14 +110,16 @@ def scatters(tab):
     return [i for i in items(tab) if isinstance(i, pg.ScatterPlotItem) and i is not tab._fa_cursor]
 
 
-def test_the_default_is_the_time_graphs_and_the_switch_needs_force(tmp_path):
+def test_the_default_is_the_two_axis_graph_and_the_switch_needs_force(tmp_path):
     tab, _ = review_with_ramp(tmp_path)
-    assert tab.plot_view.currentData() == "time" and tab.plot_view.isEnabled()
-    assert not tab.plot.isHidden() and not tab.force_plot.isHidden() and tab.fa_plot.isHidden()
+    assert tab.plot_view.currentData() == "both" and tab.plot_view.isEnabled()          # 0.33.0: one graph, angle and force with two axes
+    assert not tab.both_plot.isHidden() and tab.plot.isHidden() and tab.force_plot.isHidden() and tab.fa_plot.isHidden()
+    tab.plot_view.setCurrentIndex(tab.plot_view.findData("time"))                        # the graphs one above the other are still in the list
+    assert not tab.plot.isHidden() and not tab.force_plot.isHidden() and tab.fa_plot.isHidden() and tab.both_plot.isHidden()
     tab.trial.force_t = None                                                   # (a trial without force)
     tab._apply_plot_view()
     tab.plot_view.setCurrentIndex(1)
-    assert not tab.plot_view.isEnabled() and not tab.plot.isHidden() and tab.fa_plot.isHidden() and tab.force_plot.isHidden()
+    assert not tab.plot_view.isEnabled() and not tab.plot.isHidden() and tab.fa_plot.isHidden() and tab.force_plot.isHidden() and tab.both_plot.isHidden()
 
 
 def test_switching_shows_the_force_against_angle_and_hides_the_time_graphs(tmp_path):

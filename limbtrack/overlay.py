@@ -183,7 +183,7 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
         if a.dir1 and a.dir2:
             _arc(img, (fx, fy), (fx + a.dir1[0] * 100, fy + a.dir1[1] * 100),
                  (fx + a.dir2[0] * 100, fy + a.dir2[1] * 100), int(28 * s), col, thick)
-        _text(img, f"{a.value:.1f}", (fx + 36 * s, fy + 10 * s), 0.8 * s, col, thick + 1)
+        _text(img, f"{a.value - (getattr(a, 'ref_offset', 0.0) or 0.0):.1f}", (fx + 36 * s, fy + 10 * s), 0.8 * s, col, thick + 1)   # (from the reference when there is one)
 
     for name, d in dots.items():
         col = COLOURS[LOST] if d.lost else DOT_WEAK if (getattr(d, 'weak', False) or getattr(d, 'partial', False)) else DOT_OK
@@ -213,9 +213,12 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
         if a.status == LOST:
             s_val = "lost"
         else:
-            s_val = f"{a.value:6.1f}"
+            off = getattr(a, "ref_offset", 0.0) or 0.0          # angle reference (0.33.0): the angle from the reference first, the dots' angle beside it
+            s_val = f"{a.value - off:6.1f}"
             if a.reference is not None:
-                s_val += f"  ({a.deviation:+.1f} vs {a.reference:.0f})"
+                s_val += f"  ({a.deviation:+.1f} vs {a.reference - off:.0f})"
+            if off:
+                s_val += f"   dots {a.value:.1f}"
             if getattr(a, "suspect", None):
                 s_val += "  CHECK DOTS"
         rows.append((f"{a.title}: {s_val}", 0.75 * s, col, thick, 32 * s))

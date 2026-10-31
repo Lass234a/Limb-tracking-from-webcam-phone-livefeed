@@ -3,6 +3,43 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.33.0 - 2026-10-31
+
+### A bigger video and one default graph, the other angles at peak, and an angle reference (Live and Review)
+- **Why:** asked on 2026-10-31 after using 0.32.0: the video should be larger and the graphs smaller, and the default graph one large force-and-angle graph with two axes; how do the sliding window and the smoothing differ; the angle at peak should
+  be shown for the other joint of the test too; and the hip angle needs a reference. The crest dot (halfway between ASIS and PSIS) is not on the pelvis' lateral midline, so a person in neutral reads about 10 degrees or more and a hip test can never reach
+  extension; the 45 and 90 degree targets have been guesses. Real numbers from the P02 pilot: in the knee extension 70 trial the hip read 41.7 deg at the peak force where 90 is asked, in the hip flexion 90 trial 68.5 deg.
+- **Sizes:** the video side is now 63 % of the width and the graph side 37 % (it was 45 : 55 by default, and the saved layout on the user's computer had 37 : 63); the video block gets 66 % of the left column (it was 60 %), so the picture is not letter-boxed
+  by the table under it. The saved divider positions got a version (`"v": 2` in `review_ui` in settings.json): a layout saved before 0.33.0 is not put back once (it would have hidden the new sizes), later drags are remembered as before. The same file also held
+  a `main` divider with the angle table at 0 height, saved while the dots were being fixed (the table is hidden then); that is no longer saved.
+- **Default graph:** a trial with force opens on *Force and angle together (two axes)*; the other views (the angle and the force one above the other, force against angle, the calibration) are still in the Graphs list and the choice is kept while the tab is open.
+  A trial without force shows the angle graph and the list reads "against time" and is off. The graph is given its time range when the trial opens (the other graphs follow its time axis).
+- **Sliding window and smoothing (words only):** they are the same moving average. Measured on three real P02 trials, the peak of the smoothed curve and the sliding-window peak of the same length are equal to 0.001 N at 20, 100, 200 and 500 ms
+  (knee extension: 722.88, 719.67, 719.02, 714.34 N; the other two trials match as well). Smoothing (100 ms) shapes everything that is drawn and timed; the Sliding window (500 ms) is used for the one headline number, Peak force. They differ only at the edges: smoothing is
+  centred and repeats the end values, the sliding window must lie wholly inside the analysis window. The tooltips and the Smoothing row now say so. Nothing is calculated differently.
+- **The other angles at peak:** every angle of a trial has an *At peak* in the angle table (the hip in a knee test, the knee in a hip test, the knee and the hip in an ankle test), read the same way as the main joint's (the pictures within 0.1 s of the peak force, plus the picture delay),
+  judged against the required neighbour angle where the test has one (hip 90 in the knee tests). The force table's Picture delay note names all of them. The participant overview has a column **Other angle at peak** beside *Angle at peak*. The export has `angle2_name`,
+  `angle2_at_peak_force_deg`, `angle2_at_peak_from_reference_deg`, `angle3_...` (blank when the trial has fewer angles); the overview cache is format 2 (a cache of 0.32.0 is worked out again once).
+- **Angle reference (Live):** a new box **Angle reference** in *Position and angles*, under the target: one row per angle of the test, a box (default 0) and **Set now**. Put the joint in a position you know, type what it is (0 in neutral, or what an inclinometer shows in the
+  test posture) and press it: the program keeps what the dots read at that moment (the unsmoothed angle averaged over 0.2 s, as for 'reading taken now') and the difference, the *offset* (dots minus what you said). From then on the picture shows the angle from the reference
+  first and the dots' angle beside it (`Hip flex: 80.0 (-10.0 vs 90)  dots 90.0`), the number by the joint and the tracking graph are from the reference, and the target is asked for from the reference (45 means 45 deg from it). The offset belongs to one participant and the dots as
+  they were marked (it survives the step from target 0 to 45 and the step to another test with the same dots, such as the next hip test; it goes when the participant changes, when a dot of that angle is marked again or removed, and when the dots are reset),
+  cannot be changed while recording, and never refuses Record. The picture says "dots" beside every number it applies to, so it cannot be forgotten. It is separate from the reference readings of 0.16.0,
+  which still compare the app with a hand instrument on the dots' angle.
+- **What is saved:** `data.csv` is the dots' angle as before (`<angle>_deg`); `<angle>_ref`, the target column, is the target plus the offset, so `_dev`, `_ok` and `all_ok` are exactly the verdict that was shown. `meta.json` has `angle_reference` (the reference, the dots' angle then, the offset, the time; `null` without one)
+  and keeps `target_deg` as asked. A trial recorded without a reference differs from before only by `angle_reference: null` in meta.json.
+- **Angle reference (Review):** a trial recorded with a reference opens with every number of that angle from the reference (hold, mean, min, max, rest, at peak, the target, the deviations, the graphs, the picture's text); under the angle row a quiet line gives the dots' own
+  numbers ("On the dots: at the peak force 41.6, hold 42.2, target 50.3. The dots read -39.7 more than the joint"), the graph draws the dots' angle as a thin dashed line beside it, and the exports keep the dots' angle in the old columns and add
+  `angle_at_peak_force_from_reference_deg`, `plateau_angle_from_reference_deg`, `angle_reference_offset_deg` (blank without a reference). For a trial recorded without one, the *Reference angle* dialog has a tick **Judge this angle from this reading**: the offset is the difference the
+  dialog already works out (the app's angle at the reading, or in the first second, minus the typed reading); it is saved in the review layer's `reference.json` (`apply`), never in the trial, and wins over a recorded reference. The checks after a trial and the position notes compare the
+  angle from the reference with the target.
+- **Limits, said plainly:** an offset removes a constant difference. It does not remove one that changes with posture, or the pelvis tilting while the lower back extends; the P02 numbers above (41.7 against 90 in a seated knee test) are probably not constant. Take the reference in the posture
+  that matters (with an inclinometer value) as well as in neutral, and look at how big the offset is (it is saved and shown).
+- **Tests:** `tests/test_angle_reference.py` (the pure part, the engine, the Live box, a trial recorded with a reference, one chosen in Review, the dialog, the angle table and graph), `tests/test_other_angles_at_peak.py`, new cases in `test_review_layout.py` and `test_force_angle.py`; `test_review_approval.py`
+  uses the cache format constant. Full suite of this version (offscreen, 63 min): 1592 passed, 12 failed, 1 skipped, 1 xfailed. The 12 were older tests that assumed the old default graph, the old
+  video-to-graph ratio, cache format 1, or that only the main angle has an angle at peak; they were corrected and rerun together with the new tests (131 passed), and the other Review test files were run again after the last change (289 passed, 1 xfailed). The whole suite
+  was not run a second time. Not tried on the real rig or on a person.
+
 ## 0.32.0 - 2026-10-31
 
 ### Review tab, built around the review task: two tables, a bottom bar, a Fix-dots workspace with zoom, a faster overview, Approve review

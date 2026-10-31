@@ -356,10 +356,11 @@ def test_without_force_the_hold_angle_is_the_large_number_and_at_peak_is_blank(f
     assert "at the peak force" not in t.text()
 
 
-def test_with_force_the_column_at_peak_shows_and_only_the_main_angle_has_it(full):
+def test_with_force_the_column_at_peak_shows_and_every_angle_has_it(full):
     add_force(full)
     t = tree(full)
-    assert not t.tree.isColumnHidden(C_PEAK) and item(t, "knee").text(C_PEAK).endswith("°") and item(t, "hip").text(C_PEAK) == ""
+    assert not t.tree.isColumnHidden(C_PEAK) and item(t, "knee").text(C_PEAK).endswith("°") and item(t, "hip").text(C_PEAK).endswith("°")    # (0.33.0: the hip too, not only the main joint)
+    assert item(t, "hip").text(C_PEAK) == f"{numbers(full)[1]['angles_at_peak_deg']['Hip flex (+) / ext (-)']:.1f}°"
     assert item(t, "knee").font(C_HOLD).pointSizeF() < 14.0                             # the peak is the large number: hold is a normal one
     fs = numbers(full)[1]
     assert item(t, "knee").text(C_PEAK) == f"{fs['main_angle_at_peak_deg']:.1f}°"

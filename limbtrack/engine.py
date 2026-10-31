@@ -30,6 +30,7 @@ from .force import NO_FORCE_RISE_N, smooth_signal
 from .loadcell import GRAVITY, find_regression
 from .recorder import FrameSizeChanged, TrialRecorder
 from . import cues, privacy, provenance
+from .angle_reference import DEFAULT_REFERENCE_DEG, AngleReference, check_value as _check_reference_value
 from .reference import INSTRUMENTS, ReferenceReadings
 from .pull import compute_pull, describe as describe_pull
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N, DEFAULT_THRESHOLD_V, KEEP_S, TRIGGERED, AutoMvic
@@ -38,7 +39,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.32.0"
+SOFTWARE_VERSION = "0.33.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -87,7 +88,8 @@ class _PelvisFact(_FrozenWhileRecording):
 SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg", "tolerance_deg", "neighbour_tolerance_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
-                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues", "view", "tested_leg", "tape_pelvic_width_mm", "reference_readings"]
+                 "privacy", "force_setup", "auto_mvic_setup", "audio_cues", "view", "tested_leg", "tape_pelvic_width_mm", "reference_readings",
+                 "angle_reference"]
 
 
 class Engine:
@@ -174,6 +176,7 @@ class Engine:
         self.tape_pelvic_width_mm = None   # frontal tests: ASIS-to-ASIS distance measured with a tape or calipers (a cross-check of the ruler scale), or None
         self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
         self.reference = ReferenceReadings()   # what the operator typed from a goniometer or inclinometer, and the app's angles at that moment (limbtrack/reference.py)
+        self.angle_ref = AngleReference()      # "the joint is at 0 now, the dots read 10": the offsets the angles are shown and judged from (limbtrack/angle_reference.py, 0.33.0)
         self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
         self._rigid_ref = {}         # (dotA, dotB) of protocol rigid_pairs -> their distance in pixels when they were marked (0.19.0)
         self._dots_apart = {}        # pairs of the latest picture whose distance changed by more than RIGID_PAIR_CHANGE -> the change (fraction)
@@ -233,8 +236,9 @@ class Engine:
                 self.three_point = None
             if old is not None and list(old.all_dots) == list(self.test.all_dots):
                 # Same landmarks: the marked dots stay (the 120 s changeover is not spent re-clicking them); the position is
-                # unlocked because the neighbour angles and their required values belong to the test (audit GUI-06).
-                self._angles_changed()
+                # unlocked because the neighbour angles and their required values belong to the test (audit GUI-06). The angle reference stays:
+                # it belongs to the participant and the dots, and the dots stay.
+                self._angles_changed(keep_reference=True)
             else:
                 self._reset_dots_core()
 
@@ -249,6 +253,7 @@ class Engine:
 
     def _reset_dots_core(self):
         with self.lock:
+            self.angle_ref.clear()                                   # the dots are marked again: an offset taken with the old ones means nothing
             self._facing_bad_frames, self.facing_detected = 0, None
             self.trackers = TrackerSet(self.test.all_dots, self.kind)
             self.trackers.enabled -= self.disabled_dots
@@ -394,9 +399,11 @@ class Engine:
             self.three_point = None
             self._angles_changed()
 
-    def _angles_changed(self):
+    def _angles_changed(self, keep_reference=False):
         self._forget_angle_averages()
         self._hist.clear()
+        if not keep_reference:
+            self.angle_ref.clear()                                   # (the three-point angle changed: other angles, other offsets)
         self.unlock_position()
 
     def _forget_angle_averages(self):
@@ -570,6 +577,7 @@ class Engine:
             self._trail_open.pop(name, None)
             self._forget_rigid_reference(name)
             self._forget_angle_averages()
+            self._forget_angle_reference_of(name)
             return was_marked
 
     def mark_dot(self, name, x, y, replacing=()):
@@ -603,6 +611,7 @@ class Engine:
             self._last_states[name] = DotState(name, t.x, t.y, False, 0)   # usable at once, e.g. by Lock
             self._last_angles = []
             self._forget_rigid_reference(name)
+            self._forget_angle_reference_of(name)
             for pair in self.test.rigid_pairs:                # the distance to a dot that is tracked right now is the new reference
                 if name in pair:
                     other = self._last_states.get(pair[1] if pair[0] == name else pair[0])
@@ -617,6 +626,12 @@ class Engine:
             if name in pair:
                 del self._rigid_ref[pair]
         self._dots_apart = {p: c for p, c in self._dots_apart.items() if name not in p}
+
+    def _forget_angle_reference_of(self, dot):
+        """A dot was marked again or taken away: the reference of every angle made with it was taken with the old dot and is dropped."""
+        for a in self.all_angles:
+            if dot in a.dots:
+                self.angle_ref.clear(a.name)
 
     def _check_rigid_pairs(self, states):
         """Compare the distance of every pair of dots on one bone with its distance when the dots were marked. A pair without a reference
@@ -752,6 +767,7 @@ class Engine:
     @participant_code.setter
     def participant_code(self, code):
         self._participant_code = code or ""
+        self.angle_ref.adopt(self.angle_reference_owner())        # (an angle reference taken before a code was typed is this participant's)
         self._clear_pelvis_facts_of_another_participant()
 
     @property
@@ -854,6 +870,54 @@ class Engine:
             self._forbid_while_recording("the reference readings")
             self.reference.clear()
 
+    # ------------------------------------------------- angle reference (0.33.0): "the joint is at 0 now, the dots read 10"
+    def angle_reference_owner(self):
+        """The participant code the angle references belong to (they belong to the participant and the dots, not to a test or a target);
+        while recording, the trial's own participant."""
+        who = self.rec_info.get("participant") if self.rec is not None else self._participant_code
+        return who or ""
+
+    def ref_offsets(self):
+        """{angle name: degrees} the dots read more than the joint, for the present participant and test ({} without a reference). Read by
+        every picture (`_compute_angles`), so it takes no lock."""
+        return self.angle_ref.offsets(self.angle_reference_owner())
+
+    def set_angle_reference(self, name, reference_deg=DEFAULT_REFERENCE_DEG):
+        """The joint is at `reference_deg` now (0: neutral; or what an inclinometer shows in the test posture): keep what the dots read at this
+        moment (the unsmoothed angle averaged over 0.2 s, the same as 'reading taken now') and the difference as the offset of angle `name`.
+        From the next picture the angle is shown and judged from the reference. Returns the entry. Refused while recording, during a break,
+        for an angle that cannot be read right now, and when the latest picture is old."""
+        with self.lock:
+            self._forbid_while_recording("the angle reference")
+            if self.paused:
+                raise RuntimeError("The program is paused for a break: there is no angle to take a reference from. Press Resume (P) first.")
+            if name not in {a.name for a in self.active_angles}:
+                raise ValueError(f"'{name}' is not an angle of this test with all its dots switched on")
+            ref = _check_reference_value(reference_deg)
+            dots = self._ref_last.get(name)
+            if dots is None:
+                raise ValueError("That angle cannot be read at the moment: mark its dots first, or find the one that is lost.")
+            age = self.seconds_since_last_frame()
+            if age > STAMP_MAX_PICTURE_AGE_S:
+                raise ValueError(f"No new picture has come in for {age:.0f} s (the camera stopped or dropped out, or the video is paused), so there is "
+                                 "no angle of this moment to take the reference from. Get the picture going again, then press it.")
+            return self.angle_ref.set(self.angle_reference_owner(), name, ref, dots)
+
+    def clear_angle_reference(self, name=None):
+        """Forget the reference of one angle, or of all. Refused while recording."""
+        with self.lock:
+            self._forbid_while_recording("the angle reference")
+            self.angle_ref.clear(name)
+
+    def angle_reference_state(self):
+        """[(angle name, title, entry or None, the dots' angle now or None)] for every angle that can be read now: the Live tab's reference rows."""
+        with self.lock:
+            held = self.angle_ref.active(self.angle_reference_owner())
+            return [(a.name, a.title, held.get(a.name), self._ref_last.get(a.name)) for a in self.active_angles]
+
+    def _angle_reference_meta(self):
+        return self.angle_ref.to_meta(self.angle_reference_owner(), names={a.name for a in self.active_angles})
+
     def reference_for_this_position(self):
         """False when readings are held for another test, target or participant (they will not be saved with the next trial)."""
         return self.reference_mismatch() is None
@@ -938,6 +1002,7 @@ class Engine:
         if self._last_derived:
             xy = {**xy, **self._last_derived}              # an arm may end at a computed point as well as at a dot
         out = []
+        offsets = self.ref_offsets()                    # angle reference (0.33.0): {angle name: degrees the dots read more than the joint}
         for a in self.active_angles:
             r = measure(a, xy, self.facing_right)       # r.value is the raw angle here
             if r.status == LOST:
@@ -947,13 +1012,16 @@ class Engine:
                 self._ref_last.pop(a.name, None)
             else:
                 r.raw_value = r.value
+                off = r.ref_offset = offsets.get(a.name, 0.0)
                 self._ref_last[a.name] = self._reference_value(a.name, r.raw_value, t)
+                # The values stay the dots' angle. A target asked for "from the reference" is put on the dots' scale (target + offset), so
+                # the verdict, the deviation and data.csv's target column all agree with what the screen shows (value - offset vs target).
                 if a.primary:
-                    r.reference, r.tolerance = self.target, self.tolerance
+                    r.reference, r.tolerance = (None if self.target is None else self.target + off), self.tolerance
                 elif not a.judged:
                     pass                                            # shown and recorded only (the hip-centre angle of a frontal test)
                 elif a.name in self.test.neighbour_targets:        # required neighbour angle (Tabel 2): judged from the start
-                    r.reference, r.tolerance = float(self.test.neighbour_targets[a.name]), self.neighbour_tolerance
+                    r.reference, r.tolerance = float(self.test.neighbour_targets[a.name]) + off, self.neighbour_tolerance
                 elif self.locked and a.name in self._refs:
                     r.reference, r.tolerance = self._refs[a.name], self.neighbour_tolerance
                 if r.reference is not None:                         # recorded verdict: from the raw angle
@@ -1149,7 +1217,7 @@ class Engine:
     def _record_history(self, t, angles):
         while self._hist and self._hist[-1][0] >= t:      # time went backwards (frame stepping): drop the future
             self._hist.pop()
-        self._hist.append((t, {a.name: (a.value, a.deviation) for a in angles}))
+        self._hist.append((t, {a.name: (a.value - a.ref_offset, a.deviation) for a in angles}))     # (the trace is from the reference: value - offset)
 
     def history(self, seconds=15.0):
         """The last few seconds of angles for the live trace, or None if there is nothing yet.
@@ -1912,6 +1980,7 @@ class Engine:
             "derived_points": self._derived_meta(),
             "hip_centre_scale": self._hip_centre_scale_meta(),
             "reference_readings": self._reference_meta(),
+            "angle_reference": self._angle_reference_meta(),            # 0.33.0: offsets the angles were shown and judged from (None: none)
             "reference_extras": dict(self.test.reference_extras),
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {

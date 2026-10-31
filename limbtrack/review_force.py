@@ -499,7 +499,7 @@ class ForceTree(QWidget):
 
     def _static_notes(self):
         """The notes that never change (what the spin boxes do); the rest are filled by set_data."""
-        notes = {"Smoothing": "0 = raw; use steps of 20 ms"}
+        notes = {"Smoothing": "for the curve and the timing; 0 = raw; steps of 20 ms"}
         for key, note in notes.items():
             self._put(key, note=note)
         pointer = self.items[POINTER]
@@ -549,14 +549,19 @@ class ForceTree(QWidget):
                       f"({trial.window_peak_s * 1000:.0f} ms), or the force has gaps. Make the window longer or the sliding window shorter.")
         else:
             span = f"{fp['window_peak_start_s']:.2f} to {fp['window_peak_end_s']:.2f} s"
-            self._put("Sliding window", note=f"best stretch {span}")
+            self._put("Sliding window", note=f"best stretch {span}",
+                      tip="The length of the stretch the Peak force is averaged over. It is the same kind of moving average as Smoothing, "
+                          "used for this one number: with the same length in both boxes the Peak force and the smoothed peak are equal (unless the peak is at the very edge of the window). "
+                          f"Best stretch in the window: {span}.")
             self._put("Peak force", v(fp["window_peak"]), f"{fp['window_peak_ms']:.0f} ms sliding-window average",
                       tip=f"The sliding-window peak: the highest average of the raw force over any {fp['window_peak_ms']:.0f} ms stretch inside the "
                           f"window. This stretch: {span}.")
-        angle = fs["main_angle_at_peak_deg"]
+        angle = (fs.get("angles_at_peak_deg") or {}).get(fs["main_angle"], fs["main_angle_at_peak_deg"])      # (from the reference when the trial has one)
         name = f" ({fs['main_angle']})" if fs["main_angle"] else ""
         delay = f", pictures read {fs['picture_delay_s']:+.3f} s after the peak" if fs["picture_delay_s"] else ""
-        self._put("Picture delay", note=f"angle at the peak {num(angle)} deg{name}{delay}" if not _nan(angle) else f"angle at the peak not known{delay}",
+        others = "".join(f"; {title} {num(x)} deg" for title, x in (fs.get("angles_at_peak_deg") or {}).items()
+                         if title != fs["main_angle"] and not _nan(x))                          # the other joints of the test (0.33.0)
+        self._put("Picture delay", note=f"angle at the peak {num(angle)} deg{name}{others}{delay}" if not _nan(angle) else f"angle at the peak not known{others}{delay}",
                   tip="How long after the movement a picture is time-stamped. The angle at the peak force is read from the pictures stamped this long "
                       "after the force peak.")
         raw = f"; raw single sample {v(fs['raw_peak'])}" if fs["smoothing_s"] > 0 else ""

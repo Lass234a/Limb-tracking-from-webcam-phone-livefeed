@@ -21,7 +21,9 @@ class AngleResult:
     raw_value: float = float("nan")
     raw_deviation: float = float("nan")
     raw_status: str = INFO
-    reference: float = None          # target (main joint) or the value shown when the position was locked (others)
+    reference: float = None          # target (main joint) or the value shown when the position was locked (others); on the dots' scale: with an angle
+                                     # reference it is the target plus `ref_offset`
+    ref_offset: float = 0.0          # angle reference (0.33.0): degrees the dots read more than the joint; the angle from the reference is value - ref_offset
     tolerance: float = None
     judged: bool = True              # False: shown and saved only (protocol "judged": false); never stops Lock or makes 'all_ok' 0
     suspect: str = None              # why this angle is doubtful although it has a value (two dots on one bone moved apart: a dot may have

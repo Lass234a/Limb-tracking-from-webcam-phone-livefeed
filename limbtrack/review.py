@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QLineEdit, QMenu, QSplitter, QStackedWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import dot_edits, overlay, privacy, reference, review_layer, review_nav, session_memory
+from . import angle_reference, dot_edits, overlay, privacy, reference, review_layer, review_nav, session_memory
 from . import verdict as verdicts
 from .twoaxis import TwoAxisPlot
 from .review_checks import ChecksChip
@@ -40,10 +40,11 @@ from .tracker import WEAK_BELOW
 PENS = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f08c00", "#0c8599"]
 CURSOR_COLOUR = "#ffd43b"        # the line that follows the video position: it was black on the black plot background until 0.14.0
 EVENT_GREY = (190, 190, 190)     # MVIC start/end and other markers (was dark grey (90, 90, 90), hard to see on black)
-DEFAULT_TOP_SPLIT = [450, 550]   # the trial (video, key numbers, number panels) : the signal (checks, graphs, controls)
-DEFAULT_MAIN_SPLIT = [560, 380]  # video and its controls : the table of angles and their dots under it
+DEFAULT_TOP_SPLIT = [630, 370]   # the trial (video, angle table) : the signal (graph, force table): the video side is the wider one since 0.33.0
+DEFAULT_MAIN_SPLIT = [620, 320]  # video and its controls : the table of angles and their dots under it (0.33.0: more for the video, the table scrolls)
 RIGHT_LEAST_WIDTH, FIX_LEAST_WIDTH = 460, 320   # the narrowest the graphs side and the dot tools may be made by the divider
 FIX_TOP_SPLIT = [700, 300]       # while the dots are fixed: the video gets about 70 %, the dot tools the rest
+LAYOUT_VERSION = 2               # 0.33.0: divider positions saved before it are not put back (they would hide the new proportions)
 
 
 def _f(s):
@@ -180,6 +181,10 @@ class Trial:
         self._cal_recorded = dict(self.force_cal) if self.force_cal else None      # what was recorded, kept when a zero is set in Review
         if self.source == "reviewed":
             self.apply_review(review_layer.Review.load(meta_path))
+        # angle reference (0.33.0): `deg`, `ref` and `dev` stay the dots' angle as recorded; `offsets` is what the angles are shown from
+        self.recorded_offsets = angle_reference.offsets_from_meta(self.meta)    # the live reference the trial was recorded with (data.csv's target column moved by it)
+        self.offsets = {}
+        self.reload_offsets()
 
     def build_trail(self, n):
         """Segments of (picture numbers, positions) of dot `n` from the rows as they are now; a lost dot ends a segment (as when recording)."""
@@ -271,6 +276,34 @@ class Trial:
     def reload_reference(self):
         self.reference_side = reference.read_sidecar(self.meta_path)
         self._reference_rows = None
+        self.reload_offsets()
+
+    # ------------------------------------------------------------------ the angle reference (0.33.0)
+    def reload_offsets(self):
+        """What each angle is shown from: the reference taken when the trial was recorded (meta.json), and, for an angle the reviewer ticked
+        'judge from this reading' in the reference dialog (the review layer's reference.json, key 'apply'), that reading's difference to the
+        app's angle (app minus reading, at the stamp or in the first second): the dots read that much more than the joint. A reviewer's
+        choice wins over the recorded one. {} for a trial with neither."""
+        self.offsets = dict(self.recorded_offsets)
+        apply = {k for k in ((self.reference_side or {}).get("apply") or []) if isinstance(k, str)}
+        if apply:
+            for row in self.reference_rows():
+                if row["key"] in apply and row["key"] in self.deg and row["difference_deg"] is not None and math.isfinite(row["difference_deg"]):
+                    self.offsets[row["key"]] = float(row["difference_deg"])
+
+    def offset_of(self, name):
+        """Degrees the dots read more than the joint for angle `name` (0 without a reference)."""
+        return float(self.offsets.get(name, 0.0))
+
+    def deg_view(self, name):
+        """The angle `name` for every picture as it is shown: from the reference when there is one, else the dots' angle (`deg`)."""
+        off = self.offset_of(name)
+        return self.deg[name] - off if off else self.deg[name]
+
+    def target_view(self, name):
+        """Per picture, the target of angle `name` on the scale `deg_view` is on: data.csv's target column minus the offset the recording moved it by."""
+        off = float(self.recorded_offsets.get(name, 0.0))
+        return self.ref[name] - off if off else self.ref[name]
 
     def close(self):
         """Let go of the video file (a Trial that is replaced or finished with must not keep it open)."""
@@ -332,6 +365,15 @@ class Trial:
             res.reference = None if math.isnan(self.ref[n][i]) else self.ref[n][i]
             flag = self.ok[n][i]
             res.status = LOST if math.isnan(res.value) else OK if flag == "1" else OUT if flag == "0" else INFO
+            res.ref_offset = off = self.offset_of(n)    # the picture shows the angle from the reference first and the dots' angle beside it (0.33.0)
+            if off != self.recorded_offsets.get(n, 0.0) and not math.isnan(res.value):      # a reference chosen in Review: the target on the dots' scale, judged again
+                tv = self.target_view(n)[i]
+                res.reference = None if math.isnan(tv) else tv + off
+                if res.reference is None:
+                    res.deviation, res.status = math.nan, INFO
+                else:
+                    res.deviation = res.value - res.reference
+                    res.status = OK if abs(res.deviation) <= float(self.meta.get("tolerance_deg" if a.primary else "neighbour_tolerance_deg") or 5.0) else OUT
             if any(set(pair) & set(a.dots) for pair in apart):
                 res.suspect = "dots moved apart"
             angles.append(res)
@@ -527,15 +569,9 @@ class Trial:
         rate = 1.0 / float(np.median(np.diff(self.force_t))) if len(self.force_t) > 2 else 1000.0
         y20 = smooth_signal(raw, rate, PEAK_20MS_S)                            # 0.31.0: the highest 20 ms average, whatever the Smoothing box says
         main = self.main_angle
-        angle = math.nan
-        if main is not None:
-            near = np.abs(self.t - (tw[k] + picture_delay)) <= 0.1             # a picture is stamped picture_delay after it was taken
-            vals = self.deg[main.name][near]
-            vals = vals[~np.isnan(vals)]
-            if vals.size == 0:
-                i = int(np.argmin(np.abs(self.t - (tw[k] + picture_delay))))
-                vals = self.deg[main.name][i:i + 1]
-            angle = float(np.nanmean(vals)) if vals.size and not np.all(np.isnan(vals)) else math.nan
+        at_dots = {a.title: self.angle_near(a.name, tw[k] + picture_delay) for a in self.angle_defs}      # every angle of the trial, 0.33.0
+        at_peak = {a.title: at_dots[a.title] - self.offset_of(a.name) for a in self.angle_defs}            # (from the reference when there is one)
+        angle = at_dots.get(main.title, math.nan) if main is not None else math.nan                        # the main joint's, as the dots read it: the old number
         relaxed, relaxed_note = self.relaxed_level(unit)
         hum = self.force_hum()
         vpeak = float(np.nanmax(yv[m]))
@@ -551,7 +587,22 @@ class Trial:
                 "peak_20ms": float(np.nanmax(y20[m])) if np.isfinite(y20[m]).any() else math.nan,
                 "mains_hum_v": hum, "mains_hum_pct_of_peak": hum_pct,
                 "main_angle": main.title if main is not None else "", "main_angle_at_peak_deg": angle, "picture_delay_s": picture_delay,
+                "angles_at_peak_deg": at_peak,                                          # {angle title: degrees} for every angle, the main one included (0.33.0),
+                "angles_at_peak_dots_deg": at_dots,                                     # from the reference when the trial has one / as the dots read them
+                "angle_offsets_deg": {a.title: self.offset_of(a.name) for a in self.angle_defs if self.offset_of(a.name)},   # (the dots read this much more than the joint)
                 "samples_in_window": int(m.sum())}
+
+    def angle_near(self, name, t_picture, half_s=0.1):
+        """The angle `name` in the pictures within `half_s` seconds of the picture time `t_picture` (the mean; unsmoothed, lost pictures left out),
+        else the nearest picture's value, else NaN. The angle at the peak force of every angle of the trial is read this way (0.33.0; the main joint
+        was read the same way before)."""
+        near = np.abs(self.t - t_picture) <= half_s
+        vals = self.deg[name][near]
+        vals = vals[~np.isnan(vals)]
+        if vals.size == 0:
+            i = int(np.argmin(np.abs(self.t - t_picture)))
+            vals = self.deg[name][i:i + 1]
+        return float(np.nanmean(vals)) if vals.size and not np.all(np.isnan(vals)) else math.nan
 
     def hold_window(self):
         """(start, end) seconds from the first 'MVIC start' and the next 'MVIC end' marker, or None."""
@@ -590,26 +641,36 @@ class Trial:
         ri = self.force_rest()
         rest_win = (ri["t_from"], ri["t_to"]) if ri is not None and ri["seconds"] >= REST_MIN_S else None
         out = []
+        tol_main = float(self.meta.get("tolerance_deg") or 5.0)
+        tol_nb = float(self.meta.get("neighbour_tolerance_deg") or tol_main)
         for a in self.angle_defs:
             n = a.name
-            v = self.deg[n][m]
+            # Every number is from the reference when the angle has one (0.33.0): `off` is what the dots read more than the joint, `rec` what the
+            # recording moved its target column by. With the same offset as at the recording the deviations and flags in data.csv are the ones
+            # that were shown; with another (a reference chosen in Review) they are worked out again here.
+            off, rec = self.offset_of(n), float(self.recorded_offsets.get(n, 0.0))
+            v = self.deg[n][m] - off
             valid = ~np.isnan(v)
-            flags = [f for f, keep in zip(self.ok[n], m) if keep and f != ""]
-            dev = self.dev[n][m]
+            if off == rec:
+                flags = [f for f, keep in zip(self.ok[n], m) if keep and f != ""]
+                dev = self.dev[n][m]
+            else:
+                dev = v - (self.ref[n][m] - rec)
+                flags = ["1" if abs(d) <= (tol_main if a.primary else tol_nb) else "0" for d in dev if not math.isnan(d)]
             good = v[valid]
             change = float(np.mean(good[-5:]) - np.mean(good[:5])) if good.size >= 2 else math.nan
             # The angle that matters is the one during the hold, not the one typed as the target (audit VAL-01).
             span = t1 - t0
             pm = (self.t >= t0 + PLATEAU_TRIM * span) & (self.t <= t1 - PLATEAU_TRIM * span)
-            pv = self.deg[n][pm]
+            pv = self.deg[n][pm] - off
             pv = pv[~np.isnan(pv)]
             plateau = float(np.mean(pv)) if pv.size >= REST_MIN_FRAMES else math.nan
             # the angle at rest: the same stretch as the resting force (before the push), else the second before the window
             rm = ((self.t >= rest_win[0]) & (self.t < rest_win[1])) if rest_win else (self.t >= t0 - REST_SECONDS) & (self.t < t0)
-            rv = self.deg[n][rm]
+            rv = self.deg[n][rm] - off
             rv = rv[~np.isnan(rv)]
             rest = float(np.mean(rv)) if rv.size >= REST_MIN_FRAMES else math.nan
-            refs = self.ref[n][m]
+            refs = self.ref[n][m] - rec
             refs = refs[~np.isnan(refs)]
             target = float(np.mean(refs)) if refs.size else math.nan
             out.append({
@@ -626,6 +687,8 @@ class Trial:
                 "target_deg": target,
                 "mean_minus_target_deg": (float(np.mean(good)) - target) if good.size and not math.isnan(target) else math.nan,
                 "plateau_mean_deg": plateau,
+                "offset_deg": off,                                         # the dots read this much more than the joint (0: no reference); every number above is from the reference
+                "plateau_mean_dots_deg": plateau + off if not math.isnan(plateau) else math.nan,
                 "rest_mean_deg": rest,
                 "rest_to_hold_shift_deg": (plateau - rest) if not (math.isnan(plateau) or math.isnan(rest)) else math.nan,
                 "max_abs_dev_deg": float(np.nanmax(np.abs(dev))) if np.any(~np.isnan(dev)) else math.nan,
@@ -668,7 +731,7 @@ def after_trial_check(meta_path):
                     ri = tr.force_rest()
                     rest_note = ri["note"] if ri is not None else ""
             elif this_row is None and row.get("verdict") != verdicts.COMPROMISED:     # (the trials before this one, oldest first;
-                earlier.append(row.get("plateau_angle_deg"))                         # not one marked compromised: 0.28.0)
+                earlier.append(analysis.row_plateau(row))                         # not one marked compromised: 0.28.0)
         finally:
             tr.close()
     check = analysis.position_check(rows)
@@ -680,7 +743,7 @@ def after_trial_check(meta_path):
         angle_note = analysis.hold_angle_note(this_row, tol)
         has_earlier = any(analysis._num(v) is not None for v in earlier)
         previous = None if has_earlier else _previous_position(root, meta, meta_path)
-        position_note = analysis.position_angle_note(this_row.get("main_angle"), this_row.get("plateau_angle_deg"), earlier, tgt, tol, previous)
+        position_note = analysis.position_angle_note(this_row.get("main_angle"), analysis.row_plateau(this_row), earlier, tgt, tol, previous)
         relaxed_note = analysis.relaxed_mismatch(this_row.get("force_unit"), this_row.get("force_relaxed"), this_row.get("force_rest"),
                                                  this_row.get("force_peak_above_rest"))
     return {"participant": who, "test_key": key, "target_deg": tgt, "n": len(paths), "check": check,
@@ -736,7 +799,7 @@ def _previous_position(root, meta, meta_path):
         try:
             row = analysis.session_row(tr)
             if row.get("verdict") != verdicts.COMPROMISED:          # (a trial marked compromised does not say where the position was)
-                plateaus.append(row.get("plateau_angle_deg"))
+                plateaus.append(analysis.row_plateau(row))
         finally:
             tr.close()
     return best[1], plateaus
@@ -902,6 +965,17 @@ class ReferenceDialog(QDialog):
             box.setPlaceholderText("e.g. 88 90 89")
             form.addRow(title, box)
             self.boxes[key] = box
+        # 0.33.0: show and judge an angle from its reading (an angle reference taken in Review, for trials recorded without one)
+        applied = {k for k in (side.get("apply") or []) if isinstance(k, str)}
+        self.apply_boxes = {}
+        for a in trial.angle_defs:
+            chk = QCheckBox("Judge this angle from this reading")
+            chk.setChecked(a.name in applied)
+            chk.setToolTip("Review then shows every number of this angle from the reading: what the dots read when the reading was taken minus the reading "
+                           "(the app's angle at the reading, or in the first second of the recording) is taken away. The dots' own numbers stay beside "
+                           "them. Nothing recorded is changed; this is saved with the reading. It replaces a reference taken when the trial was recorded.")
+            form.addRow("", chk)
+            self.apply_boxes[a.name] = chk
         lay.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
@@ -917,9 +991,17 @@ class ReferenceDialog(QDialog):
                 QMessageBox.warning(self, "Cannot read that", f"{dict(self.trial.reference_edit_keys()).get(key, key)}: {e}")
                 box.setFocus()
                 return
+        merged = reference.merged_readings(self.trial.meta, self.trial.reference_side)
+        apply = [k for k, chk in self.apply_boxes.items() if chk.isChecked()]
+        for k in apply:
+            if not (values.get(k) if k in values else (merged.get(k) or {}).get("values_deg")):
+                QMessageBox.warning(self, "No reading", f"{dict(self.trial.reference_edit_keys()).get(k, k)}: type the reading first, or untick "
+                                    "'Judge this angle from this reading'.")
+                self.boxes[k].setFocus()
+                return
         try:
             reference.write_sidecar(self.trial.meta_path, self.instrument.currentData(), self.resolution.currentData(), values,
-                                    recorded=self.trial.meta.get("reference_readings"))
+                                    recorded=self.trial.meta.get("reference_readings"), apply=apply)
         except OSError as e:                              # a locked or read-only folder: say so, keep the dialog open with what was typed
             QMessageBox.warning(self, "Not saved", f"The readings could not be saved next to the trial:\n{e}\n\n"
                                 "Nothing was changed. Check that the recordings folder can be written to, then press Save again.")
@@ -1175,7 +1257,8 @@ class ReviewTab(QWidget):
                                   "rose. Force and angle together draws both against time in one graph: the angle on the left axis, the force "
                                   "(smoothed as the Smoothing box says) on the right. Load-cell calibration shows the line the newtons come from, "
                                   "with this trial's peak and plateau on it. These need a trial with force.")
-        self.plot_view.currentIndexChanged.connect(lambda _: self._apply_plot_view())
+        self._plot_choice = "both"           # 0.33.0: a trial with force opens on one large graph, angle and force with two axes; the choice is kept while the tab is open
+        self.plot_view.currentIndexChanged.connect(lambda _: self._plot_view_changed())
         self.plot_view.setEnabled(False)
         self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
         self.force_cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(CURSOR_COLOUR, width=2))
@@ -1274,8 +1357,9 @@ class ReviewTab(QWidget):
         self.force_smooth.setSingleStep(20)
         self.force_smooth.setSuffix(" ms")
         self.force_smooth.setValue(SMOOTH_DEFAULT_S * 1000)
-        self.force_smooth.setToolTip("Moving average for the force curve and for peak and plateau numbers. Use a multiple of 20 ms: that removes 50 Hz "
-                                     "mains hum exactly. 0 = raw samples. The saved files always hold the raw samples.")
+        self.force_smooth.setToolTip("Moving average for the force curve and for the smoothed peak, plateau, rest and timing numbers. Use a multiple of "
+                                     "20 ms: that removes 50 Hz mains hum exactly. 0 = raw samples. The saved files always hold the raw samples. "
+                                     "The Sliding window box below is the same kind of average, used only for the Peak force number.")
         self.force_smooth.valueChanged.connect(self.on_force_smoothing)
         self.window_peak_spin = _NoWheelSpin()
         self.window_peak_spin.setRange(0, 2000)
@@ -1285,8 +1369,9 @@ class ReviewTab(QWidget):
         self.window_peak_spin.setValue(WINDOW_PEAK_DEFAULT_S * 1000)
         self.window_peak_spin.setToolTip("Length of the sliding window of the sliding-window peak: the highest mean of the raw force over any "
                                          "stretch this long inside the blue window. Use a multiple of 20 ms (50 Hz hum cancels). 0 = the highest "
-                                         "single sample. The peak in the PeerJ paper behind it (Slade et al. 2026) is the dynamometer's own peak; "
-                                         "the paper gives no window length, 500 ms is this program's choice.")
+                                         "single sample. This is the same moving average as Smoothing, but used for one number only (Peak force): "
+                                         "at the same length the two peaks are equal (unless the peak is at the very edge of the window). The peak in the PeerJ paper behind it (Slade et al. 2026) is "
+                                         "the dynamometer's own peak; the paper gives no window length, 500 ms is this program's choice.")
         self.window_peak_spin.valueChanged.connect(self.on_window_peak)
         self.btn_force_win = QPushButton("Window: force > half peak")
         self.btn_force_win.setToolTip("Set the analysis window from the force itself: the stretch around the peak where the smoothed force is above half "
@@ -1353,6 +1438,7 @@ class ReviewTab(QWidget):
         self.left_split.setStretchFactor(1, 2)
         self.left_split.setChildrenCollapsible(False)
         self.left_split.setSizes(DEFAULT_MAIN_SPLIT)
+        self._main_sizes = list(DEFAULT_MAIN_SPLIT)        # the last divider position seen while the table was on show (it is hidden, size 0, while dots are fixed)
         self.splitter = self.left_split                    # (the name the divider had before 0.32.0)
         plots = QWidget()
         pl = QVBoxLayout(plots)
@@ -1368,7 +1454,7 @@ class ReviewTab(QWidget):
         pl.addWidget(self.plot, 3)
         pl.addWidget(self.force_plot, 2)
         pl.addWidget(self.fa_plot, 5)
-        pl.addWidget(self.both_plot, 5)
+        pl.addWidget(self.both_plot, 6)
         pl.addWidget(self.calib, 5)
         pl.addWidget(self.force_tree, 3)
         # the Fix dots workspace: the right side while the dots are being fixed (the Done button, or Esc, goes back)
@@ -1390,8 +1476,8 @@ class ReviewTab(QWidget):
         self.top_splitter = QSplitter(Qt.Horizontal)
         self.top_splitter.addWidget(self.left_split)
         self.top_splitter.addWidget(self.right_stack)
-        self.top_splitter.setStretchFactor(0, 2)
-        self.top_splitter.setStretchFactor(1, 3)
+        self.top_splitter.setStretchFactor(0, 3)
+        self.top_splitter.setStretchFactor(1, 2)
         self.top_splitter.setChildrenCollapsible(False)
         self.top_splitter.setSizes(DEFAULT_TOP_SPLIT)
         self._top_sizes = {"normal": list(DEFAULT_TOP_SPLIT), "fix": list(FIX_TOP_SPLIT)}      # the divider between video and right side, per mode
@@ -1495,14 +1581,27 @@ class ReviewTab(QWidget):
         self._top_sizes["fix" if self._fix_mode else "normal"] = self.top_splitter.sizes()
         self._layout_timer.start()
 
+    def _main_now(self):
+        """The divider between the video and the angle table: as it is while both are on show, else as it was last (while dots are fixed the
+        table is hidden and its share is 0; that 0 was saved until 0.33.0 and was then ignored when the layout was put back)."""
+        sizes = self.left_split.sizes()
+        if not self._fix_mode and len(sizes) == 2 and all(s > 0 for s in sizes):
+            self._main_sizes = sizes
+        return list(self._main_sizes)
+
     def layout_state(self):
-        """The divider positions: {'top': [left, right side], 'main': [video, number panels], 'fix': [left, right side] while fixing dots}."""
+        """The divider positions: {'v': layout version, 'top': [left, right side], 'main': [video, number panels], 'fix': [left, right side] while fixing dots}."""
         top = dict(self._top_sizes)
-        top["fix" if self._fix_mode else "normal"] = self.top_splitter.sizes()
-        return {"top": top["normal"], "main": self.left_split.sizes(), "fix": top["fix"]}
+        now = self.top_splitter.sizes()
+        if all(s > 0 for s in now):
+            top["fix" if self._fix_mode else "normal"] = now
+        return {"v": LAYOUT_VERSION, "top": top["normal"], "main": self._main_now(), "fix": top["fix"]}
 
     def apply_layout_state(self, state):
-        """Put remembered divider positions back. Anything that does not fit is ignored."""
+        """Put remembered divider positions back. Anything that does not fit is ignored, and so is a layout saved by a version of the tab
+        with other proportions (no 'v', or an older one)."""
+        if not isinstance(state, dict) or state.get("v") != LAYOUT_VERSION:
+            return
         def good(key):
             try:
                 sizes = [int(x) for x in state[key]]
@@ -1515,6 +1614,7 @@ class ReviewTab(QWidget):
         if fix:
             self._top_sizes["fix"] = fix
         if main:
+            self._main_sizes = main
             self.left_split.setSizes(main)
         self.top_splitter.setSizes(self._top_sizes["fix" if self._fix_mode else "normal"])
 
@@ -1844,8 +1944,11 @@ class ReviewTab(QWidget):
         self._apply_plot_view(draw=False)
         self.plot.setLabel("bottom", "" if has_f else "Time (s)")         # the time axis label is under the lower plot when there are two
         for k, a in enumerate(tr.angle_defs):
-            self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
-                           name=a.title)
+            off = tr.offset_of(a.name)
+            self.plot.plot(tr.t, tr.deg_view(a.name), pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
+                           name=a.title + (" (from reference)" if off else ""))
+            if off:                                                                   # the dots' angle as a thin dashed line beside it (0.33.0)
+                self.plot.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=1, style=Qt.DashLine), name=a.title + " (dots)")
             if a.primary and m["target_deg"] is not None:
                 tol = m["tolerance_deg"]
                 band = pg.LinearRegionItem(values=(m["target_deg"] - tol, m["target_deg"] + tol), orientation="horizontal",
@@ -1874,6 +1977,11 @@ class ReviewTab(QWidget):
             self._place_zero_region(tr)
         self.window.setRegion(kept_window or tr.hold_window() or (tr.t[0], tr.t[-1]))        # the MVIC start-end window when markers exist
         self._draw_both()                                                      # the two-axis graph (shown only when chosen)
+        if not keep_view and len(tr.t):                                        # 0.33.0: it is the graph a trial opens on, and the others are linked to its time axis:
+            lo, hi = float(tr.t[0]), float(tr.t[-1])                            # a graph that was never on show has not found the range of the data
+            if has_f and len(tr.force_t):
+                lo, hi = min(lo, float(tr.force_t[0])), max(hi, float(tr.force_t[-1]))
+            self.both_plot.setXRange(lo, hi, padding=0.02)
         self.slider.blockSignals(True)
         self.slider.setRange(0, len(tr.rows) - 1)
         self.slider.setValue(min(kept_picture, len(tr.rows) - 1))
@@ -1906,11 +2014,24 @@ class ReviewTab(QWidget):
         self.btn_zero_reset.setEnabled(tr.zero_edit is not None)
 
     # ------------------------------------------------------------ playback
+    def _plot_view_changed(self):
+        """The graph chooser was used (by the reviewer or by a button that asks for a view): remember it for the next trial."""
+        if self.plot_view.isEnabled():
+            self._plot_choice = self.plot_view.currentData()
+        self._apply_plot_view()
+
     def _apply_plot_view(self, draw=True):
-        """Time graphs (angles over the force) or force against angle. The second needs force; a trial without force always shows the first.
+        """The graph on show: angle and force together on two axes (the default), the angle and the force one above the other, force against
+        angle, or the calibration. All but the plain angle graph need force; a trial without force always shows the angle graph (the chooser then
+        reads 'against time' and is off) and the next trial with force gets the remembered choice back.
         `draw` False: only which plots are shown (on loading a trial, the last update_summary draws it once, with the trial's window)."""
         has_f = self.trial is not None and self.trial.has_force()
         self.plot_view.setEnabled(has_f)
+        i = self.plot_view.findData(self._plot_choice if has_f else "time")
+        if i >= 0 and i != self.plot_view.currentIndex():
+            self.plot_view.blockSignals(True)
+            self.plot_view.setCurrentIndex(i)
+            self.plot_view.blockSignals(False)
         fa = has_f and self.plot_view.currentData() == "fa"
         both = has_f and self.plot_view.currentData() == "both"
         calib = has_f and self.plot_view.currentData() == "calib"
@@ -1970,8 +2091,9 @@ class ReviewTab(QWidget):
         self._fa_dots.setData(x=path["angle"][ok][inside], y=path["force"][ok][inside], brush=list(self._fa_brushes[inside]))
         if fs is None:
             fs = self.trial.force_summary(t0, t1, self.picture_delay.value())
-        if fs is not None and not math.isnan(fs["main_angle_at_peak_deg"]):
-            self._fa_star.setData(x=[fs["main_angle_at_peak_deg"]], y=[fs["peak"]])
+        at_peak = (fs["angles_at_peak_deg"].get(fs["main_angle"], math.nan) if fs is not None else math.nan)    # (on the scale of the path: from the reference when there is one)
+        if fs is not None and not math.isnan(at_peak):
+            self._fa_star.setData(x=[at_peak], y=[fs["peak"]])
         else:
             self._fa_star.setData(x=[], y=[])
 
@@ -2407,8 +2529,11 @@ class ReviewTab(QWidget):
             return
         m = tr.meta
         for k, a in enumerate(tr.angle_defs):
-            self._both_items.append(pl.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5), name=a.title,
-                                            connect="finite"))
+            off = tr.offset_of(a.name)
+            self._both_items.append(pl.plot(tr.t, tr.deg_view(a.name), pen=pg.mkPen(PENS[k % len(PENS)], width=3 if a.primary else 1.5),
+                                            name=a.title + (" (from reference)" if off else ""), connect="finite"))
+            if off:                                                                   # the dots' angle as a thin dashed line beside it (0.33.0)
+                pl.plot(tr.t, tr.deg[a.name], pen=pg.mkPen(PENS[k % len(PENS)], width=1, style=Qt.DashLine), name=a.title + " (dots)", connect="finite")
             if a.primary and m.get("target_deg") is not None:
                 tol = m["tolerance_deg"]
                 band = pg.LinearRegionItem(values=(m["target_deg"] - tol, m["target_deg"] + tol), orientation="horizontal", brush=(60, 180, 60, 45), movable=False)
@@ -2437,7 +2562,7 @@ class ReviewTab(QWidget):
         if self.trial is None:
             return
         if ReferenceDialog(self.trial, self).exec():
-            self.update_summary()
+            self.load(self.trial.meta_path, keep_view=True)       # (an angle may now be shown from its reading: the graphs and the picture are made again)
 
     def show_reference_validation(self):
         """The agreement of the app with the hand instrument over every trial in the recordings folder."""
@@ -2642,7 +2767,7 @@ class ReviewTab(QWidget):
                       "picture_delay_s", "force_n_per_v", "force_zero_v", "force_calibration_note", "force_smoothing_ms", "force_mains_hum_pct_of_peak",
                       "force_raw_peak", "force_regression_id", "force_peak_95pct_n", "force_relaxed_level", "force_peak_above_relaxed",
                       "force_window_peak", "force_window_peak_ms", "force_window_peak_at_s", "force_time_to_peak_s", "force_time_to_window_peak_s",
-                      "force_peak_20ms"]
+                      "force_peak_20ms", "main_angle_at_peak_force_from_reference_deg"]
             fp = analysis.force_peaks(self.trial, t0, t1)
             cal = self.trial.force_cal or {}
             reg = self.trial.regression
@@ -2653,7 +2778,7 @@ class ReviewTab(QWidget):
                       fs["smoothing_s"] * 1000.0, fs["mains_hum_pct_of_peak"], fs["raw_peak"],
                       reg.id if reg is not None else "", peak_ci, fs["relaxed"], fs["peak_minus_relaxed"],
                       fp["window_peak"], fp["window_peak_ms"], fp["window_peak_at_s"], fp["time_to_peak_s"], fp["time_to_window_peak_s"],
-                      fs["peak_20ms"]]
+                      fs["peak_20ms"], (fs["angles_at_peak_deg"].get(fs["main_angle"], "") if fs["main_angle"] in fs["angle_offsets_deg"] else "")]
                      if fs is not None else [""] * len(fnames))
             fvals = ["" if isinstance(v, float) and math.isnan(v) else round(v, 3) if isinstance(v, float) else v for v in fvals]
             w.writerow(list(ident) + ["window_start_s", "window_end_s"] + fnames + list(rows[0]))
