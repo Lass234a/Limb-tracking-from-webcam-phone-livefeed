@@ -65,7 +65,7 @@ def main():
                 return mp
         return None
 
-    out, current, last_stop, remarked = [], None, None, {}
+    out, current, remarked = [], None, {}
     for ev in log:
         when = datetime.fromisoformat(ev["time"])
         e, d = ev["event"], ev["detail"]

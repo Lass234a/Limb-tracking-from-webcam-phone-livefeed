@@ -23,7 +23,6 @@ TARGET_KG = 250.0
 
 # ---------------------------------------------------------------------------------------------------------- reading
 def load(path):
-    hdr_ok = None
     t, v, lab = [], [], []
     with open(path, newline="", encoding="utf-8") as f:
         r = csv.reader(f)

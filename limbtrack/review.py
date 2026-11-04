@@ -31,7 +31,7 @@ from . import analysis
 from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, WINDOW_PEAK_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
 from .loadcell import COVERAGE, GRAVITY, active_regression, find_regression
 from .pull import COLUMNS as PULL_COLUMNS
-from .angles import measure, segment_pairs
+from .angles import measure
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
@@ -1082,6 +1082,7 @@ class ReviewTab(QWidget):
         # --- the header (0.29.0): choose a participant, then a trial from a drop-down; the Trial and Overview pages; exports
         self.participant_combo = QComboBox()
         self.participant_combo.setMinimumWidth(120)
+        self.participant_combo.setAccessibleName("Participant")
         self.participant_combo.setToolTip("The participant whose trials you go through: the folders of the recordings folder that hold trials. "
                                           "'Open folder...' adds any other place, such as Pilot/P01.")
         self.participant_combo.activated.connect(self._participant_chosen)
@@ -1090,6 +1091,7 @@ class ReviewTab(QWidget):
         self.btn_open_folder.clicked.connect(self.open_folder_dialog)
         self.trial_combo = QComboBox()
         self.trial_combo.setMinimumWidth(180)
+        self.trial_combo.setAccessibleName("Trial")
         self.trial_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.trial_combo.setToolTip("The trials of this participant in the order they were recorded: position, test, trial, time and your verdict "
                                     "(✓ valid, ✗ compromised, · not judged).")
@@ -1099,6 +1101,8 @@ class ReviewTab(QWidget):
         for b, tip in ((self.btn_prev, "The previous trial (Alt+Left)"), (self.btn_next, "The next trial (Alt+Right)")):
             b.setToolTip(tip)
             b.setFixedSize(34, self.trial_combo.sizeHint().height())     # (a symbol from another font must not make the button taller than the rest)
+        self.btn_prev.setAccessibleName("Previous trial")                # (a screen reader reads these, not the arrows)
+        self.btn_next.setAccessibleName("Next trial")
         self.btn_prev.clicked.connect(self.prev_trial)
         self.btn_next.clicked.connect(self.next_trial)
         self.btn_next_unjudged = QPushButton("Next not judged")
@@ -1192,19 +1196,22 @@ class ReviewTab(QWidget):
         self.btn_privacy.setObjectName("privacyButton")
         self.btn_privacy.setFocusPolicy(Qt.NoFocus)
         self.btn_privacy.setToolTip("Draw a crop and black masks on the picture and make protected copies of raw.mp4 and overlay.mp4 in the review folder. "
-                                    "The trial's own videos are not changed.")
+                                    "The trial's own videos are not changed. Key: P.")
         self.btn_privacy.setEnabled(False)
         self.btn_privacy.clicked.connect(lambda: self.open_privacy())
         self.btn_play = QPushButton("Play")
         self.btn_play.setCheckable(True)
         self.btn_play.clicked.connect(self.toggle_play)
         self.slider = QSlider(Qt.Horizontal)
+        self.slider.setAccessibleName("Picture of the video")
         self.slider.valueChanged.connect(self.show_frame)
         self.btn_step_back, self.btn_step_fwd = QPushButton("◀"), QPushButton("▶")                  # one picture at a time (arrow keys, and , and .)
         for b, tip in ((self.btn_step_back, "One picture back (Left arrow or ,)"), (self.btn_step_fwd, "One picture on (Right arrow or .)")):
             b.setToolTip(tip)
             b.setFocusPolicy(Qt.NoFocus)
             b.setFixedSize(30, self.btn_play.sizeHint().height())
+        self.btn_step_back.setAccessibleName("One picture back")
+        self.btn_step_fwd.setAccessibleName("One picture on")
         self.btn_step_back.clicked.connect(lambda: self.step_picture(-1))
         self.btn_step_fwd.clicked.connect(lambda: self.step_picture(1))
         self.frame_label = QLabel("")                           # which picture is on screen, for going through them one by one
@@ -1219,6 +1226,7 @@ class ReviewTab(QWidget):
         self.edits_label.setObjectName("hint")
         self.zoom_label = QLabel("Zoom")                        # only while dots are fixed (0.32.0)
         self.zoom_combo = QComboBox()
+        self.zoom_combo.setAccessibleName("Zoom")
         for text, factor in (("Fit", 1.0), ("2x", 2.0), ("3x", 3.0), ("4x", 4.0)):
             self.zoom_combo.addItem(text, factor)
         self.zoom_combo.setFocusPolicy(Qt.NoFocus)
@@ -1264,6 +1272,7 @@ class ReviewTab(QWidget):
         self._fa_palette = np.array([pg.mkBrush(*c) for c in analysis.time_colours(64)], dtype=object)
         self._fa_brushes = self._fa_palette[:0]
         self.plot_view = QComboBox()
+        self.plot_view.setAccessibleName("Graphs")
         self.plot_view.addItem("Graphs against time", "time")
         self.plot_view.addItem("Force against angle", "fa")
         self.plot_view.addItem("Force and angle together (two axes)", "both")
@@ -1314,6 +1323,7 @@ class ReviewTab(QWidget):
         self.chk_trails.setChecked(True)
         self.chk_trails.toggled.connect(lambda _: self.show_frame(self.slider.value()))
         self.event_combo = QComboBox()
+        self.event_combo.setAccessibleName("Go to marker")
         self.event_combo.setPlaceholderText("Go to marker")
         self.event_combo.activated.connect(self.jump_to_event)
         self.btn_hold = QPushButton("Window: MVIC markers")
@@ -1557,6 +1567,9 @@ class ReviewTab(QWidget):
         sc = QShortcut(QKeySequence("F"), self.trial_page)
         sc.setContext(Qt.WidgetWithChildrenShortcut)
         sc.activated.connect(lambda: self.set_fix_mode(not self._fix_mode) if self.btn_fix.isEnabled() else None)
+        sc = QShortcut(QKeySequence("P"), self.trial_page)             # the Privacy window (a button with no key would be mouse-only)
+        sc.setContext(Qt.WidgetWithChildrenShortcut)
+        sc.activated.connect(lambda: self.open_privacy() if self.btn_privacy.isEnabled() and not self._fix_mode else None)
         sc = QShortcut(QKeySequence("1"), self.trial_page)
         sc.setContext(Qt.WidgetWithChildrenShortcut)
         sc.activated.connect(lambda: self.verdict_bar.btn_valid.click() if self.verdict_bar.isEnabled() and not self._fix_mode else None)
@@ -2156,7 +2169,6 @@ class ReviewTab(QWidget):
             curve.setDownsampling(auto=True, method="peak")
             fp.addItem(curve)
         fp.setLabel("left", f"Force ({unit})")
-        y = ys if tr.force_smooth_s > 0 else raw
         lo, hi = float(np.nanmin(raw)), float(np.nanmax(raw))
         pad = 0.06 * max(hi - lo, 1e-9)
         fp.setYRange(lo - pad, hi + pad, padding=0)

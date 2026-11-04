@@ -15,7 +15,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRect, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
-                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
+                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QScrollArea,
                                QSizePolicy, QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
 
 from . import check_weight as check_mod, privacy, reference, rig_check as rig_mod, session_memory, study_settings as study_mod
@@ -28,7 +28,7 @@ from . import participant_measures as measures_mod
 from .participant_measures_box import ParticipantMeasuresBox
 from .setup_facts_box import SetupFactsBox
 from .textfield import TextField
-from .panels import Accordion, ReminderBar, Section, StepStrip, VerdictBar
+from .panels import Accordion, ReminderBar, Section, StepStrip, VerdictBar, is_dark
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
 from .loadcell import GRAVITY, find_regression
@@ -59,7 +59,7 @@ STEP_HINT = {"participant": "Enter the participant code (P01, ...), the tested l
              "ruler": "Hold the ruler at the joint, click its two dots (C), or tick that there is no ruler today.",
              "lock": "Put the participant in position, then press Lock position (Space).",
              "force": "Connect the force, then press Zero with no pull on the strap (Z), or tick that there is no force today.",
-             "markers": "Switch the automatic markers and the beeps on, and try them (Test the beeps, Try it without recording).",
+             "markers": "Switch the automatic markers and the beeps on, and try them (Test the beeps, Try it without recording), or tick that you mark the MVIC by hand today.",
              "record": "Press Start recording (R)."}
 # painted across the bottom of the live picture (screen only) while nobody has said that no face is visible at this position
 PRIVACY_BANNER = "PRIVACY: look at the picture. Is any face visible? Press V if not, or draw a black mask."
@@ -75,6 +75,18 @@ DOT_CHIP_STYLE = {"ok": "color: #4ade80; border: 1px solid #16a34a; background: 
                   "armed": "color: #111; border: 2px solid #60a5fa; background: #60a5fa; font-weight: bold;"}
 # while every dot is being marked again: a dot still to do has a dashed border
 DOT_CHIP_PENDING = {k: v.replace(" solid ", " dashed ") for k, v in DOT_CHIP_STYLE.items()}
+# On a light window the bright text above measures 1.3 to 1.9:1; the same buttons get darker text there (5.5:1 or more). "armed" reads on both.
+DOT_CHIP_STYLE_LIGHT = {"ok": DOT_CHIP_STYLE["ok"].replace("#4ade80", "#166534"),
+                        "lost": DOT_CHIP_STYLE["lost"].replace("#fbbf24", "#92400e"),
+                        "unmarked": DOT_CHIP_STYLE["unmarked"].replace("#9ca3af", "#4b5563"),
+                        "armed": DOT_CHIP_STYLE["armed"]}
+DOT_CHIP_PENDING_LIGHT = {k: v.replace(" solid ", " dashed ") for k, v in DOT_CHIP_STYLE_LIGHT.items()}
+
+
+def dot_chip_style(key, pending=False, pal=None):
+    """The style of a dot button ('ok', 'lost', 'unmarked' or 'armed'; `pending`: dashed edge while all dots are marked again) for the window's theme."""
+    dark = is_dark(pal)
+    return ((DOT_CHIP_PENDING if pending else DOT_CHIP_STYLE) if dark else (DOT_CHIP_PENDING_LIGHT if pending else DOT_CHIP_STYLE_LIGHT))[key]
 
 
 def trace_y_range(arrays, centre, half_span):
@@ -459,6 +471,7 @@ class LiveTab(QWidget):
 
         # --- source
         self.cam_combo = NoWheelComboBox()
+        self.cam_combo.setAccessibleName("Camera")
         self.cam_combo.addItem("Camera 0", 0)
         self.cam_combo.setToolTip("A phone used as a webcam (Iriun, DroidCam, Camo...) appears here by name once its app is running on the phone and the PC. Press Scan cameras after starting it.")
         self.btn_scan = QPushButton("Scan cameras")
@@ -959,6 +972,7 @@ class LiveTab(QWidget):
 
         # --- live trace (last 15 s)
         self.trace_mode = NoWheelComboBox()
+        self.trace_mode.setAccessibleName("Live trace")
         self.trace_mode.addItem("Main angle, last 15 s", "main")
         self.trace_mode.addItem("Drift from set position, all joints", "drift")
         self.trace_mode.addItem("Force, last 15 s (when connected)", "force")
@@ -1054,12 +1068,15 @@ class LiveTab(QWidget):
         self.pos_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.pos_combo.setMinimumContentsLength(10)
         self.pos_combo.setPlaceholderText("not a plan position")
+        self.pos_combo.setAccessibleName("Position")
         self.pos_combo.activated.connect(self.go_to_position)
         self.btn_pos_prev = QPushButton("◀")
         self.btn_pos_prev.setToolTip("Previous position of the plan  (B or F2)")
+        self.btn_pos_prev.setAccessibleName("Previous position")             # (a screen reader reads this, not the arrow)
         self.btn_pos_prev.clicked.connect(lambda: self.step_position(-1))
         self.btn_pos_next = QPushButton("▶")
         self.btn_pos_next.setToolTip("Next position of the plan  (N or F3)")
+        self.btn_pos_next.setAccessibleName("Next position")
         self.btn_pos_next.clicked.connect(lambda: self.step_position(+1))
         for b in (self.btn_pos_prev, self.btn_pos_next):
             b.setFocusPolicy(Qt.NoFocus)                 # (a click must not take the keyboard from the letter keys)
@@ -2055,7 +2072,7 @@ class LiveTab(QWidget):
             chip = self.chips.get(n)
             if chip is not None:
                 chip.setVisible(s != "off")                     # a dot that is not used has no button
-                style = (DOT_CHIP_STYLE if not pending else DOT_CHIP_PENDING)["armed" if armed else s if s != "off" else "unmarked"]
+                style = dot_chip_style("armed" if armed else s if s != "off" else "unmarked", pending)
                 if chip.styleSheet() != style:
                     chip.setStyleSheet(style)
                 tip = (f"{self.engine.test.dot_title(n)}: "
@@ -3096,7 +3113,7 @@ class LiveTab(QWidget):
                                          f"Another is trial {n_cur + 1}.{left_out}")
         else:
             self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}{left_out}\n{where}")
-        pc.setToolTip(self.trial_label.text().split("\n")[0] + "\nPick another position to set the test and the target in one step.")
+        pc.setToolTip(self.trial_label.text().split("\n")[0] + "\nPick another position to set the test and the target in one step. Keys: N next, B previous (F3, F2).")
 
     def open_session_check(self):
         """The Session check button (0.34.0, F7): a readable list of what is missing for the typed participant (limbtrack/completeness.py). It

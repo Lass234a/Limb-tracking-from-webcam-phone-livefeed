@@ -5,9 +5,7 @@ Everything here only READS a loaded trial (limbtrack/review.py `Trial`); nothing
 smoothed force (a multiple of 20 ms removes 50 Hz mains hum) and say which assumptions they rest on.
 """
 import csv
-import json
 import math
-from pathlib import Path
 
 import numpy as np
 
@@ -198,12 +196,12 @@ def torque_series(tr, picture_delay=0.0):
     n = len(tr.t)
     arm = np.full(n, np.nan)
     est = np.zeros(n, bool)
+    def xy(name, i):
+        x, yv = tracks[name][0][i], tracks[name][1][i]
+        return None if (math.isnan(x) or math.isnan(yv)) else (float(x), float(yv))
     for i in range(n):
-        def xy(name):
-            x, yv = tracks[name][0][i], tracks[name][1][i]
-            return None if (math.isnan(x) or math.isnan(yv)) else (float(x), float(yv))
-        anchor, joint, a, b = xy("anchor"), xy(fulcrum), xy(seg[0]), xy(seg[1])
-        strap = xy("strap") if "strap" in tr.tracks else None
+        anchor, joint, a, b = xy("anchor", i), xy(fulcrum, i), xy(seg[0], i), xy(seg[1], i)
+        strap = xy("strap", i) if "strap" in tr.tracks else None
         if strap is None and stand_in:
             strap, est[i] = b, True                    # the stand-in
         if None in (anchor, joint, a, b, strap):

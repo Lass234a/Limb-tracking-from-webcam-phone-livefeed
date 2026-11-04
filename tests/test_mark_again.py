@@ -13,7 +13,7 @@ os.environ.setdefault("LIMBTRACK_SILENT", "1")
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from limbtrack.gui import DOT_CHIP_PENDING, DOT_CHIP_STYLE, MainWindow  # noqa: E402
+from limbtrack.gui import DOT_CHIP_STYLE, MainWindow, dot_chip_style  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.synthetic import leg_points, render  # noqa: E402
 
@@ -80,7 +80,7 @@ def test_it_removes_every_dot_and_the_lock_at_once_and_asks_for_the_first(win):
     assert not e.locked and not live.btn_lock.isChecked() and live.btn_redo_dots.text() == "Stop (D)"
     assert set(e.dot_status().values()) - {"off"} == {"unmarked"} and not e._last_states        # no old dot lingers, before any click
     assert live.chips[names[0]].styleSheet() == DOT_CHIP_STYLE["armed"]
-    assert live.chips[names[1]].styleSheet() == DOT_CHIP_PENDING["unmarked"] and "dashed" in DOT_CHIP_PENDING["unmarked"]    # still to do
+    assert live.chips[names[1]].styleSheet() == dot_chip_style("unmarked", pending=True) and "dashed" in dot_chip_style("unmarked", pending=True)    # still to do
     assert "still to be marked again" in live.chips[names[1]].toolTip()
     assert live.lm_buttons[names[0]].text() == "Skip"
 
@@ -100,7 +100,7 @@ def test_pressing_it_again_stops_and_the_dots_stay_removed(win):
     assert not live._pass and live._arm is None and live.btn_redo_dots.text() == "Redo all (D)"
     assert not e.locked and set(e.dot_status().values()) - {"off"} == {"unmarked"}
     assert "stay unmarked" in live.instruction.text()
-    assert all(live.chips[n].styleSheet() == DOT_CHIP_STYLE["unmarked"] for n in e.active_dots)
+    assert all(live.chips[n].styleSheet() == dot_chip_style("unmarked") for n in e.active_dots)
 
 
 def test_without_a_camera_or_during_a_break_it_does_not_start(win):

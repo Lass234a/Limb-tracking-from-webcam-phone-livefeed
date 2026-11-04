@@ -131,130 +131,172 @@ def calibrated_limit_n(path=None):
         return None
 
 
+def _check_pictures(meta, rows, t):
+    """Issues about the pictures: complete, in time order, a steady rate."""
+    out = []
+    if meta.get("status") != "complete":
+        out.append((WARN, f"the recording is marked '{meta.get('status')}', not 'complete' (the program stopped before saving)"))
+    if len(rows) != meta.get("frames"):
+        out.append((FAIL, f"data.csv has {len(rows)} pictures but meta.json says {meta.get('frames')}"))
+    dt = np.diff(t)
+    if len(dt) and not (dt > 0).all():
+        out.append((FAIL, f"picture times do not always go forward ({int((dt <= 0).sum())} steps)"))
+    elif len(dt):
+        if 1.0 / np.median(dt) < MIN_FPS:
+            out.append((WARN, f"only {1.0 / np.median(dt):.1f} pictures per second (fast movement is sampled coarsely)"))
+        if dt.max() > PICTURE_GAP_S:
+            out.append((WARN, f"a gap of {dt.max():.2f} s without pictures"))
+    return out
+
+
+def _check_force_time(fm, rows, t, ft, fclock):
+    """Issues about the force samples' time: forward, at the recorded rate, without gaps, on the pictures' clock. Returns (issues, rate)."""
+    out = []
+    fdt = np.diff(ft)
+    rate = 1.0 / np.median(fdt) if len(fdt) else float("nan")
+    if len(fdt) and not (fdt > 0).all():
+        out.append((FAIL, "force sample times do not always go forward"))
+    if fm.get("sample_rate_hz") and abs(rate / fm["sample_rate_hz"] - 1.0) > RATE_TOL:
+        out.append((FAIL, f"the force was sampled at {rate:.1f} Hz but meta.json says {fm['sample_rate_hz']:g} Hz: every force time is off"))
+    if len(fdt) and fdt.max() > FORCE_GAP_S:
+        out.append((WARN, f"a gap of {fdt.max() * 1000:.0f} ms in the force samples"))
+    if len(rows) and np.isfinite(t).any():
+        err = np.abs((fclock - col(rows, "clock_s")[0]) - ft).max()
+        if err > CLOCK_TOL_S:
+            out.append((FAIL, f"force and pictures are not on one clock (off by up to {err * 1000:.1f} ms): the angle at the force peak is not trustworthy"))
+    return out, rate
+
+
+def _check_force_numbers(fm, ft, volts, newtons, rate, cal_max_n):
+    """Issues about the force values: newtons from volts, the input limit, the calibration range, the push and the rest.
+    Returns (issues, facts, peak_t); peak_t is the time of the (100 ms smoothed) force peak or None."""
+    out, facts, peak_t = [], {}, None
+    cal = fm.get("calibration") or {}
+    n = np.full(len(volts), np.nan)
+    if cal.get("zero_set") and cal.get("n_per_v"):
+        expect = (volts - cal["offset_v"]) * cal["n_per_v"]
+        ok = np.isfinite(newtons)
+        if ok.any() and np.abs(expect[ok] - newtons[ok]).max() > NEWTON_TOL:
+            out.append((FAIL, f"newtons are not (volts - zero) x slope (up to {np.abs(expect[ok] - newtons[ok]).max():.3f} N apart): the force may be wrong"))
+        n = expect
+    else:
+        out.append((WARN, "the force was not zeroed (volts only): there are no newtons for this trial"))
+    clipped = int((np.abs(volts) >= fm.get("range_v", 10.0) * 0.99).sum())
+    if clipped:
+        out.append((WARN, f"{clipped} force samples at the input limit: the real peak may be higher than the number says"))
+    if np.isfinite(n).any():
+        s = moving_mean(n, round(0.1 * rate))
+        k = int(np.nanargmax(s))
+        peak_t, peak = float(ft[k]), float(s[k])
+        rest = float(np.percentile(s, 5))
+        facts.update(peak_n=peak, rest_n=rest)
+        if cal_max_n and peak > cal_max_n:
+            out.append((WARN, f"the peak ({peak:.0f} N) is above the heaviest calibration load ({cal_max_n:.0f} N): the line is extended there, not measured"))
+        if peak - rest < NO_RISE_N:
+            out.append((WARN, f"the force never rose (peak {peak:.0f} N, rest {rest:.0f} N): no push was recorded"))
+        elif rest < REST_LOW_N or rest > REST_HIGH_N:
+            out.append((WARN, f"the resting force in the recording is {rest:+.0f} N: the zero was taken under load or has drifted, or the strap was loaded"))
+    return out, facts, peak_t
+
+
+def _check_force(base, meta, rows, t, cal_max_n):
+    """Everything about force.csv. Returns (issues, facts, peak_t)."""
+    path = Path(base + "_force.csv")
+    if not path.is_file():
+        return [], {}, None
+    got = read_force(path)
+    if got is None:
+        return [(WARN, "force.csv has an unexpected layout: the force was not checked")], {}, None
+    ft, fclock, volts, newtons = got
+    fm = meta.get("force") or {}
+    timing, rate = _check_force_time(fm, rows, t, ft, fclock)
+    numbers, facts, peak_t = _check_force_numbers(fm, ft, volts, newtons, rate, cal_max_n)
+    return timing + numbers, facts, peak_t
+
+
+def _check_angles(meta, rows):
+    """Every angle recomputed from its dots, and whether it jumps. Returns (issues, main) with main = (angle definition, saved values) of the main joint."""
+    out, main = [], None
+    facing = meta.get("facing", "right")
+    for a in meta.get("angles") or []:
+        cname = f"{a['name']}_deg"
+        if not rows or cname not in rows[0] or any(f"{d}_x" not in rows[0] for d in dots_of(a)):
+            continue
+        mine, saved = angle_of(a, rows, facing), col(rows, cname)
+        ok = np.isfinite(mine) & np.isfinite(saved)
+        label = a.get("label", a["name"])
+        if ok.any() and np.abs(mine[ok] - saved[ok]).max() > ANGLE_TOL_DEG:
+            out.append((FAIL, f"{label}: the saved angle is not what its dots give (up to {np.abs(mine[ok] - saved[ok]).max():.2f} deg apart)"))
+        step = np.abs(np.diff(saved[np.isfinite(saved)]))
+        if (step > JUMP_DEG).sum() >= JUMPS_WARN:
+            out.append((WARN, f"{label} jumped by more than {JUMP_DEG:g} deg {int((step > JUMP_DEG).sum())} times: a dot probably jumped to something else"))
+        if a.get("primary"):
+            main = (a, saved)
+    return out, main
+
+
+def _check_dots_at_peak(rows, near):
+    """The dots among the pictures used for the angle at the force peak: lost, weak, moved apart or mislabelled."""
+    bad = []
+    for d in sorted({c[:-5] for c in rows[0] if c.endswith("_lost")}):
+        lost, q = col(rows, f"{d}_lost")[near], col(rows, f"{d}_q")[near]
+        if (lost == 1).any():
+            bad.append(f"{d} lost")
+        elif np.isfinite(q).any() and np.nanmin(q) < WEAK_QUALITY:
+            bad.append(f"{d} weak")
+    for flag, words in (("dots_apart", "dots moved apart"), ("label_check", "labels may be swapped")):
+        if any(r.get(flag) for r, m in zip(rows, near) if m):
+            bad.append(words)
+    return [(WARN, "at the force peak: " + ", ".join(bad) + " (the angle at the peak rests on pictures the program itself doubted)")] if bad else []
+
+
+def _check_position(meta, main, near):
+    """The main angle at the peak against the position's target. Returns (issues, facts)."""
+    if main is None or not isinstance(meta.get("target_deg"), (int, float)):
+        return [], {}
+    v = main[1][near]
+    if not np.isfinite(v).any():
+        return [], {}
+    dev = float(np.nanmean(v)) - meta["target_deg"]
+    out = []
+    if abs(dev) > POSITION_TOL_DEG:
+        out.append((WARN, f"{main[0].get('label', main[0]['name'])} at the peak is {np.nanmean(v):.1f} deg, {dev:+.1f} from the target {meta['target_deg']:g}: "
+                          "was this the right position, or does the dot placement read differently from the joint?"))
+    return out, {"main_dev_deg": dev}
+
+
+def _ruler_facts(rows):
+    """Lengths in cm from the ruler scale (for the checks across trials): the thigh and the crest-to-trochanter arm."""
+    sc = median(col(rows, "scale_px_per_cm")) if rows and "scale_px_per_cm" in rows[0] else float("nan")
+    facts = {}
+    if np.isfinite(sc) and sc > 0 and rows:
+        for key, a, b in (("thigh_cm", "trochanter", "epicondyle"), ("pelvis_cm", "iliac_crest", "trochanter")):
+            if f"{a}_x" in rows[0] and f"{b}_x" in rows[0]:
+                facts[key] = median(np.hypot(col(rows, f"{b}_x") - col(rows, f"{a}_x"), col(rows, f"{b}_y") - col(rows, f"{a}_y"))) / sc
+    return facts
+
+
 def check_trial(meta_path, cal_max_n=None):
     """One trial: {"issues": [(level, text)], "facts": {...}} (the facts feed check_participant)."""
     meta_path = Path(meta_path)
     base = str(meta_path)[: -len("_meta.json")]
-    issues, facts = [], {}
-
-    def add(level, text):
-        issues.append((level, text))
-
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         rows = read_rows(base + "_data.csv")
     except (OSError, ValueError) as e:
         return {"issues": [(FAIL, f"cannot be read: {e}")], "facts": {}}
-    if meta.get("status") != "complete":
-        add(WARN, f"the recording is marked '{meta.get('status')}', not 'complete' (the program stopped before saving)")
-    if len(rows) != meta.get("frames"):
-        add(FAIL, f"data.csv has {len(rows)} pictures but meta.json says {meta.get('frames')}")
     t = col(rows, "t_s")
-    dt = np.diff(t)
-    if len(dt) and not (dt > 0).all():
-        add(FAIL, f"picture times do not always go forward ({int((dt <= 0).sum())} steps)")
-    elif len(dt):
-        if 1.0 / np.median(dt) < MIN_FPS:
-            add(WARN, f"only {1.0 / np.median(dt):.1f} pictures per second (fast movement is sampled coarsely)")
-        if dt.max() > PICTURE_GAP_S:
-            add(WARN, f"a gap of {dt.max():.2f} s without pictures")
-
-    # ---- force
-    fpath = Path(base + "_force.csv")
-    fm = meta.get("force") or {}
-    peak_t = None
-    if fpath.is_file():
-        got = read_force(fpath)
-        if got is None:
-            add(WARN, "force.csv has an unexpected layout: the force was not checked")
-        else:
-            ft, fclock, volts, newtons = got
-            fdt = np.diff(ft)
-            rate = 1.0 / np.median(fdt) if len(fdt) else float("nan")
-            if len(fdt) and not (fdt > 0).all():
-                add(FAIL, "force sample times do not always go forward")
-            if fm.get("sample_rate_hz") and abs(rate / fm["sample_rate_hz"] - 1.0) > RATE_TOL:
-                add(FAIL, f"the force was sampled at {rate:.1f} Hz but meta.json says {fm['sample_rate_hz']:g} Hz: every force time is off")
-            if len(fdt) and fdt.max() > FORCE_GAP_S:
-                add(WARN, f"a gap of {fdt.max() * 1000:.0f} ms in the force samples")
-            if len(rows) and np.isfinite(t).any():
-                err = np.abs((fclock - col(rows, "clock_s")[0]) - ft).max()
-                if err > CLOCK_TOL_S:
-                    add(FAIL, f"force and pictures are not on one clock (off by up to {err * 1000:.1f} ms): the angle at the force peak is not trustworthy")
-            cal = fm.get("calibration") or {}
-            n = np.full(len(volts), np.nan)
-            if cal.get("zero_set") and cal.get("n_per_v"):
-                expect = (volts - cal["offset_v"]) * cal["n_per_v"]
-                ok = np.isfinite(newtons)
-                if ok.any() and np.abs(expect[ok] - newtons[ok]).max() > NEWTON_TOL:
-                    add(FAIL, f"newtons are not (volts - zero) x slope (up to {np.abs(expect[ok] - newtons[ok]).max():.3f} N apart): the force may be wrong")
-                n = expect
-            else:
-                add(WARN, "the force was not zeroed (volts only): there are no newtons for this trial")
-            limit = fm.get("range_v", 10.0) * 0.99
-            clipped = int((np.abs(volts) >= limit).sum())
-            if clipped:
-                add(WARN, f"{clipped} force samples at the input limit: the real peak may be higher than the number says")
-            if np.isfinite(n).any():
-                s = moving_mean(n, round(0.1 * rate))
-                k = int(np.nanargmax(s))
-                peak_t, peak = float(ft[k]), float(s[k])
-                rest = float(np.percentile(s, 5))
-                facts.update(peak_n=peak, rest_n=rest)
-                if cal_max_n and peak > cal_max_n:
-                    add(WARN, f"the peak ({peak:.0f} N) is above the heaviest calibration load ({cal_max_n:.0f} N): the line is extended there, not measured")
-                if peak - rest < NO_RISE_N:
-                    add(WARN, f"the force never rose (peak {peak:.0f} N, rest {rest:.0f} N): no push was recorded")
-                elif rest < REST_LOW_N or rest > REST_HIGH_N:
-                    add(WARN, f"the resting force in the recording is {rest:+.0f} N: the zero was taken under load or has drifted, or the strap was loaded")
-
-    # ---- angles and dots
-    facing = meta.get("facing", "right")
-    main = None
-    for a in meta.get("angles") or []:
-        need = dots_of(a)
-        cname = f"{a['name']}_deg"
-        if not rows or cname not in rows[0] or any(f"{d}_x" not in rows[0] for d in need):
-            continue
-        mine, saved = angle_of(a, rows, facing), col(rows, cname)
-        ok = np.isfinite(mine) & np.isfinite(saved)
-        if ok.any() and np.abs(mine[ok] - saved[ok]).max() > ANGLE_TOL_DEG:
-            add(FAIL, f"{a.get('label', a['name'])}: the saved angle is not what its dots give (up to {np.abs(mine[ok] - saved[ok]).max():.2f} deg apart)")
-        step = np.abs(np.diff(saved[np.isfinite(saved)]))
-        if (step > JUMP_DEG).sum() >= JUMPS_WARN:
-            add(WARN, f"{a.get('label', a['name'])} jumped by more than {JUMP_DEG:g} deg {int((step > JUMP_DEG).sum())} times: a dot probably jumped to something else")
-        if a.get("primary"):
-            main = (a, saved)
+    issues = _check_pictures(meta, rows, t)
+    force_issues, facts, peak_t = _check_force(base, meta, rows, t, cal_max_n)
+    angle_issues, main = _check_angles(meta, rows)
+    issues += force_issues + angle_issues
     if peak_t is not None and rows:
         near = np.abs(t - peak_t) <= PEAK_ZONE_S
-        dots = sorted({c[:-5] for c in rows[0] if c.endswith("_lost")})
-        bad = []
-        for d in dots:
-            lost = col(rows, f"{d}_lost")[near]
-            q = col(rows, f"{d}_q")[near]
-            if (lost == 1).any():
-                bad.append(f"{d} lost")
-            elif np.isfinite(q).any() and np.nanmin(q) < WEAK_QUALITY:
-                bad.append(f"{d} weak")
-        for flag, words in (("dots_apart", "dots moved apart"), ("label_check", "labels may be swapped")):
-            if any(r.get(flag) for r, m in zip(rows, near) if m):
-                bad.append(words)
-        if bad:
-            add(WARN, "at the force peak: " + ", ".join(bad) + " (the angle at the peak rests on pictures the program itself doubted)")
-        if main is not None and isinstance(meta.get("target_deg"), (int, float)):
-            v = main[1][near]
-            if np.isfinite(v).any():
-                dev = float(np.nanmean(v)) - meta["target_deg"]
-                facts["main_dev_deg"] = dev
-                if abs(dev) > POSITION_TOL_DEG:
-                    add(WARN, f"{main[0].get('label', main[0]['name'])} at the peak is {np.nanmean(v):.1f} deg, {dev:+.1f} from the target {meta['target_deg']:g}: "
-                              "was this the right position, or does the dot placement read differently from the joint?")
-    # ---- facts for the checks across trials (ruler scale and the pelvis arm)
-    sc = median(col(rows, "scale_px_per_cm")) if rows and "scale_px_per_cm" in rows[0] else float("nan")
-    if np.isfinite(sc) and sc > 0 and rows:
-        for key, a, b in (("thigh_cm", "trochanter", "epicondyle"), ("pelvis_cm", "iliac_crest", "trochanter")):
-            if f"{a}_x" in rows[0] and f"{b}_x" in rows[0]:
-                facts[key] = median(np.hypot(col(rows, f"{b}_x") - col(rows, f"{a}_x"), col(rows, f"{b}_y") - col(rows, f"{a}_y"))) / sc
+        issues += _check_dots_at_peak(rows, near)
+        position_issues, position_facts = _check_position(meta, main, near)
+        issues += position_issues
+        facts.update(position_facts)
+    facts.update(_ruler_facts(rows))
     return {"issues": issues, "facts": facts}
 
 

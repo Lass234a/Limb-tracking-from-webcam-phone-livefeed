@@ -4,8 +4,9 @@ The panel used to be one long column of eleven boxes (about three screens tall).
 strip that never scrolls, and the rest is a list of sections of which one is open at a time; a closed section still says in one
 line what it is set to. Nothing here knows about cameras or angles: the window gives it widgets and states.
 """
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from .verdict import COMPROMISED, REASONS, VALID
 
@@ -21,6 +22,27 @@ CHIP_STYLES = {
     "check": "color: #fbbf24; border: 1px dashed #d97706; background: rgba(217,119,6,0.12); font-weight: bold;",
 }
 MARKS = {"done": "✓ ", "todo": "", "next": "▶ ", "off": "", "check": "? "}
+# The chip colours above are bright text for a DARK window (7 to 8:1 there). On a light window the same colours measure 1.3 to 1.5:1 and are
+# hard to read, so a light window gets the same chips with darker text (5.5:1 or more on white and on light grey). The dark styles stay as
+# they are; "next" (dark text on solid amber) reads well on both and is the same.
+CHIP_STYLES_LIGHT = {
+    "done": "color: #166534; border: 1px solid #16a34a; background: rgba(22,163,74,0.12);",
+    "todo": "color: #92400e; border: 1px solid #d97706; background: rgba(217,119,6,0.12);",
+    "next": CHIP_STYLES["next"],
+    "off": "color: #4b5563; border: 1px solid rgba(128,128,128,0.35); background: transparent;",
+    "check": "color: #92400e; border: 1px dashed #d97706; background: rgba(217,119,6,0.12); font-weight: bold;",
+}
+
+
+def is_dark(pal=None):
+    """True when the window is darker than its text (a dark theme)."""
+    pal = pal or QApplication.palette()
+    return pal.color(QPalette.Window).lightness() < pal.color(QPalette.WindowText).lightness()
+
+
+def chip_style(state, pal=None):
+    """The style of a step chip in this state for the window's theme (see CHIP_STYLES_LIGHT)."""
+    return (CHIP_STYLES if is_dark(pal) else CHIP_STYLES_LIGHT)[state]
 
 
 class ElidedButton(QPushButton):
@@ -224,11 +246,17 @@ class StepStrip(QWidget):
             return
         self.states[key] = (state, label, tip)
         chip.setText(MARKS[state] + label)
-        chip.setStyleSheet("QPushButton { padding: 3px 6px; border-radius: 4px; " + CHIP_STYLES[state] + " }")
+        chip.setStyleSheet("QPushButton { padding: 3px 6px; border-radius: 4px; " + chip_style(state) + " }")
         chip.setToolTip(tip)
 
     def state_of(self, key):
         return self.states[key][0]
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):             # (the theme changed: the chips take the style of the new one)
+            for key, (state, _label, _tip) in self.states.items():
+                self.chips[key].setStyleSheet("QPushButton { padding: 3px 6px; border-radius: 4px; " + chip_style(state) + " }")
 
 
 VERDICT_STYLES = {                              # the frame's colour says the verdict at a glance

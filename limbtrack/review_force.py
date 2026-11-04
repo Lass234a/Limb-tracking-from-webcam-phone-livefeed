@@ -369,6 +369,7 @@ class ForceTree(QWidget):
     def _setup_tree(self):
         t = self.tree
         t.setObjectName("forceTree")
+        t.setAccessibleName("Force numbers and what they depend on")
         t.setColumnCount(3)
         t.setHeaderLabels(["", "Value", "How"])
         t.setRootIsDecorated(True)

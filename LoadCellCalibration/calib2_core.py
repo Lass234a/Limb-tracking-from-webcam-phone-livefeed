@@ -155,7 +155,6 @@ def analyse():
     R["hw_gap_kg"] = (R["fit25"]["hw_meas"] - b25[0]) / b25[1]
 
     # up versus down and time drift
-    up = np.array([r["phase"] == "up" for r in used]).astype(float)
     dn = np.array([r["phase"] == "down" for r in used]).astype(float)
     X3 = np.column_stack([np.ones_like(P), P, dn])
     b3, c3, r3, rm3, d3 = ols(X3, V)

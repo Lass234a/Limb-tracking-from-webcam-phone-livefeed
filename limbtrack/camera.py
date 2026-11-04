@@ -8,7 +8,6 @@ import re
 import threading
 from urllib.parse import urlsplit, urlunsplit
 import time
-from pathlib import Path
 
 import cv2
 

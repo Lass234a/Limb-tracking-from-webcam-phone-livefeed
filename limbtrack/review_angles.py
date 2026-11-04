@@ -596,6 +596,7 @@ class AngleDotTree(QWidget):
         # the tree
         self.tree = _Tree()
         self.tree.setObjectName("angleTree")
+        self.tree.setAccessibleName("Angles and the dots that make them")
         self.tree.setColumnCount(N_COLUMNS)
         self.tree.setHeaderLabels(HEADS)
         self.tree.setIndentation(16)

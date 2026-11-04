@@ -111,7 +111,6 @@ def apply(tr, review):
     does not have), notes (plain lines about what was recomputed)."""
     pos, skipped = overlay_positions(tr, review)
     derived_defs = ((tr.meta.get("derived_points") or {}).get("definitions")) or {}
-    n = len(tr.t)
     edited = {d: np.nonzero(p["edited"])[0] for d, p in pos.items()}
     tr.edited = {d: [int(i) for i in idx] for d, idx in edited.items() if idx.size}
     if not tr.edited:

@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from limbtrack import dot_edits, reference  # noqa: E402
+from limbtrack import dot_edits, privacy_fix, reference  # noqa: E402
 from limbtrack import review_layer as rl  # noqa: E402
 from limbtrack.review import ReferenceDialog, ReferenceValidationDialog, ReviewTab  # noqa: E402
 
@@ -74,6 +74,7 @@ def test_a_full_review_session_leaves_the_recorded_files_untouched(tmp_path, mon
     tab.export_session()
     tab.export_session(valid_only=True)
     tab.export_overlay_video()
+    privacy_fix.make_copies(meta, tab.trial.meta, (0, 0, 640, 360), [(10, 10, 64, 64)])         # (the Privacy window's protected copies are a Review writer too)
     tab.show_view("overview")
     assert tab.overview.wait_until_done(120000)
     tab.show_view("trial")
@@ -89,7 +90,8 @@ def test_a_full_review_session_leaves_the_recorded_files_untouched(tmp_path, mon
     written = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file() and p.is_relative_to(review_root))
     base = tab.trial.base
     for must in (f"review/P01/{base}/review.json", f"review/P01/{base}/dots_edit.csv", f"review/P01/{base}/verdict.json", f"review/P01/{base}/reference.json",
-                 f"review/P01/{base}/reviewed_data.csv", f"review/P01/{base}/reviewed_force.csv", f"review/P01/{base}/{base}_overlay_reviewed.mp4"):
+                 f"review/P01/{base}/reviewed_data.csv", f"review/P01/{base}/reviewed_force.csv", f"review/P01/{base}/{base}_overlay_reviewed.mp4",
+                 f"review/P01/{base}/privacy_fix.json", f"review/P01/{base}/{base}_raw_protected.mp4", f"review/P01/{base}/{base}_overlay_protected.mp4"):
         assert any(w.replace("\\", "/") == must for w in written), (must, written)
     assert any("exports/P01_session_summary_reviewed.csv" in w.replace("\\", "/") for w in written)
     outside = [str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file() and not p.is_relative_to(review_root) and not p.is_relative_to(folder)]
