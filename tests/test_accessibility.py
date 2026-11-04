@@ -1,7 +1,9 @@
 """Accessibility of the two main screens, checked on the real windows: a screen reader can name every control, a control with a key says
-which, and the Privacy window of Review can be opened from the keyboard. (Colour contrast is in test_theme_contrast.py.)"""
+which, every control of Review that never takes the keyboard has a key of its own, and the Privacy window of Review can be opened from the
+keyboard. (Colour contrast is in test_theme_contrast.py; what each Review key does is in test_review_keys.py.)"""
 import os
 import re
+import shutil
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("LIMBTRACK_SILENT", "1")
@@ -16,6 +18,7 @@ from limbtrack.gui import MainWindow  # noqa: E402
 from limbtrack.review import ReviewTab  # noqa: E402
 
 from tests.test_force import recording  # noqa: E402
+from tests.test_pilot_checks import recording_at  # noqa: E402
 from tests.test_steps import TESTS  # noqa: E402
 
 CONTROLS = (QPushButton, QCheckBox, QRadioButton, QComboBox, QSlider, QAbstractSpinBox, QLineEdit, QToolButton, QAbstractItemView, QTextEdit)
@@ -112,3 +115,72 @@ def test_the_privacy_window_opens_from_the_keyboard(review, monkeypatch):
     review.set_fix_mode(True)                                  # while dots are being fixed the key does nothing (as F, 1 to 5 and the rest)
     sc.activated.emit()
     assert opened == [1]
+
+
+# ------------------------------------------------------------------------------------------- Review: a key for every control the keyboard skips
+SAYS_A_KEY = re.compile(r"\bKey: |\(keys? |\barrow\b|\bEsc\b")        # 'Key: M.'  '(key 1)'  '(keys 2 to 5)'  '(Left arrow or ,)'  'Esc'
+
+
+def mouse_only_without_a_key(tab):
+    """(the controls looked at, the ones among them that name no key): the visible, enabled controls under `tab` that never take the keyboard (a click
+    on one must not take the picture keys away). Left out: item views (the two lists of numbers: their folds open and close together with the key U)
+    and the Fix dots workspace (its dots are clicked on the picture, which is what it is for)."""
+    controls = tuple(c for c in CONTROLS if c is not QAbstractItemView)
+    seen, missing = [], []
+    for w in tab.findChildren(QWidget):
+        if not isinstance(w, controls) or _inner(w) or not (w.isVisible() and w.isEnabled()) or w.focusPolicy() != Qt.NoFocus or tab.fix_dots.isAncestorOf(w):
+            continue
+        text = getattr(w, "text", None)
+        said = (text() if callable(text) else "") + " " + w.toolTip()
+        seen.append(w)
+        if not SAYS_A_KEY.search(said):
+            missing.append((type(w).__name__, w.objectName(), said.strip()[:60]))
+    return seen, missing
+
+
+@pytest.fixture(scope="module")
+def full_recordings(tmp_path_factory):
+    root = tmp_path_factory.mktemp("a11y_keys")
+    recording_at(root, 70.0, seconds=1.5)
+    return root
+
+
+@pytest.fixture
+def full_review(app, full_recordings, tmp_path):
+    """Review on a trial that has a video and a force (so every button is enabled), the participant open."""
+    dest = tmp_path / "recordings"
+    shutil.copytree(full_recordings, dest)
+    tab = ReviewTab(dest)
+    tab.resize(1500, 900)
+    tab.show()
+    tab.set_participant(dest / "P01")
+    QApplication.processEvents()
+    yield tab
+    if tab.trial is not None:
+        tab.trial.close()
+    tab.overview.shutdown()
+    tab.close()
+
+
+def test_on_the_review_trial_page_every_control_the_keyboard_cannot_tab_to_names_its_key(full_review):
+    r = full_review
+    seen, missing = mouse_only_without_a_key(r)
+    assert missing == []
+    looked_at = {id(w) for w in seen}
+    must = (r.btn_view_trial, r.btn_view_overview, r.btn_data_original, r.btn_data_reviewed, r.btn_fix, r.btn_privacy, r.btn_step_back, r.btn_step_fwd,
+            r.checks.chip, r.verdict_bar.btn_valid, r.verdict_bar.btn_comp, r.verdict_bar.btn_note, r.angle_tree.more_check, r.angle_tree.reference_button,
+            r.force_tree.open_all_link)
+    assert [w.objectName() or type(w).__name__ for w in must if id(w) not in looked_at] == []        # (it did look at the controls that matter: finding nothing proves nothing)
+
+
+def test_on_the_review_overview_every_control_the_keyboard_cannot_tab_to_names_its_key(full_review):
+    r = full_review
+    r.show_view("overview")
+    assert r.overview.wait_until_done(120000)
+    QApplication.processEvents()
+    seen, missing = mouse_only_without_a_key(r)
+    assert missing == []
+    looked_at = {id(w) for w in seen}
+    ov = r.overview
+    must = (r.btn_view_trial, r.btn_view_overview, r.btn_data_original, r.btn_data_reviewed, ov.approve_button, ov.session_button, ov.export_button, ov.more_button)
+    assert [w.objectName() or type(w).__name__ for w in must if id(w) not in looked_at] == []

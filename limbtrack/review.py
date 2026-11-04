@@ -18,10 +18,10 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
 from . import angle_reference, anybody, completeness, dot_edits, overlay, privacy, reference, review_layer, review_nav, session_memory
 from . import verdict as verdicts
 from .twoaxis import TwoAxisPlot
-from .review_checks import ChecksChip
-from .review_decide import VerdictControl
+from .review_checks import CHECKS_KEY, ChecksChip
+from .review_decide import NOTE_KEY, VerdictControl
 from .review_force import ForceTree
-from .review_angles import AngleDotTree
+from .review_angles import REFERENCE_KEY, AngleDotTree
 from .review_fixdots import FixDotsPane
 from .review_privacy import PrivacyDialog
 from .review_overview import OverviewPage
@@ -910,10 +910,18 @@ class _VideoLabel(QLabel):
 
 
 class _NoWheelSpin(QDoubleSpinBox):
-    """A spin box that ignores the mouse wheel (scrolling past it must not change the number)."""
+    """A spin box that ignores the mouse wheel (scrolling past it must not change the number). `returnKeyPressed` is sent once when Return is
+    pressed in it, after the typed number has been taken (the zero box uses it: Return applies the zero, as the button does). It has a name of its
+    own because Qt 6.11 gave spin boxes a `returnPressed` of their own: a second signal of that name made one Return apply the zero twice."""
+    returnKeyPressed = Signal()
 
     def wheelEvent(self, e):
         e.ignore()
+
+    def keyPressEvent(self, e):
+        super().keyPressEvent(e)
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.returnKeyPressed.emit()
 
 
 def fill_reference_choices(instrument_combo, resolution_combo):
@@ -1189,7 +1197,7 @@ class ReviewTab(QWidget):
         self.btn_fix.setObjectName("fixToggle")
         self.btn_fix.setCheckable(True)
         self.btn_fix.setFocusPolicy(Qt.NoFocus)
-        self.btn_fix.setToolTip("Put a dot right after the trial: the video grows and the dot tools take the right side. Press again, or Esc, to go back.")
+        self.btn_fix.setToolTip("Put a dot right after the trial: the video grows and the dot tools take the right side. Press again, or Esc, to go back. Key: F.")
         self.btn_fix.setEnabled(False)
         self.btn_fix.clicked.connect(lambda on: self.set_fix_mode(on))
         self.btn_privacy = QPushButton("Privacy")                # draw a crop and masks after the recording and make protected copies of the videos (unreleased)
@@ -1359,12 +1367,13 @@ class ReviewTab(QWidget):
         self.zero_spin.setSuffix(" V")
         self.zero_spin.setToolTip("The voltage that counts as 0 N for this trial. Type it, or take it from the graph with the buttons next to it. It starts as "
                                   "the zero in use (the one set in Review, else the one taken when the trial was recorded, or the resting level of the "
-                                  "recording if none was taken). Nothing changes until you press Apply zero.")
+                                  "recording if none was taken). Nothing changes until you press Apply zero, or Return in this box. Key: Z opens this box.")
         self.btn_apply_cal = QPushButton("Apply zero")
         self.btn_apply_cal.setToolTip("Use this zero for the trial. Newtons are worked out from the recorded volts with this zero and the slope recorded with the trial "
                                       "(the active load cell regression if none was recorded). Saved in the review folder, so every number and export follows; "
                                       "the volts in the recorded files are never changed.")
         self.btn_apply_cal.clicked.connect(self.apply_force_calibration)
+        self.zero_spin.returnKeyPressed.connect(self.apply_force_calibration)                   # (Return in the box does what the button does: a keyboard route)
         self.btn_zero_stretch = QPushButton("Zero = grey stretch")
         self.btn_zero_stretch.setToolTip("Drag the grey stretch on the force graph to a place where nothing was pulling, then press this: the zero is the mean "
                                          "of the recorded volts in it (a stretch that is a multiple of 20 ms cancels 50 Hz hum exactly).")
@@ -1580,6 +1589,7 @@ class ReviewTab(QWidget):
         sc = QShortcut(QKeySequence("Escape"), self.trial_page)
         sc.setContext(Qt.WidgetWithChildrenShortcut)
         sc.activated.connect(lambda: self.set_fix_mode(False) if self._fix_mode else None)
+        self._install_keys()
         self._entries = []                  # review_nav.TrialEntry of the open participant
         self._folder = None                 # the open participant's folder
         self._index = -1                    # the entry that is open in the Trial view
@@ -2285,6 +2295,60 @@ class ReviewTab(QWidget):
             self._show_plot_view("calib")
         elif action == "privacy":
             self.open_privacy()
+
+    def _install_keys(self):
+        """A key for every control that never takes the keyboard (a click on one must not take the picture keys away) and had none, so that
+        nothing in the Review tab needs the mouse except the dots of Fix dots, which are clicked on the picture by nature. This table is the one
+        place that says which key does what; each key is also written in its control's tooltip (the checks chip and the reference button write
+        theirs from `CHECKS_KEY` and `REFERENCE_KEY`, because they rewrite their tooltips). Alt keys work on both pages (the header is the same on
+        both); letters work on the page their control is on, and not while a number or a note is being typed (those boxes keep their own keys).
+        Nothing here acts without the same question as a click: Approve review still asks first."""
+        trial, over, head = self.trial_page, self.overview, self
+
+        def note():
+            if self.verdict_bar.isEnabled() and not self._fix_mode:
+                self.verdict_bar.btn_note.showMenu()
+
+        def checks():                                        # (in Fix dots the chip and the force numbers are not on screen, so these two keys have nothing to act on)
+            if self.checks.chip.isVisible():
+                self.checks.toggle_popup()
+
+        def zero():
+            if self.trial is not None and self.trial.has_force() and self.force_tree.isVisible():
+                self.force_tree.open_zero()
+
+        def press(button):
+            return lambda: button.click() if button.isVisible() and button.isEnabled() else None
+
+        def menu(button):
+            return lambda: button.showMenu() if button.isVisible() and button.isEnabled() else None
+
+        keys = (
+            (head, "Alt+1", self.btn_view_trial, press(self.btn_view_trial)),
+            (head, "Alt+2", self.btn_view_overview, press(self.btn_view_overview)),
+            (head, "Alt+O", self.btn_data_original, press(self.btn_data_original)),
+            (head, "Alt+R", self.btn_data_reviewed, press(self.btn_data_reviewed)),
+            (trial, CHECKS_KEY, None, checks),
+            (trial, NOTE_KEY, None, note),
+            (trial, REFERENCE_KEY, None, press(self.angle_tree.reference_button)),
+            (trial, "M", self.angle_tree.more_check, press(self.angle_tree.more_check)),
+            (trial, "U", self.force_tree.open_all_link, press(self.force_tree.open_all_link)),
+            (trial, "Z", None, zero),
+            (trial, "Shift+Z", self.force_tree.zero_from, menu(self.force_tree.zero_from)),
+            (over, "A", over.approve_button, press(over.approve_button)),
+            (over, "S", over.session_button, press(over.session_button)),
+            (over, "E", over.export_button, menu(over.export_button)),
+            (over, "M", over.more_button, menu(over.more_button)),
+        )
+        self.keyed = []                                      # (scope, key, what it stands for): for the tests and for anyone asking what a key does
+        for scope, seq, control, slot in keys:
+            sc = QShortcut(QKeySequence(seq), scope)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+            if control is not None:
+                tip = control.toolTip()
+                control.setToolTip((tip + " " if tip else "") + f"Key: {seq}.")
+            self.keyed.append((scope, seq, control))
 
     def open_privacy(self):
         """The Privacy window for the trial on screen (audit of 2026-11-04): crop and masks drawn after the recording, protected copies in the review folder."""

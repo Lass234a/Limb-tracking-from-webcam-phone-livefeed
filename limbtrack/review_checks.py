@@ -26,6 +26,8 @@ ACTION_LABELS = {"fix_dots": "Show dot", "zero": "Set zero", "window": "Set wind
 ACTION_TIPS = {"fix_dots": "Open the Fix dots workspace", "zero": "Go to the force zero", "window": "Go to the analysis window",
                "calibration": "Show the calibration graph", "privacy": "Draw a crop and masks and make protected copies of the videos"}
 KIND_COLOURS = {"check": WARN, "ok": GOOD, "info": INFO_GREY}
+CHECKS_KEY = "C"              # the key that opens and closes the list of checks (the Review tab binds it; the chip says so in its tooltip)
+MAX_KEYED_BUTTONS = 9         # inside the open list the keys 1 to 9 press the buttons of its lines
 
 
 class _Marker(QWidget):
@@ -473,7 +475,8 @@ QPushButton#checkAction:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
 
 
 class _Popup(QFrame):
-    """The pop-up that holds the checks panel: a window of its own that closes when anything outside it is clicked."""
+    """The pop-up that holds the checks panel: a window of its own that closes when anything outside it is clicked. While it is open it owns the
+    keyboard: no key of the Review page acts through it (the key 1 is "valid" on the page, and "the first button" in this list)."""
 
     def __init__(self, parent):
         super().__init__(parent, Qt.Popup)
@@ -482,6 +485,30 @@ class _Popup(QFrame):
     def hideEvent(self, e):
         self.closed_at = time.monotonic()
         super().hideEvent(e)
+
+    def event(self, e):
+        if e.type() == QEvent.ShortcutOverride:      # (Qt asks the window before it looks for a shortcut: an accepted override keeps the page's keys from firing)
+            e.accept()
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):
+        """The keys of the open list: 1 to 9 press the button of that line, Return reads every sentence in full (or folds them again), and the
+        key that opened the list closes it. Escape closes it too (Qt)."""
+        chip, key = self.parent(), e.key()
+        if chip is not None and Qt.Key_1 <= key <= Qt.Key_9:
+            buttons = chip.keyed_buttons()
+            if key - Qt.Key_1 < len(buttons):
+                buttons[key - Qt.Key_1].click()
+            return
+        if chip is not None and key in (Qt.Key_Return, Qt.Key_Enter):
+            if chip.panel.pill_check.isVisibleTo(self):
+                chip.panel.pill_check.click()
+            return
+        if key == getattr(Qt, f"Key_{CHECKS_KEY}"):
+            self.hide()
+            return
+        super().keyPressEvent(e)
 
 
 class ChecksChip(QWidget):
@@ -549,7 +576,8 @@ class ChecksChip(QWidget):
         self.chip.style().polish(self.chip)
         titles = [i["title"] for i in items if i["level"] == "check"]
         self.preview.setText(" · ".join(titles), " · ".join(f"{i['title']}: {i['text']}" for i in items if i["level"] == "check"))
-        self.chip.setToolTip("The checks of this trial. Click to read every one and to go to what puts it right." if items else "")
+        self.chip.setToolTip(f"The checks of this trial. Click to read every one and to go to what puts it right. Key: {CHECKS_KEY}; in the list, "
+                             "1 to 9 press the buttons and Return reads every sentence." if items else "")
 
     # ---- the pop-up
     def toggle_popup(self):
@@ -558,7 +586,15 @@ class ChecksChip(QWidget):
         elif time.monotonic() - self.popup.closed_at > 0.25:          # (the click that closed it by clicking outside must not open it again)
             self.show_popup()
 
+    def keyed_buttons(self):
+        """The action buttons of the list, in the order of its lines: the first nine have a key each (1 to 9)."""
+        return [r.button for r in self.panel.rows + self.panel.extra_rows if r.button][:MAX_KEYED_BUTTONS]
+
     def show_popup(self):
+        for n, button in enumerate(self.keyed_buttons(), start=1):          # (say the key of each button in its tooltip; the first tip is kept, so this can be done again)
+            base = button.property("baseTip") or button.toolTip()
+            button.setProperty("baseTip", base)
+            button.setToolTip(f"{base} (key {n})")
         self.popup.setFixedWidth(self.POPUP_WIDTH)
         self.popup.layout().activate()
         self.panel._fit()

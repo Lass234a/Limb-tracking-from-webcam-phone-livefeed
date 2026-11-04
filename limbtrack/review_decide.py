@@ -12,6 +12,7 @@ from .review_style import BAD, GOOD, ElidedLabel, border_colour, muted_colour, t
 from .verdict import COMPROMISED, REASONS, VALID
 
 STATE_WORDS = {VALID: "valid", COMPROMISED: "compromised (not counted)", None: "not judged"}
+NOTE_KEY = "N"            # the key that opens the note (the Review tab binds it; the button says so in its tooltip)
 
 
 class VerdictControl(QWidget):
@@ -150,7 +151,7 @@ class VerdictControl(QWidget):
         self.btn_comp.setText("Compromised" + (f" · {n}" if n else ""))
         self.btn_comp.setProperty("on", bool(n))
         self.btn_note.setText("Note ✎" if note else "Note…")
-        self.btn_note.setToolTip(note or "Add a note to this verdict.")
+        self.btn_note.setToolTip((note or "Add a note to this verdict.") + f" Key: {NOTE_KEY}.")
         for w in (self.state, self.btn_comp):
             w.style().unpolish(w)
             w.style().polish(w)

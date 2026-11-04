@@ -40,6 +40,7 @@ NO_MARKERS = "No MVIC start/end markers in this trial: the numbers use the windo
 REF_TITLE = "Reference readings"
 REF_SUBTITLE = "Typed from a goniometer or an inclinometer, not measured by this program."
 REF_ADD = "Reference angle: add..."
+REFERENCE_KEY = "A"            # the key that opens the reference readings (the Review tab binds it; the button says so in its tooltip)
 PEAK_POINTS = 14.0                                 # the angle at the peak force is the large number of the main row
 SECOND_DOT = "  ·  "
 
@@ -411,7 +412,7 @@ def _reference(trial, m):
     notice = reference_notice(rows, saved)
     if not rows:
         m.reference_text = REF_ADD
-        m.reference_tip = notice + "\nPress to type the readings in."
+        m.reference_tip = notice + f"\nPress to type the readings in (key {REFERENCE_KEY})."
         m.reference_lines = [REF_TITLE, REF_SUBTITLE, notice]
         return
     cells = reference_cells(rows)
@@ -424,7 +425,7 @@ def _reference(trial, m):
     basis = _ReferenceBlock._explanation(trial, rows, saved)
     m.reference_lines = [REF_TITLE, REF_SUBTITLE] + ([notice] if notice else []) + lines + ([basis] if basis else [])
     m.reference_tip = "\n".join([REF_TITLE + " (" + REF_SUBTITLE[:-1].lower() + "):"] + ([notice] if notice else []) + lines + ([basis] if basis else [])
-                                + ["Press to add or change them."])
+                                + [f"Press to add or change them (key {REFERENCE_KEY})."])
 
 
 # ---------------------------------------------------------------------------------------------------------- small widgets
