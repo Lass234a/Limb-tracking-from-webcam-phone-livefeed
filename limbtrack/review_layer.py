@@ -350,7 +350,7 @@ class Review:
 # Both live in the participant's review folder (beside the per-trial folders), are written only through `atomic` (so only inside a review
 # folder, never beside a trial's own files), and neither changes a number or a recorded file.
 OVERVIEW_CACHE = "overview_cache.json"
-OVERVIEW_CACHE_FORMAT = 2        # 0.33.0: the rows have the other angles at the peak (a cache of format 1 is worked out again)
+OVERVIEW_CACHE_FORMAT = 4        # 0.35.0: the rows also have the check weight columns; 0.34.0 (3): the stabilisation and standing-reference columns (an older cache is worked out again; 2 had the other angles at the peak, 0.33.0)
 OVERVIEW_CACHE_VARIANTS = 4        # per trial: the latest keys kept (original / reviewed, a few smoothing choices), so switching back is instant
 APPROVAL = "approval.json"
 APPROVAL_FORMAT = 1

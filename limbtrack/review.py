@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QLineEdit, QMenu, QSplitter, QStackedWidget, QTextEdit, QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                                QWidget)
 
-from . import angle_reference, dot_edits, overlay, privacy, reference, review_layer, review_nav, session_memory
+from . import angle_reference, anybody, completeness, dot_edits, overlay, privacy, reference, review_layer, review_nav, session_memory
 from . import verdict as verdicts
 from .twoaxis import TwoAxisPlot
 from .review_checks import ChecksChip
@@ -1071,9 +1071,11 @@ class ReferenceValidationDialog(QDialog):
 
 
 class ReviewTab(QWidget):
-    def __init__(self, recordings_dir):
+    def __init__(self, recordings_dir, tests=None):
         super().__init__()
         self._dir = Path(recordings_dir)
+        self._tests = tests or completeness.default_tests()         # (0.34.0) the session plan, for the AnyBody export and the session check
+        self._session_dialog = None
         self.trial = None
 
         # --- the header (0.29.0): choose a participant, then a trial from a drop-down; the Trial and Overview pages; exports
@@ -1138,6 +1140,11 @@ class ReviewTab(QWidget):
                                        "<participant>_session_summary_<original or reviewed>.csv.")
         self.act_export_valid = QAction("Valid trials only (CSV)", self)
         self.act_export_valid.setToolTip("The same, with only the trials you marked valid. Saved as <participant>_session_summary_<...>_valid.csv.")
+        self.act_export_anybody = QAction("AnyBody inputs: this participant (CSV + JSON)", self)
+        self.act_export_anybody.setToolTip("One row per position for the AnyBody model (anybody_inputs.csv) and participant.json: the counted trial with the "
+                                           "highest peak of each position (marked valid), force in newtons, the angles at the peak, the participant "
+                                           "measures and set-up facts, SI units. Uses the data chosen under Data (Original or Reviewed). Saved in the "
+                                           "review folder, in exports. A blank is a value that was not available.")
         self.act_export_trial = QAction("This trial: summary CSV", self)
         self.act_export_trial.setToolTip("Summary of the open trial (and its dot movement) for the data chosen under Data, in the trial's review folder. "
                                          "For Reviewed data with fixes it also writes reviewed_data.csv and reviewed_force.csv: the edited numbers for other software.")
@@ -1153,13 +1160,14 @@ class ReviewTab(QWidget):
         self.act_open_file = QAction("Open a single trial file...", self)
         self.act_export_all.triggered.connect(lambda: self.export_session())
         self.act_export_valid.triggered.connect(lambda: self.export_session(valid_only=True))
+        self.act_export_anybody.triggered.connect(lambda: self.export_anybody())
         self.act_export_trial.triggered.connect(self.export)
         self.act_export_video.triggered.connect(self.export_overlay_video)
         self.act_refval.triggered.connect(self.show_reference_validation)
         self.act_open_file.triggered.connect(self.open_dialog)
         # Export and More are in the participant overview since 0.32.0 (the menus are built here, the overview shows them)
         self.export_menu = QMenu(self)
-        for a in (self.act_export_all, self.act_export_valid):
+        for a in (self.act_export_all, self.act_export_valid, self.act_export_anybody):
             self.export_menu.addAction(a)
         self.export_menu.addSeparator()
         for a in (self.act_export_trial, self.act_export_video):
@@ -1517,6 +1525,8 @@ class ReviewTab(QWidget):
         self.overview = OverviewPage(trial_row, parallel=True)         # (the numbers are worked out in worker processes: the window stays free)
         self.overview.set_menus(self.export_menu, self.more_menu)
         self.overview.openRequested.connect(self.open_base)
+        self.overview.sessionCheckRequested.connect(self.open_session_check)
+        self.overview.rowsFinished.connect(self._refresh_session_label)
         self.overview.exportRequested.connect(lambda valid_only: self.export_session(valid_only=valid_only))
         self.stack = QStackedWidget()
         self.stack.addWidget(self.trial_page)
@@ -2743,6 +2753,131 @@ class ReviewTab(QWidget):
             text += "\nNot readable: " + "; ".join(failed)
         QMessageBox.information(self, "Exported", text)
         return out
+
+    # ------------------------------------------------------------------ the AnyBody export and the session check (0.34.0)
+    def _plan(self):
+        from .protocol import plan_positions
+        return plan_positions(self._tests) if self._tests else None
+
+    def _rows_now(self, entries):
+        """({trial base: export row}, [why a trial has none], cancelled): the rows the overview has, the others worked out here (with a progress
+        window when there are many), as `export_session` does. The settings are the ones shown (smoothing, sliding window, Original or Reviewed)."""
+        smooth, window = self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0
+        self.overview.cancel()
+        self.overview.set_settings(smooth, window, self._source)
+        got, failed = {}, []
+        todo = sum(1 for e in entries if e.readable and self.overview.row_for(e.base) is None)
+        progress = QProgressDialog("Working out the numbers of every trial...", "Cancel", 0, todo, self) if todo > 3 else None
+        if progress is not None:
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+        done = 0
+        try:
+            for e in entries:
+                if not e.readable:
+                    failed.append(f"{e.base}: {e.error}")
+                    continue
+                row = self.overview.row_for(e.base)
+                if row is None:
+                    row, err = trial_row(e.meta_path, smooth, window, self._source)
+                    if row is None:
+                        failed.append(f"{e.base}: {err}")
+                        continue
+                    self.overview.store(e, row)
+                    done += 1
+                    if progress is not None:
+                        progress.setValue(done)
+                        QApplication.processEvents()
+                        if progress.wasCanceled():
+                            return got, failed, True
+                got[e.base] = dict(row)
+        finally:
+            if progress is not None:
+                progress.close()
+        return got, failed, False
+
+    def anybody_result(self, judged_only=True):
+        """The AnyBody export of the open participant as a dict (limbtrack/anybody.py `build`), or None when it was cancelled or there is no
+        participant. Reads the trials only; nothing is written (`export_anybody` writes the files)."""
+        folder = self._folder if self._folder is not None else (self.trial.folder if self.trial is not None else None)
+        if folder is None:
+            return None
+        entries = review_nav.list_trials(folder)
+        got, failed, cancelled = self._rows_now(entries)
+        if cancelled:
+            return None
+        smooth, window = self.force_smooth.value() / 1000.0, self.window_peak_spin.value() / 1000.0
+        paths = {e.base: e.meta_path for e in entries}
+        rows = [got[e.base] for e in entries if e.base in got]
+
+        def open_trial(meta_path):
+            tr = Trial(meta_path, open_video=False, source=self._source)
+            tr.force_smooth_s, tr.window_peak_s = float(smooth), float(window)
+            return tr
+        result = analysis.anybody_rows(rows, lambda r: paths[r["trial"]], open_trial, plan=self._plan(), judged_only=judged_only,
+                                       source=self._source, export_version=SOFTWARE_VERSION)
+        result["failed"] = failed
+        result["folder"] = folder
+        result["entries"] = entries
+        return result
+
+    def export_anybody(self, judged_only=True):
+        """The Export menu's *AnyBody inputs*: anybody_inputs.csv (one row per position) and participant.json in the participant's exports folder of
+        the review layer. Returns the CSV path, or None (nothing to export, cancelled, or not saved: the window says why)."""
+        result = self.anybody_result(judged_only)
+        if result is None:
+            return None
+        if not result["rows"]:
+            QMessageBox.warning(self, "Nothing to export", "No position has a counted trial that is marked valid yet:\n" + anybody.summary_text(result)
+                                + ("\nNot readable: " + "; ".join(result["failed"]) if result["failed"] else ""))
+            return None
+        meta = result["entries"][0].meta_path
+        out_dir = review_layer.exports_dir(meta)
+        csv_path, json_path = out_dir / "anybody_inputs.csv", out_dir / "participant.json"
+        who = next(iter(result["participants"]))
+        try:
+            with review_layer.atomic(csv_path, newline="") as fh:
+                anybody.write_csv(fh, result["rows"])
+            with review_layer.atomic(json_path) as fh:
+                fh.write(anybody.json_text(result["participants"][who]))
+        except OSError as e:
+            QMessageBox.warning(self, "Not saved", f"The AnyBody files could not be written in the review folder:\n{e}\n\nIf one is open in Excel, close it and export again.")
+            return None
+        text = f"Saved {csv_path.name} and {json_path.name} in the review folder (exports) - " + anybody.summary_text(result)
+        if result["failed"]:
+            text += "\nNot readable: " + "; ".join(result["failed"])
+        QMessageBox.information(self, "Exported", text)
+        return csv_path
+
+    def session_result(self):
+        """The session check of the open participant (limbtrack/completeness.py), from the overview's own rows."""
+        folder = self._folder if self._folder is not None else (self.trial.folder if self.trial is not None else None)
+        if folder is None:
+            return None
+        entries = review_nav.list_trials(folder)
+        got, _failed, cancelled = self._rows_now(entries)
+        if cancelled:
+            return None
+        titles = completeness.titles_of(self._tests) if self._tests else {}
+        return completeness.check_folder(folder, self._plan(), titles, rows=got)
+
+    def open_session_check(self):
+        """The overview's *Session check* button: the readable list of what is missing for this participant, beside the program."""
+        from .session_check_dialog import SessionCheckDialog
+        if self._folder is None:
+            return
+        self._session_dialog = SessionCheckDialog(self, f"Session check - {self._folder.name}", self.session_result, threaded=False)
+        self._session_dialog.show()
+
+    def _refresh_session_label(self):
+        """The one line under the approval line: what the session check finds, from the rows the overview has (no trial is worked out for it)."""
+        if self._folder is None or not self._entries:
+            self.overview.session_label.setText("")
+            return
+        titles = completeness.titles_of(self._tests) if self._tests else {}
+        rows = {e.base: self.overview.row_for(e.base) for e in self._entries if e.readable}
+        res = completeness.check_folder(self._folder, self._plan(), titles, rows=rows)
+        self.overview.session_label.setText("Session check: " + completeness.summary_line(res))
 
     def export(self):
         if self.trial is None:

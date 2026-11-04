@@ -18,22 +18,28 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
                                QSizePolicy, QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
 
-from . import privacy, reference, session_memory
+from . import check_weight as check_mod, privacy, reference, rig_check as rig_mod, session_memory, study_settings as study_mod
 from . import verdict as verdicts
 from .session_log import SessionLog
 from .angle_reference_box import AngleReferenceBox
+from .check_weight_box import CheckWeightBox
+from .standing_reference_box import StandingReferenceBox
+from . import participant_measures as measures_mod
+from .participant_measures_box import ParticipantMeasuresBox
+from .setup_facts_box import SetupFactsBox
+from .textfield import TextField
 from .panels import Accordion, ReminderBar, Section, StepStrip, VerdictBar
 from .camera import CameraSource, camera_names, classify_source, list_cameras, normalise_stream_address
 from .engine import Engine
 from .loadcell import GRAVITY, find_regression
 from .force import HUM_NOTE_V, ForceCalibration, ForceError, NiDaqForce, SimulatedForce
-from .protocol import plan_positions
+from .protocol import load_study_settings, plan_positions
 from .recorder import trial_metas
 from .rest import REST_AFTER_SUBMAX_S, RestTimer
 from .automvic import AUTO_STOP_AFTER_END_S, DEFAULT_LENGTH_S, DEFAULT_THRESHOLD_N
 from .scale import MIN_DOT_DIAMETER_CM
 from .twoaxis import TwoAxisPlot
-from .review import ReviewTab, after_trial_check, fill_reference_choices, select_reference_choices
+from .review import REST_FROM_S, REST_TO_S, ReviewTab, after_trial_check, fill_reference_choices, select_reference_choices
 
 BIG = "font-size: 15pt; font-weight: bold;"
 NOTE = "font-size: 11pt; font-weight: bold;"
@@ -99,6 +105,12 @@ PANEL_TICKS_RECORDING = 5          # the status panel in full every 5th tick (on
 
 
 TRIALS_PER_POSITION = 2     # the session plan counts saved trials against this number
+# Numbers of the window's own code that the comparison with the study's frozen settings needs (limbtrack/study_settings.py, 0.35.0)
+STUDY_EXTRAS = {"trials_per_position": TRIALS_PER_POSITION, "rest_force_from_s": REST_FROM_S, "rest_force_to_s": REST_TO_S}
+STUDY_LOG_SETTLE_S = 1.0    # a change of the differences is written to the session log once it has stayed this long (a spin box held down is one line)
+
+
+_NOT_YET = object()        # "nothing written to the session log yet" (None is a signature: protocol.json without a list)
 
 
 class NoWheelComboBox(QComboBox):
@@ -125,31 +137,6 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
             super().wheelEvent(e)
         else:
             e.ignore()
-
-
-class TextField(QLineEdit):
-    """A text box that tells the window when it has focus (typed letters go into it, so letter shortcuts are off)
-    and lets go of focus on Enter or Esc, so the shortcut keys work again."""
-
-    focus_changed = Signal(bool)
-
-    def __init__(self):
-        super().__init__()
-        self.returnPressed.connect(self.clearFocus)
-
-    def focusInEvent(self, e):
-        super().focusInEvent(e)
-        self.focus_changed.emit(True)
-
-    def focusOutEvent(self, e):
-        super().focusOutEvent(e)
-        self.focus_changed.emit(False)
-
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Escape:
-            self.clearFocus()
-            return
-        super().keyPressEvent(e)
 
 
 class VideoView(QWidget):
@@ -596,7 +583,9 @@ class LiveTab(QWidget):
         f.addRow(self.chk_smooth)
         self.settings_form = f
         self._update_view_rows()
+        self.setup_box = SetupFactsBox(engine, self._participant_code_usable)     # 0.34.0: strap distance from a named landmark, supports, seat/back angle (typed)
         self.angle_ref_box = AngleReferenceBox(engine, self.say)     # 0.33.0: "the joint is at 0 now, the dots read 10", next to the target it changes the meaning of
+        self.standing_box = StandingReferenceBox(engine, self.say, self._participant_code_usable)   # 0.34.0: the same for hip, knee and ankle at once, standing, 3 s
 
         # --- dot colour: up with the dots, because a wrong colour is the commonest reason for dots that will not mark or are followed badly
         self.kind_note = QLabel()
@@ -803,6 +792,11 @@ class LiveTab(QWidget):
         pf.addRow("Tested leg", self.leg_combo)
         pf.addRow("Participant faces", self.facing_combo)        # (0.24.0: with the participant, not with the position)
         pf.addRow("Notes", self.notes)
+        self.measures_box = ParticipantMeasuresBox(engine, self._participant_code_usable)       # 0.34.0: height, mass, fat %, tape lengths (typed)
+        pf.addRow(self.measures_box)
+        for box in self._typing_fields():                       # the new typed boxes act like Notes: letters typed, Enter or Esc leaves
+            if box not in (self.participant, self.notes):
+                box.focus_changed.connect(self._update_key_hint)
         self.participant_form = pf
         pf.addRow(self.key_hint)
         # markers and sound: set and tried before the first recording, not inside it
@@ -1045,6 +1039,10 @@ class LiveTab(QWidget):
         fcf.addRow(self.btn_force_relax)
         fcf.addRow(self.btn_force_cal)
         fcf.addRow(self.force_info)
+        self.check_box = CheckWeightBox(engine, lambda: self.force_source, self.note)         # 0.35.0 (F8): a known mass hung on the zeroed rig, the error in %
+        self.check_box.edit.focus_changed.connect(self._update_key_hint)
+        self.check_box.mass_changed.connect(self._remember)
+        fcf.addRow(self.check_box)
         self.chk_force_skip = QCheckBox("No force today (angles only)")
         self.chk_force_skip.setToolTip("Only tells the step list that you have decided. Not remembered: it is asked again every session.")
         fcf.addRow(self.chk_force_skip)
@@ -1104,6 +1102,12 @@ class LiveTab(QWidget):
         # resting force). Each row has the buttons that answer it. None of them ever stops Record.
         self._ruler_recheck = False                      # the position changed since the ruler was last looked at
         self._relax_dismissed = ""                       # the position for which 'Not here' was pressed on the resting-force reminder
+        self._measures_dismissed = None                  # the typed lengths and position for which 'Noted' was pressed on the tape-against-picture reminder (0.34.0)
+        self._check_dismissed = ""                       # the check weight reminder (its sentence) for which 'Noted' was pressed (0.35.0)
+        self._study_dismissed = ""                       # the study settings reminder (its sentence) for which 'Noted' was pressed (0.35.0)
+        self._study_logged = self._study_candidate = _NOT_YET     # the differences last written to the session log / waiting to have settled
+        self._study_since = 0.0
+        engine.study_extras = dict(STUDY_EXTRAS)
         self._soft_for_file = []                         # reminders open at Record that change what the trial's file holds (said again once it is saved)
         self.reminders = ReminderBar()
         self.btn_rem_ruler_fine = QPushButton("Fine")
@@ -1130,6 +1134,24 @@ class LiveTab(QWidget):
         self.reminders.add_row("privacy", [self.btn_rem_priv_ok, self.btn_rem_priv_mask, self.btn_rem_priv_crop])
         self.reminders.add_row("ruler", [self.btn_rem_ruler_fine, self.btn_rem_ruler_redo])
         self.reminders.add_row("force", [self.btn_rem_force, self.btn_rem_force_not])
+        self.btn_rem_measures = QPushButton("Noted")
+        self.btn_rem_measures.setToolTip("Seen. The reminder stays away until the typed lengths or the position change.")
+        self.btn_rem_measures.clicked.connect(self.measures_noted)
+        self.reminders.add_row("measures", [self.btn_rem_measures])
+        self.btn_rem_check_open = QPushButton("Force box")                    # 0.35.0 (F8): no check weight in the last hours, or the last one amber / red
+        self.btn_rem_check_open.setToolTip("Open the Force box: Zero (Z), hang the known weight, press Check weight.")
+        self.btn_rem_check_open.clicked.connect(lambda: self.open_step("force"))
+        self.btn_rem_check = QPushButton("Noted")
+        self.btn_rem_check.setToolTip("Seen. The reminder stays away until the reason changes (a check is made, or its result changes).")
+        self.btn_rem_check.clicked.connect(self.check_weight_noted)
+        self.reminders.add_row("checkweight", [self.btn_rem_check_open, self.btn_rem_check])
+        self.btn_rem_study_list = QPushButton("Show the list")                # 0.35.0 (F13): a frozen study setting differs
+        self.btn_rem_study_list.setToolTip("Which settings differ from the study's frozen list (protocol.json, study_settings), and what could not be checked.")
+        self.btn_rem_study_list.clicked.connect(self.show_study_settings)
+        self.btn_rem_study = QPushButton("Noted")
+        self.btn_rem_study.setToolTip("Seen. The reminder stays away until the list of differences changes. Every recording saves the list either way.")
+        self.btn_rem_study.clicked.connect(self.study_settings_noted)
+        self.reminders.add_row("studysettings", [self.btn_rem_study_list, self.btn_rem_study])
         self.quick_bar = quick_bar
 
         # --- session plan: every position of the protocol with the trials already saved for this participant
@@ -1147,8 +1169,26 @@ class LiveTab(QWidget):
         self.target_spin.valueChanged.connect(lambda _: self.update_reference_box())    # the target is part of the readings' position
         self.target_spin.valueChanged.connect(self._position_changed)
         plan_box = QGroupBox("Session plan (click the next position)")
-        plan_l = QVBoxLayout(plan_box)
-        plan_l.addWidget(self.plan)
+        plan_l = QHBoxLayout(plan_box)                     # (the Session check button sits beside the list, so the section gets no taller)
+        plan_l.addWidget(self.plan, 1)
+        self.btn_session_check = QPushButton("Session check")                     # 0.34.0 (F7): what is still missing for this participant
+        self.btn_session_check.setToolTip("A list of what is still missing before the participant leaves: positions not recorded, a third trial "
+                                          "needed, trials not judged, reference readings, where the strap sat, the participant measures. It only "
+                                          "reads what is saved and never stops Record.")
+        self.btn_session_check.setFocusPolicy(Qt.NoFocus)
+        self.btn_session_check.clicked.connect(self.open_session_check)
+        self._session_dialog = None
+        self.btn_rig_check = QPushButton("Rig check")                              # 0.35.0 (F9): the equipment list, run with the rig empty before the participant comes
+        self.btn_rig_check.setToolTip("One list before the participant arrives: the camera and its picture rate, the force and its zero noise, the check "
+                                      "weight, the beeps, the ruler and the lamp. It only reads and never stops Record.")
+        self.btn_rig_check.setFocusPolicy(Qt.NoFocus)
+        self.btn_rig_check.clicked.connect(self.open_rig_check)
+        self._rig_dialog = None
+        side = QVBoxLayout()
+        side.addWidget(self.btn_session_check)
+        side.addWidget(self.btn_rig_check)
+        side.addStretch(1)
+        plan_l.addLayout(side)
         self.refresh_plan()
 
         # --- rarely used settings, folded away until asked for
@@ -1205,7 +1245,7 @@ class LiveTab(QWidget):
                                             ("2", "force", "Force", [fc]),
                                             ("3", "markers", "Markers and sound", [mkb]),
                                             ("4", "participant", "Participant", [pc]),
-                                            ("5", "position", "Position and angles", [plan_box, tg, self.angle_ref_box]),
+                                            ("5", "position", "Position and angles", [plan_box, tg, self.setup_box, self.angle_ref_box, self.standing_box]),
                                             ("6", "privacy", "Privacy and saved files", [pv]),
                                             ("7", "ruler", "Ruler for centimetres", [sc]),
                                             ("8", "dots", "Dots, landmarks and lock", [mk]),
@@ -1364,6 +1404,12 @@ class LiveTab(QWidget):
             if (src is not None and zero_set and ready and id_ok and e.relaxed_here() is None
                     and self._relax_dismissed != e.relaxed_key()):
                 rows["force"] = "Resting force: Zero 2 not taken here"
+            if ready and (text := self._measures_warning()):
+                rows["measures"] = text                       # 0.34.0: the tape and the picture disagree by more than 10 % (never stops Record)
+            if text := self._check_weight_warning():
+                rows["checkweight"] = text                    # 0.35.0: no check weight in the last hours, or the last one amber / red (never stops Record)
+        if not recording and (text := self._study_warning()):
+            rows["studysettings"] = text                      # 0.35.0: a setting differs from the study's frozen list (never stops Record; needs no camera)
         if src is not None:
             force_state = (("check", "Force: Zero 2?") if "force" in rows else ("done", "Force zeroed")) if zero_set else ("todo", "Force: zero")
         elif force_skipped:
@@ -1513,6 +1559,10 @@ class LiveTab(QWidget):
             "ruler_cm": self.ruler_len.value(),
             "participant": self.participant.text().strip(),
             "tested_legs": self.engine.tested_legs,
+            "participant_measures": self.engine.participant_measures_all,
+            "setups": self.engine.setups_all,
+            "standing_references": self.engine.standing_references_all,
+            "check_weight_kg": self.check_box.mass_kg,
             "ui": {"section": self.accordion.current(), "splitter": self.splitter.sizes(), "window": [g.x(), g.y(), g.width(), g.height()]},
         }
 
@@ -1542,6 +1592,13 @@ class LiveTab(QWidget):
             # the tested leg of each participant (0.20.0), only from a recent session, like the participant code; the single
             # 'tested_leg' of older files belonged to nobody in particular and is not used
             part(lambda: setattr(self.engine, "tested_legs", s.get("tested_legs") or {}) if session_memory.participant_if_recent(s) else None)
+            # the typed measures of each participant and the set-up facts of each position (0.34.0), likewise only from a recent session
+            part(lambda: setattr(self.engine, "participant_measures_all", s.get("participant_measures") or {})
+                 if session_memory.participant_if_recent(s) else None)
+            part(lambda: setattr(self.engine, "setups_all", s.get("setups") or []) if session_memory.participant_if_recent(s) else None)
+            part(lambda: setattr(self.engine, "standing_references_all", s.get("standing_references") or {})        # (0.34.0, likewise)
+                 if session_memory.participant_if_recent(s) else None)
+            part(lambda: self.check_box.set_mass(s.get("check_weight_kg")))              # (0.35.0: the operator's own known mass, not a measurement)
             part(lambda: self.chk_mirror.setChecked(bool(s["mirror"])))
             part(lambda: self.chk_smooth.setChecked(bool(s["smoothing"])))
             part(lambda: self.tol_spin.setValue(float(s["tolerance"])))
@@ -2643,6 +2700,75 @@ class LiveTab(QWidget):
         self.note("resting force reminder dismissed", self._relax_dismissed)
         self.update_steps()
 
+    def _participant_code_usable(self):
+        """The participant code in the window is a valid code (the typed measures and set-up facts belong to it)."""
+        box = getattr(self, "participant", None)                      # (the boxes are built before the field is: they ask once while being made)
+        return box is not None and privacy.check_participant_id(box.text().strip()) is None
+
+    def _measures_key(self):
+        e = self.engine
+        lengths = tuple((k, e.participant_measures.get(k)) for k, _, _ in measures_mod.SEGMENTS.values())      # (only the lengths that are compared)
+        return (e.participant_code, e.test.key, e.target, lengths)
+
+    def _measures_warning(self):
+        """The one-line reminder when a typed thigh or shank length and the picture (ruler scale) differ by more than 10 %, else ''.
+        Not when 'Noted' was pressed for these lengths at this position (0.34.0)."""
+        check = self.engine.measures_picture_check()
+        text = measures_mod.warning_text(check) if check else ""
+        return "" if not text or self._measures_dismissed == self._measures_key() else text
+
+    def measures_noted(self):
+        """'Noted' on the tape-against-picture reminder: it stays away until the typed lengths or the position change."""
+        self._measures_dismissed = self._measures_key()
+        self.note("measures reminder dismissed", f"{self.engine.test.key} {self.engine.target}")
+        self.update_steps()
+
+    def _check_weight_warning(self):
+        """The one-line reminder (limbtrack/check_weight.py) when no check weight was made in the last hours, the last one was amber or red, or it was
+        made with another calibration; '' while the force is not connected or after 'Noted' for this very sentence (0.35.0)."""
+        src = self.force_source
+        text = check_mod.reminder(self.engine.check_weight, src.calibration if src is not None else None, src is not None)
+        return "" if not text or self._check_dismissed == text else text
+
+    def check_weight_noted(self):
+        """'Noted' on the check weight reminder: it stays away until the sentence changes."""
+        self._check_dismissed = self._check_weight_warning()
+        self.note("check weight reminder dismissed", self._check_dismissed)
+        self.update_steps()
+
+    def _study_warning(self, state=None):
+        """The one-line amber sentence when a setting differs from the study's frozen list (limbtrack/study_settings.py); '' when none does, when
+        protocol.json has no list, or after 'Noted' for this very sentence (0.35.0)."""
+        text = study_mod.reminder(self.engine.study_settings_state() if state is None else state)
+        return "" if not text or self._study_dismissed == text else text
+
+    def show_study_settings(self):
+        """'Show the list': the differences, then what could not be checked now."""
+        QMessageBox.information(self, "Study settings", study_mod.list_text(self.engine.study_settings_state()))
+
+    def study_settings_noted(self):
+        """'Noted' on the study settings reminder: it stays away until the sentence changes."""
+        self._study_dismissed = self._study_warning()
+        self.note("study settings reminder dismissed", self._study_dismissed)
+        self.update_steps()
+
+    def _study_log(self):
+        """Write the differences to the session log: once at start-up and again whenever they change (and have stayed changed for
+        STUDY_LOG_SETTLE_S). Not while recording (the recording's meta.json holds the list as it was at the start)."""
+        if self._rec_started is not None:
+            return
+        state = self.engine.study_settings_state()
+        sig = study_mod.signature(state)
+        if sig == self._study_logged:
+            self._study_candidate = _NOT_YET
+            return
+        now = time.monotonic()
+        if sig != self._study_candidate:
+            self._study_candidate, self._study_since = sig, now
+        if now - self._study_since >= STUDY_LOG_SETTLE_S:
+            self._study_logged = sig
+            self.note("study settings", study_mod.log_detail(state))
+
     def confirm_privacy_if_open(self):
         """The V key: 'I looked, no face is visible' (with a crop or masks: they are still right). Works whenever the picture is there."""
         if self.worker is None or self._rec_started is not None:
@@ -2972,6 +3098,58 @@ class LiveTab(QWidget):
             self.trial_label.setText(f"Next: trial {n_cur + 1} of {TRIALS_PER_POSITION}{left_out}\n{where}")
         pc.setToolTip(self.trial_label.text().split("\n")[0] + "\nPick another position to set the test and the target in one step.")
 
+    def open_session_check(self):
+        """The Session check button (0.34.0, F7): a readable list of what is missing for the typed participant (limbtrack/completeness.py). It
+        reads the saved trials on a helper thread, opens beside the program and never blocks anything."""
+        from . import completeness
+        from .recorder import _safe
+        from .session_check_dialog import SessionCheckDialog
+        from .review import trial_row
+        pid = self.participant.text().strip()
+        if privacy.check_participant_id(pid) is not None:
+            self.say("Type the participant code (P01, ...) first: the session check reads that participant's saved trials.", 5.0)
+            return
+        folder = Path(self.recordings_dir) / _safe(pid)
+        plan, titles = list(self.plan_rows), completeness.titles_of(self.engine.tests)
+        self._session_dialog = SessionCheckDialog(self, f"Session check - {pid}",
+                                                  lambda: completeness.check_folder(folder, plan, titles, row_fn=lambda p: trial_row(p)[0]))
+        self._session_dialog.show()
+
+    def open_rig_check(self):
+        """The Rig check button (0.35.0, F9): the equipment list of limbtrack/rig_check.py, to run with the rig empty before the participant arrives. The
+        equipment is read on a helper thread; the window holds the operator's ticks (beeps heard, lamp) and saves the result when asked. It never
+        blocks Record or anything else."""
+        from .rig_check_dialog import RigCheckDialog
+
+        def context():                                    # (on the window's thread: widgets are read here, not on the helper thread)
+            started = self._last_source or {}             # (the name the camera was started with: the drop-down may have been changed since)
+            running = self.worker is not None and isinstance(getattr(self.worker, "source", None), int) and started.get("kind") == "webcam"
+            return {"camera_name": started.get("name", "") if running else "", "force_skipped": self.chk_force_skip.isChecked()}
+
+        def play():
+            if self.engine.rec is not None:
+                return None                               # (the cue player is the recording's: not now)
+            return self.engine.beep_check()
+        old = getattr(self, "_rig_dialog", None)
+        if old is not None and old.isVisible():           # one window: two would share the one beep test of the engine and cancel each other's
+            old.raise_()
+            old.activateWindow()
+            old.run()
+            return
+        self._rig_dialog = RigCheckDialog(self, "Rig check", lambda ctx: rig_mod.gather(self.engine, **ctx), play, self.engine.beep_check_result,
+                                          self._save_rig_check, context=context)
+        self._rig_dialog.show()
+
+    def _save_rig_check(self, block):
+        """Save the rig check list: one line in the session log, and the block goes into the meta.json of the following trials. Returns None,
+        or a sentence when it could not be kept."""
+        try:
+            self.engine.rig_check = block
+        except (RuntimeError, ValueError) as e:
+            return str(e)
+        self.note("rig check", rig_mod.log_detail(block))
+        return None
+
     def on_plan_clicked(self, item):
         self.go_to_position(self.plan.row(item))
 
@@ -3183,8 +3361,13 @@ class LiveTab(QWidget):
         self.refresh_view()
 
     # ---------------------------------------------------------- recording
+    def _typing_fields(self):
+        """Every text box on the side panel that takes typed letters (and so switches the letter shortcuts off)."""
+        return [self.participant, self.notes, *self.measures_box.edits.values(), self.setup_box.other, self.setup_box.distance,
+                self.setup_box.angle, *self.standing_box.edits.values(), *([self.check_box.edit] if hasattr(self, "check_box") else [])]
+
     def _update_key_hint(self, _=None):
-        self.key_hint.setVisible(self.participant.hasFocus() or self.notes.hasFocus())
+        self.key_hint.setVisible(any(box.hasFocus() for box in self._typing_fields()))
 
     def mark(self, label):
         """Write a marker into the recording (MVIC start/end or a numbered marker) and confirm it on screen."""
@@ -3414,6 +3597,15 @@ class LiveTab(QWidget):
             out.append(("Ruler: not looked at again after the position changed.", False))
         if src is not None and src.calibration.zero_set and e.relaxed_here() is None and self._relax_dismissed != e.relaxed_key():
             out.append(("Resting force: Zero 2 was not taken for this position.", False))
+        measures = self._measures_warning()
+        if measures:
+            out.append((measures, False))                      # (0.34.0: the file holds the check itself, participant_measures.picture_check)
+        check = self._check_weight_warning()
+        if check:
+            out.append((check, False))                         # (0.35.0: the file holds the check itself, check_weight)
+        study = self._study_warning()
+        if study:
+            out.append((study, False))                         # (0.35.0: the file holds the list itself, study_settings)
         rest = self.rest.reminder(self._position_now(), self._rest_position_done())          # 0.27.0: the rest is in the file (rest_before)
         if rest:
             out.append((rest, True))
@@ -3646,6 +3838,10 @@ class LiveTab(QWidget):
         self.update_force_box()
         self.update_reference_box(recording)
         self.angle_ref_box.refresh(recording)
+        self.standing_box.refresh(recording)
+        self.measures_box.refresh(recording)
+        self.setup_box.refresh(recording)
+        self.check_box.refresh(recording)
         self._update_rest()
         self._show_cleared_pelvis_facts()            # (the engine clears them when a recording ends with another participant code)
         self.plan.setEnabled(not recording)
@@ -3673,6 +3869,7 @@ class LiveTab(QWidget):
         self._refresh_recording()
         self.update_camera_info()
         self.update_scale_label()
+        self._study_log()
         self.update_steps()
         if time.monotonic() < self._say_until:
             return
@@ -3739,9 +3936,11 @@ class MainWindow(QWidget):
             pass
         self.engine = Engine(tests, recordings_dir=folder)
         self.engine.protocol_path = Path(root) / "protocol.json"
+        if self.engine.protocol_path.is_file():           # the study's frozen settings (0.35.0); a file with mistakes was refused when it was loaded
+            self.engine.study_block = load_study_settings(self.engine.protocol_path)
         tabs = QTabWidget()
         self.live = LiveTab(self.engine, folder)
-        self.review = ReviewTab(folder)
+        self.review = ReviewTab(folder, tests=tests)
         self.live.folder_changed.connect(self.on_folder_changed)
         tabs.addTab(self.live, "Live")
         tabs.addTab(self.review, "Review")

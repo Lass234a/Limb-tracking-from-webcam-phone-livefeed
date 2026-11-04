@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import study_settings
 from .geometry import DERIVED_KINDS, DERIVED_OPTIONAL, derived_input_dots, spec_dots
 
 VIEWS = ("sagittal", "frontal")      # which way the camera looks at the movement; a frontal test has no 'Participant faces' (0.15.0)
@@ -96,9 +97,9 @@ class ProtocolError(ValueError):
 
 
 _TOP_KEYS = {"tolerance_deg", "neighbour_tolerance_deg", "dot_order", "dot_labels", "optional_dots", "derived_points", "angle_library", "tests",
-             "rigid_pairs"}
+             "rigid_pairs", "study_settings"}
 _TEST_KEYS = {"label", "primary", "targets", "angles", "dots", "tolerance_deg", "neighbour_tolerance_deg", "optional_dots",
-              "neighbour_targets", "view", "reference_extras", "pull_joint"}
+              "neighbour_targets", "view", "reference_extras", "pull_joint", "unjudged_angles"}
 _ANGLE_KEYS = {"name", "vectors", "label", "signed", "sign", "offset", "primary", "fulcrum", "kind", "points", "judged"}
 _FIXED_ARMS = ("up", "down", "forward")
 _MAX_TOLERANCE = (30.0, 45.0)        # the ranges of the tolerance boxes in the window (main joint, other joints)
@@ -181,6 +182,8 @@ def validate_protocol(data):
     for key, mx in (("tolerance_deg", _MAX_TOLERANCE[0]), ("neighbour_tolerance_deg", _MAX_TOLERANCE[1])):
         if key in data and not (_num(data[key]) and 0 < data[key] <= mx):
             errs.append(f"{key}: must be a number above 0 and at most {mx:g}, not {data[key]!r}")
+    if "study_settings" in data:                      # 0.35.0: the settings the study freezes (limbtrack/study_settings.py)
+        errs += study_settings.validate(data["study_settings"])
     order = data.get("dot_order", [])
     if not (isinstance(order, list) and all(isinstance(n, str) for n in order)) or len(set(order)) != len(order):
         errs.append("dot_order: must be a list of different dot names")
@@ -322,6 +325,18 @@ def validate_protocol(data):
                 errs.append(f"{path}.pull_joint: must be the name of a dot or a computed point, not {pj!r}")
             elif pj not in known_arms:
                 errs.append(f'{path}.pull_joint: unknown dot "{pj}"{_near(pj, known_arms)}')
+        uj = t.get("unjudged_angles")
+        if uj is not None:
+            if not (isinstance(uj, list) and all(isinstance(n, str) for n in uj)):
+                errs.append(f"{path}.unjudged_angles: must be a list of angle names of this test, for example [\"ankle\"]")
+            else:
+                for n in uj:
+                    if n not in names:
+                        errs.append(f'{path}.unjudged_angles: "{n}" is not one of this test\'s angles{_near(n, named)}')
+                    elif n == primary or (isinstance(library.get(n), dict) and library[n].get("primary") is True):
+                        errs.append(f'{path}.unjudged_angles: "{n}" is the main joint, which is always judged')
+                    elif isinstance(t.get("neighbour_targets"), dict) and n in t["neighbour_targets"]:
+                        errs.append(f'{path}.unjudged_angles: "{n}" also has a required angle in neighbour_targets, which would never be checked')
         nt = t.get("neighbour_targets")
         if nt is not None:
             if not isinstance(nt, dict):
@@ -361,6 +376,8 @@ def load_protocol(path):
                 d = _legacy(item)
             a = AngleDef(**d)
             a.primary = a.primary or a.name == t.get("primary")
+            if a.name in t.get("unjudged_angles", []):
+                a.judged = False             # shown and saved in this test, never judged here (0.34.0: the ankle in knee flexion)
             if len(a.vectors) != 2:
                 raise ValueError(f"{key}/{a.name}: an angle needs exactly two arms")
             a.needs = _clicked_dots(a, derived_defs)
@@ -397,6 +414,16 @@ def load_protocol(path):
             pull_joint=pull_joint,
         )
     return tests
+
+
+def load_study_settings(path):
+    """The study's frozen settings of protocol.json in the form limbtrack/study_settings.py uses, or None when the file has no such block.
+    The file is checked as a whole first (a mistake anywhere raises ProtocolError), like load_protocol."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    errors = validate_protocol(data)
+    if errors:
+        raise ProtocolError(f"{Path(path).name} has {len(errors)} problem(s):\n  - " + "\n  - ".join(errors))
+    return study_settings.clean(data.get("study_settings"))
 
 
 def plan_positions(tests):

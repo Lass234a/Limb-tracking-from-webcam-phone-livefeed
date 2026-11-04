@@ -25,6 +25,44 @@
   "_rigid_pairs_note": "Two dots on the same bone stay the same distance apart. When the distance between such a pair changes by more than 25 % from what it was when the dots were marked, a dot has most likely jumped to something else (P20, 2026-10-22): every angle that uses either dot is marked CHECK on screen, does not count as within limits, and the frames are saved in data.csv ('dots_apart') and meta.json. Only pairs on ONE bone belong here: iliac_crest-trochanter spans the hip and changes length when the hip moves.",
   "rigid_pairs": [["fibular_head", "malleolus"], ["mt5_base", "mt5_head"], ["trochanter", "epicondyle"], ["asis", "asis_opposite"]],
 
+  "_study_settings_note": "The settings the study freezes (0.35.0, plan F13 / V6 code freeze). The program compares its present settings with this list and shows an amber line in the Live tab when one differs (a reminder: it never stops Record), writes the differences to session_log.csv and saves them in every trial's meta.json ('study_settings'). Values are the SOP's where SOP_limbtrack.tex Table C1 states one, else what the program does on 2026-11-04; 'proposals' lists the values the group has NOT confirmed. The names are fixed (limbtrack/study_settings.py); you may delete any line you do not want frozen. The numbers marked 'fixed in the program' can only differ if the code was changed. 'tracker_settings_sha256' is a hash of every number in tracker.py: after a deliberate change of the tracker, run  python tools/freeze_check.py  and paste the new hash here. A change to this block changes the protocol hash saved in every trial.",
+  "study_settings": {
+    "settings": {
+      "tolerance_deg": 5.0,
+      "neighbour_tolerance_deg": 5.0,
+      "dot_kind": "black",
+      "display_smoothing": true,
+      "recording_first": true,
+      "save_overlay": true,
+      "camera_wanted": "1280x720 at 30 fps",
+      "ruler_length_cm": 100.0,
+      "auto_mvic": true,
+      "auto_mvic_threshold_n": 25.0,
+      "auto_mvic_length_s": 7.0,
+      "auto_stop_s": 2.0,
+      "audio_cues": true,
+      "cue_push_every_s": 1.0,
+      "force_smoothing_ms": 100.0,
+      "force_calibration_id": "2026-10-13",
+      "tracker_settings_sha256": "f1bc321b6edd92780047f4c8d4281a77c225d28e68faaeb1c92453e426e8876a",
+      "display_smoothing_window_s": 0.2,
+      "peak_average_ms": 20.0,
+      "window_peak_ms": 500.0,
+      "analysis_force_smoothing_ms": 100.0,
+      "rest_same_position_s": 60.0,
+      "rest_next_position_s": 120.0,
+      "rest_after_submax_s": 30.0,
+      "repeat_check_pct": 10.0,
+      "max_trials_per_position": 3,
+      "trials_per_position_planned": 2,
+      "rest_force_from_s": 3.0,
+      "rest_force_to_s": 0.5
+    },
+    "proposals": ["tolerance_deg", "auto_mvic_threshold_n", "recording_first", "force_calibration_id", "tracker_settings_sha256",
+                  "peak_average_ms", "window_peak_ms", "analysis_force_smoothing_ms", "trials_per_position_planned", "rest_force_from_s",
+                  "rest_force_to_s"]
+  },
+
   "_derived_points_note": "Computed points are never clicked: they are calculated from marked dots in every picture and can be used as the end of an arm. 'hip_centre_frontal' estimates the hip joint centre of the tested side in a picture taken from the front, from the two ASIS and the ruler scale (Harrington et al. 2007, equation set 1; see limbtrack/geometry.py for the equation and its status). The optional 'knee' dot tells which way is down along the body (towards the knee), so the hip centre is also right when the participant lies on the side; without it, down is the bottom of the picture.",
   "derived_points": {
     "hip_centre": {"kind": "hip_centre_frontal", "tested_asis": "asis", "other_asis": "asis_opposite", "knee": "patella"}
@@ -63,7 +101,7 @@
   },
 
   "tests": {
-    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative). Since 0.24.0 the foot (the 'ankle' angle and its two dots mt5_base and mt5_head) is tracked only in the ankle tests and the belt squat, because foot tracking has been difficult and the knee and hip tests do not use the foot: to bring it back into a test, add \"ankle\" to that test's 'angles'. Since 0.25.0 the strap and anchor dots are offered in the frontal tests too (off until ticked, as in the others).",
+    "_note_tests": "Tests from Table 2 of the protocol draft 2026-10-20, in the fixed order of SOP v0.18 (knee, hip, hip abduction/adduction, ankle, belt squat; 19 positions + 2 belt squat positions). The sagittal ones use a side view; the 4 hip abduction/adduction positions (0 and 20 deg, 'view': 'frontal') use a camera in front of the participant (0.15.0); there the sagittal posture (hip flexion 0, straight knee) is kept by standing with the hip against the treatment bench and is not measured. 'targets' are the positions of the measured joint. 'neighbour_targets' are the required angles of the neighbouring joint (H 90, K 0, K 90 in Tabel 2); they are judged from the start, not only after Lock. Extension and plantarflexion are negative in the protocol's table, here they are positions of the joint (hip flexion angle, ankle angle with plantarflexion negative). Since 0.24.0 the foot (the 'ankle' angle and its two dots mt5_base and mt5_head) is tracked only in the ankle tests and the belt squat, because foot tracking has been difficult and the knee and hip tests do not use the foot: to bring it back into a test, add \"ankle\" to that test's 'angles'. Since 0.25.0 the strap and anchor dots are offered in the frontal tests too (off until ticked, as in the others). Since 0.34.0 the knee flexion test has the foot again, with the ankle shown but not judged (see its _note).",
     "knee_extension": {
       "label": "Knee extension, hip 90 (MVIC)",
       "primary": "knee",
@@ -76,7 +114,9 @@
       "primary": "knee",
       "targets": [20, 90],
       "neighbour_targets": {"hip": 90},
-      "angles": ["knee", "hip"]
+      "_note": "Since 0.34.0 the foot dots and the ankle angle are tracked here again (the gastrocnemius crosses the ankle, so its length in the model depends on it). Table 2 gives no required ankle angle for knee flexion, so the ankle is shown and saved but never judged: 'unjudged_angles' keeps it from being compared with the locked position (the foot moves when the heel is pulled), from stopping Lock and from making 'all_ok' 0. To judge it, remove it from 'unjudged_angles' (then it is compared with its value at Lock) or give it a value in 'neighbour_targets'. Cost: the test now has 7 dots, so changing between this test and the knee extension or hip tests (5 dots) marks the dots afresh.",
+      "angles": ["knee", "hip", "ankle"],
+      "unjudged_angles": ["ankle"]
     },
     "hip_extension_k0": {
       "label": "Hip extension, knee straight (MVIC)",

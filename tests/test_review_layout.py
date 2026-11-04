@@ -125,7 +125,7 @@ def test_export_and_more_are_not_in_the_header_but_in_the_overview(tmp_path):
     assert not tab.header.isAncestorOf(tab.overview) and tab.overview.isAncestorOf(tab.overview.export_button) and tab.overview.isAncestorOf(tab.overview.more_button)
     assert tab.overview.export_button.menu() is tab.export_menu and tab.overview.more_button.menu() is tab.more_menu
     assert [a.text() for a in tab.export_menu.actions() if not a.isSeparator()] == [tab.act_export_all.text(), tab.act_export_valid.text(),
-                                                                                   tab.act_export_trial.text(), tab.act_export_video.text()]
+                                                                                   tab.act_export_anybody.text(), tab.act_export_trial.text(), tab.act_export_video.text()]
 
 
 def test_video_label_does_not_dictate_its_size():
