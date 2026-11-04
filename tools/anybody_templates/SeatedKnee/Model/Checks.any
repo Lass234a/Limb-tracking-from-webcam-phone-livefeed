@@ -1,38 +1,63 @@
-// Read-backs for the first run (switch: WITH_CHECKS in Position.any). They show what the model really got, to be compared with what
-// Position.any asked for. tools/anybody_models_run.py compares them with the expected values in manifest.json.
+// Read-backs for the first run (switch: WITH_CHECKS in Position.any). They show what the model really got, to be compared with what Position.any
+// asked for and with the limbtrack numbers in manifest.json. tools/anybody_models_run.py does the comparison.
 // If one line does not load in your AnyBody version, set WITH_CHECKS to 0 and tell us which line: nothing else depends on this file.
+//
+// The angles are the ones of the SeatedKneeExtMVIC PostureCheck (joint centres), plus limbtrack's own knee angle computed from the model's
+// equivalents of its dots. The difference between the last and the joint angle is the knee zero offset (1.5 deg in the group's test).
+
+// Markers in the model that correspond to skin dots. The hip joint centre stands in for the greater trochanter.
+Main.TestedLeg.Seg.Thigh =
+{
+  AnyRefNode LateralEpicondyleMarker =
+  {
+    sRel = .Scale(.StdPar.EpicondylusFemorisLateralis);
+  };
+};
+Main.TestedLeg.Seg.Shank =
+{
+  AnyRefNode LateralMalleolusMarker =
+  {
+    sRel = .Scale(.StdPar.LateralMalleolus);
+  };
+};
+
 AnyFolder Check =
 {
-  AnyFolder &Shank = Main.Model.TestedLeg.Seg.Shank;
-  AnyFolder &Loads = Main.Model.Loads;
+  AnyFolder &Leg = Main.TestedLeg;
+  AnyFolder &Itf = Main.TestedInterface;
 
-  // Joint angles reached, degrees, AnyBody's convention (the AMMR interface measures are in radians)
-  AnyVar KneeFlexion_deg = Main.Model.TestedInterface.KneeFlexion.Pos[0] * 180 / pi;
-  AnyVar AnklePlantarFlexion_deg = Main.Model.TestedInterface.AnklePlantarFlexion.Pos[0] * 180 / pi;
+  // Joint angles reached (the AMMR interface measures are in radians)
+  AnyVar KneeFlexion_deg = Itf.KneeFlexion.Pos[0] * 180 / pi;
+  AnyVar AnklePlantarFlexion_deg = Itf.AnklePlantarFlexion.Pos[0] * 180 / pi;
 
-  // The pull: angle to the shank axis (should equal Position.PullAngle_deg) and the direction itself, global
-  AnyVec3 ShankDir = Loads.ShankDir;
-  AnyVec3 PullDir = Loads.PullDir;
-  AnyVar PullDotShank = ShankDir[0] * PullDir[0] + ShankDir[1] * PullDir[1] + ShankDir[2] * PullDir[2];
-  AnyVar PullAngle_deg = atan2(vnorm(cross(ShankDir, PullDir)), PullDotShank) * 180 / pi;
+  AnyVec3 pHip = Leg.Seg.Thigh.HipJoint.r;
+  AnyVec3 pKnee = Leg.Seg.Thigh.KneeJoint.r;
+  AnyVec3 pAnkle = Leg.Seg.Shank.AnkleJoint.r;
+  AnyVec3 pStrap = Leg.Seg.Shank.StrapNode.r;
+  AnyVec3 pLFE = Leg.Seg.Thigh.LateralEpicondyleMarker.r;
+  AnyVec3 pLM = Leg.Seg.Shank.LateralMalleolusMarker.r;
+  AnyVec3 pFH = Leg.Seg.Shank.FibularHead.r;
 
-  // Lever arm of the pull about the knee joint, and the moment it makes (force times lever arm, no gravity)
-  AnyVar LeverArm_m = vnorm(cross(Shank.StrapNode.r - Shank.KneeJoint.r, PullDir));
-  AnyVar ExternalKneeMoment_Nm = Main.Position.Force_N * LeverArm_m;
+  // Posture from joint centres, global x forward and y up (the same two numbers as the group's PostureCheck)
+  AnyVar ThighBelowHorizontal_deg = atan2(-(pKnee[1] - pHip[1]), pKnee[0] - pHip[0]) * 180 / pi;
+  AnyVar ShankForwardOfVertical_deg = atan2(pAnkle[0] - pKnee[0], -(pAnkle[1] - pKnee[1])) * 180 / pi;
 
-  // Lengths in the scaled model, to compare with the tape measures of the person
-  AnyVar ShankLength_m = vnorm(Shank.AnkleJoint.r - Shank.KneeJoint.r);
-  AnyVar StrapToKnee_m = vnorm(Shank.StrapNode.r - Shank.KneeJoint.r);
+  // limbtrack's knee angle from the model's dots: thigh = hip joint centre to lateral epicondyle, shank = fibular head to lateral malleolus,
+  // in the sagittal plane. Compare with knee_deg_at_peak (dots only, no standing reference) in the export.
+  AnyVar tx = pLFE[0] - pHip[0];
+  AnyVar ty = pLFE[1] - pHip[1];
+  AnyVar sx = pLM[0] - pFH[0];
+  AnyVar sy = pLM[1] - pFH[1];
+  AnyVar KneeFlexionLimbtrackDots_deg = atan2(abs(tx * sy - ty * sx), tx * sx + ty * sy) * 180 / pi;
 
-  // An arrow for the pull, to look at in the model view
-  AnyDrawVector DrawPull =
-  {
-    AnyRefFrame& ref = Main.Model.TestedLeg.Seg.Shank.StrapNode;
-    Vec = Main.Position.Force_N * PullDir / 1000;
-    GlobalCoord = On;
-    PointAway = Off;
-    Line.Thickness = 0.005;
-    Line.End.Style = Line3DCapStyleArrow;
-    Line.RGB = {0, 0, 1};
-  };
+  // The pull: the angle to the distal shank axis (should equal Position.PullAngle_deg), its direction in global axes, the distance from the knee
+  // to the strap, the lever arm of the pull about the knee joint, and the moment (the force is the one now set in StrapLoad.Magnitude)
+  AnyVec3 Fout = Main.Model.ModelEnvironmentConnection.StrapLoad.Force.Fout;
+  AnyVec3 PullDir = Fout / (vnorm(Fout) + 1e-12);
+  AnyVec3 uDistal = (pAnkle - pKnee) / vnorm(pAnkle - pKnee);
+  AnyVar PullAngle_deg = acos(uDistal * PullDir') * 180 / pi;
+  AnyVar StrapToKnee_m = vnorm(pStrap - pKnee);
+  AnyVar LeverArm_m = vnorm(cross(pStrap - pKnee, PullDir));
+  AnyVar ExternalKneeMoment_Nm = vnorm(Fout) * LeverArm_m;
+  AnyVar ShankLength_m = vnorm(pAnkle - pKnee);
 };

@@ -1,52 +1,57 @@
-# First run in AnyBody: what was assumed, and how to test it
+# First run in AnyBody: what is proven, what is ours to test
 
-The models were written without AnyBody. The names below were checked by text search in the AMMR 3.2.1 source (it needs AnyBody 8.2 or newer,
-which is the version of `Documents\AnyBody.8.2.x` in HANDOFF.md). Behaviour was not tested. Do this on ONE position first
-(`anybody_models_run.py AnyBody_models --only P01:2`), then on the rest.
+The base is the group's SeatedKneeExtMVIC model, which has been run (AMMR 3.2.1, AnyBody 8.2). Our port makes it general, and that part was
+written without AnyBody. Names were checked by text search in the AMMR 3.2.1 source and against the group's files; behaviour was not.
 
 ## Order of work
 
-1. `--dry-run`: read the macro. 2. Open `P01/pos02.../Main.any` in AnyBody. If it does not load, the message names the line: fix it in the
-shared `SeatedKnee/` files (or set `WITH_CHECKS` to 0 in `Position.any` if the line is in `Checks.any`). 3. Run `InverseDynamics` once by
-hand and look at the model view: a blue arrow (the pull) on the shank, the shank at the knee angle, the thigh horizontal. 4. Run the script and
-read `status` and the `check_*` columns in `results.csv`. 5. Write below what you had to change.
+1. **Regression case.** `python tools/anybody_models.py --regression-case --out AnyBody_models --ammr-libdef "../../libdef.any"`, then
+   `python tools/anybody_models_run.py AnyBody_models --only REG:1`. Expected: `hip_ideal` max load 2036 N (+/- 2 %), strap-to-knee 0.438 m,
+   knee dots 71.4, thigh 7.8, shank 10.8 deg; `hip_free` 555 N. If it does not load, the message names the line: fix it in the shared
+   `SeatedKnee/` files, or set `WITH_CHECKS` to 0 in `Position.any` if the line is in `Checks.any`. If it loads but the numbers differ, nothing else
+   is trusted until they match. Compare with the group's own run, line by line, before changing anything.
+2. **One real position** (`--only P01:2`). Open `Main.any`, run the inverse dynamics once and look at the model view: a blue arrow (the pull) on
+   the shank, pointing backwards for knee extension. Then the script. Read `status` and the `check_*` columns.
+3. The rest. 4. Write below what you had to change.
 
-## The assumptions
+## Proven by the group's run (do not re-test, only keep)
 
-| # | Assumed | Basis in the AMMR 3.2.1 source | How to test | If it fails |
-|---|---|---|---|---|
-| A1 | The AMMR is found through `libdef.any` | `Tools/Templates/libdef.any` | model loads | `--ammr-libdef PATH` or edit `SeatedKnee/libdef.any` |
-| A2 | Posture is set with `HumanModel.Mannequin.Posture.Right.{HipFlexion, HipAbduction, HipExternalRotation, KneeFlexion, AnklePlantarFlexion, SubTalarEversion}` in degrees; the left leg mirrors | `Tools/Templates/Human/Model/Mannequin.any`, `BodyModels/Include/MannequinDrivers.any` (`pi/180*`) | `check_knee_flexion_deg` equals the asked angle | if it differs by a constant, the AMMR zero differs from limbtrack's (A3) |
-| A3 | limbtrack's knee angle (0 = straight, + = flexion, from the standing reference) equals AnyBody's `KneeFlexion` | both + flexion; the zero of the TLEM2 model may sit a few degrees from the anatomical zero | `check_knee_flexion_deg_diff` < 1 deg at knee 20, 70 and 110 | add a constant offset in `Mannequin.any` and write it here |
-| A4 | Ankle: limbtrack + = dorsiflexion, AnyBody `AnklePlantarFlexion` + = plantarflexion, so the sign is turned (HANDOFF and SETUP_AND_VALIDATION say the same) | `Interface.any` of the leg | `check_ankle_plantar_flexion_deg` | change `sign` in `SEATED_KNEE_DRIVES` |
-| A5 | Hip is 90 deg and the ankle 0 deg (nominal), not the measured values | the app's pelvis line reads far from the target (HANDOFF.md); the protocol gives no ankle angle for the knee tests | manifest `measured` shows what the app read | `--set hip_deg=...` or edit `Position.any` |
-| A6 | Pelvis fixed and upright; six reactions on it | `Tools/Templates/Human/Model/Reactions.any` | loads and solves | add the reactions the solver names |
-| A7 | The thigh strap and bench act as a point support (3 forces) at `ThighFixationDist_m` = 0.10 m above the knee | none: our choice. Without it the hip muscles carry the knee moment | `MaxMuscleActivity` and which muscle limits: it must be a knee extensor. If a hip muscle limits, the support is wrong | move the node, or use hip moment reactions |
-| A8 | Left leg and both arms off; trunk (with muscles) stays | `BM_LEG_LEFT`, `BM_ARM_*` in `Docs/bm_config`; `BikeModel-LowerBody.main.any` | loads | switch the trunk muscles off (`BM_TRUNK_MUSCLES OFF`) if it is slow |
-| A9 | Simple muscles, TLEM2 leg, `_SCALING_LENGTHMASSFAT_`; `Main.HumanModel.Anthropometrics` set before the human model loads | `BodyModel.defaults.any`, `Scaling/DefaultAnthropometrics.any` (`??=`), `ScalingLengthMassFat.any` | dump `Main.HumanModel.Anthropometrics.BodyMass` and the thigh length; compare `Check.ShankLength_m` with the tape shank | if AMMR ignores the segment lengths, remove the `SegmentDimensions` block and say so |
-| A10 | The force is a pure force at a node on the shank, **total** from the load cell zero (not above rest) | SOP 9.10; `anybody.py` D4 | `check_moment_nm` against the app's `lever_arm_app_m` x force | see D1 below |
-| A11 | The pull is in the sagittal plane, at the stated angle to the shank, on the side that resists the effort | `Loads.any`; tested in Python against the moment sign | `check_pull_dir_diff_deg` < 2 deg; the arrow points backward for knee extension | the model's neutral angles differ from the ideal ones used in Python: compare and decide |
-| A12 | Strap is `StrapDist_m` above the ankle joint (lateral malleolus taken as the ankle axis) along the line to the knee joint | `Seg.Shank.KneeJoint`, `.AnkleJoint` nodes | `Check.StrapToKnee_m` against shank tape minus strap distance | adjust `StrapDist_m` |
-| A13 | `MR_MinMaxStrict`, `nStep = 1`, `KinSolOverDeterminate` | the AMMR human template and `EvaluateMaxLoad` | solves | per the message |
-| A14 | `EvaluateMaxLoad` with `LoadPtr = &Main.Position.Force_N` (a `DesignVar`) | `Application/Validation/EvaluateMaxExternalLoading/EvalMaxLoad.main.any` | `max_load_n` is sensible: `force_over_max_load` near 1 for a person of the model's strength | set `WITH_MAXLOAD` to 0 |
-| A15 | AnyPyTools: macro lines as strings; dumped values come back under their full names | AnyPyTools user guide (anybody-research-group.github.io/AnyPyTools) | `results.csv` has numbers | adapt `macro_for` and `_first` in `tools/anybody_models_run.py` |
+Hard drivers and `BM_ARM_DETAILED_HAND OFF`; every default driver with reaction on except the tested knee; trunk and arm muscles on; the other leg
+without muscles, held by actuators; `_SCALING_LENGTHMASSFAT_` with `Main.HumanModel.Anthropometrics` set before the human model loads; the strap
+node (`KneeJointAnatomicalFrame` axes, malleolus tip plus 0.05 m) and `Flocal = {-F, 0, 0}`; `MR_MinMaxStrict`, `nStep = 1`; `EvaluateMaxLoad` at 800
+and 1600 N; the left leg tested.
 
-Names confirmed in the AMMR source and not assumed: `Main.HumanModel.BodyModel.Trunk.SegmentsLumbar.PelvisSeg`,
-`...BodyModel.Right.Leg.Seg.{Thigh.HipJoint, Thigh.KneeJoint, Shank.KneeJoint, Shank.AnkleJoint}` (with `sRel`), `...BodyModel.Interface.Right.KneeFlexion`
-(a measure, read with `.Pos[0]*180/pi` as AMMR does), `HumanModel.StrengthParameters.StrengthIndexLeg`, `AnyForce3D` with `AnyRefFrame &ref` and
-`F`, `EvaluateMaxLoad`, `MR_MinMaxStrict`.
+## Ours: assumed, to test
+
+| # | Assumed | How to test | If it fails |
+|---|---|---|---|
+| B1 | The right leg works as the left does: the ISB shank frame has x anterior, y proximal, z right for both legs (the AMMR mirrors with a sign) | a right-tested position: `check_pull_dir_diff_deg` < 2 deg and the arrow points backwards for knee extension | the strap force sign for the right leg in `JointsAndDrivers.any` |
+| B2 | A pull angle other than 90 deg: `Flocal = {PullSideX*sin(a)*F, -cos(a)*F, 0}` (y is proximal, so -cos is towards the feet) | `check_pull_angle_deg` equals `PullAngle_deg`; try `--set pull_angle_deg=75` | the sign of one component |
+| B3 | `Main_HipFree.any` (a `#define` before the includes) switches off exactly the three tested-hip driver reactions | regression `hip_free` gives 555 N | the `#ifndef MVIC_HIP_FREE` blocks |
+| B4 | `Main.Ops.UseMeasuredForce` / `UseProbeLoad` (AnyOperationSetValue, as in the AMMR tool) followed by `classoperation Main "Update Values"` set the strap load before each run | `check_moment_nm` uses the measured force; `max_load_n` does not depend on the measured force | the macro lines in `macro_for` |
+| B5 | The load line can be dumped: `Main.MaxLoading.Calculations.{Load1, Load2, MaxMuscleActivity1, MaxMuscleActivity2}` | `scale_needed_line` is filled and `max_load_n` equals `(1 - intercept) / slope` | if the dumps fail, `scale_needed_ratio` is still there |
+| B6 | `Checks.any`: `Itf.KneeFlexion.Pos[0]`, `FibularHead` node on the shank, `abs`, `atan2`, `acos(uDistal*PullDir')` | loads; `check_knee_flexion_deg` equals the asked angle | set `WITH_CHECKS` to 0 and tell us which line |
+| B7 | Hip 90 and ankle 0 (nominal) instead of the group's photo values (82.2, 25 plantarflexed) | in the regression case compare `--set hip_deg=82.2 --set ankle_deg=-25` (the default) with 90 and 0: the change in `max_load_n` is the cost of the nominal values | use measured thigh orientation (not in the export yet) |
+| B8 | `ProbeLoad_N` 800 fits every participant: above about 300 N, and not so far above the capacity that the line bends | `max_load_n` is not far from 800 to 2400; the line from two points is the same as from 1000 and 2000 | `--probe-load` |
+| B9 | AnyPyTools: macro lines as strings; dumped values come back under their full names | `results.csv` has numbers | adapt `macro_for` and `_first` in `tools/anybody_models_run.py` |
+| B10 | Tape thigh and shank length (`--segment-lengths`) are used for both legs | compare `Check.ShankLength_m` with the tape; run once with and once without and read the change in `max_load_n` | leave it off |
 
 ## Decisions that are the group's, not the code's
 
-- **D1 force or moment kept.** The model keeps the force and the strap place; its lever arm follows its own scaled shank, so its moment is
-  not exactly the app's. If the two differ by more than a few percent, either scale the force by (app lever arm / model lever arm) to keep the
-  moment, or keep as is and report both. `check_moment_nm` shows the size of the gap.
-- **D2 angle at peak force or plateau mean.** The export gives the angle at the peak force (HANDOFF: the group has not decided). The
-  plateau mean is in the session summary and can be typed over with `--set knee_deg=`.
-- **D3 total or net force.** Total, with gravity in the model (SOP 9.10 recommends it). Never subtract the resting force and keep gravity.
-- **D4 whole-leg factor or group factors.** `max_muscle_activity` is one factor for all leg muscles. The group scaling of `PRIMARY.tex`
-  needs the muscles of each group scaled alone. `Main.HumanModel.StrengthParameters.StrengthIndexLeg` scales all leg muscles and is a design
-  variable (AnyPyTools `SetValue`), so a whole-leg search needs no reload. Per-group F0 needs a change in how the muscle models are built.
+- **D1 range of the hip.** Both versions are run. The strength factor is a range. If the group later learns how stiff the strap and belt are, a
+  third version between them is a small change in `JointsAndDrivers.any` (a weak reaction instead of on or off).
+- **D2 force or moment kept.** The model keeps the force and the strap place; its lever arm follows its own scaled shank, so its moment is not
+  exactly the app's. `check_moment_nm` shows the gap. To keep the moment instead, scale the force by (app lever arm / model lever arm).
+- **D3 angle at peak force or plateau mean.** The export gives the angle at the peak force (HANDOFF: undecided). Type the plateau mean over with
+  `--set knee_deg=`.
+- **D4 total or net force.** Total, with gravity in the model (SOP 9.10). Never subtract the resting force and keep gravity.
+- **D5 whole-leg factor or group factors.** The result is one factor for all leg muscles (`BM_LEG_STRENGTH_INDEX` scales them all and is a design
+  variable). The group scaling of `PRIMARY.tex` needs the muscles of each group scaled alone; in the AMMR the force of every muscle element is
+  built from volume, fibre length and `StrengthIndexLeg`, so per-group scaling needs a change in how the muscle models are built.
+- **D6 knee zero offset.** `knee_zero_offset_deg` in the results is the gap between limbtrack's dot-based knee angle and the model's, per position.
+  The group's test gave 1.5 deg. Use `--knee-offset-deg` if it is more than a degree and stable across positions.
+- **D7 hip from the thigh.** The group's photo gave the hip from the thigh's angle below horizontal (7.8 deg). The export has no such angle; the hip angle
+  of the app uses the pelvis line, which is not trusted. Adding the thigh's angle from horizontal to the export would let the models use it.
 
 ## What was changed at the first run
 

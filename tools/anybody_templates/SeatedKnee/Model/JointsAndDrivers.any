@@ -1,8 +1,144 @@
-// Joints and drivers: the default mannequin drivers of the human model set the posture (Mannequin.any), so nothing is added here.
-AnyFolder Joints =
+// -----------------------------------------------------------------------------------
+// Supports and loads of the seated knee MVIC (the group's SeatedKneeExtMVIC model, made side-independent)
+//
+// 1. Every default mannequin driver is made to carry reaction forces (Reaction.Type = On). Physically this is the participant being held by the
+//    pelvic belt, the thigh strap, the table and the hands: those joints need no muscle effort in the model.
+// 2. The ONLY exception is the tested knee: its driver has reaction Off, so the knee extensors must hold the leg against the strap load.
+//    That is the MVIC.
+// 3. The hip of the tested leg is the one modelling choice that matters: by default it is held ideally (as above). With
+//    #define MVIC_HIP_FREE (Main_HipFree.any does it) the hip muscles must hold the hip instead, and the rectus femoris then needs the hip
+//    extensors as counterweight. In the group's test the strap force was 2036 N ideal and 555 N free. The truth lies in between.
+// -----------------------------------------------------------------------------------
+
+AnyFolder &Drv = Main.HumanModel.DefaultMannequinDrivers;
+
+// ---- Pelvis ---------------------------------------------------------------------------
+Drv.PelvisGroundDriverPosX.Reaction.Type = {On};
+Drv.PelvisGroundDriverPosY.Reaction.Type = {On};
+Drv.PelvisGroundDriverPosZ.Reaction.Type = {On};
+Drv.PelvisGroundDriverRotX.Reaction.Type = {On};
+Drv.PelvisGroundDriverRotY.Reaction.Type = {On};
+Drv.PelvisGroundDriverRotZ.Reaction.Type = {On};
+
+// ---- Trunk and neck -------------------------------------------------------------------
+Drv.PostureDriverBending.Reaction.Type = {On};
+Drv.PostureDriverRotation.Reaction.Type = {On};
+Drv.PostureDriverExtension.Reaction.Type = {On};
+Drv.SkullThoraxFlexionDriver.Reaction.Type = {On};
+Drv.SkullThoraxLateralBendingDriver.Reaction.Type = {On};
+Drv.SkullThoraxRotationDriver.Reaction.Type = {On};
+
+// ---- Right arm ------------------------------------------------------------------------
+Drv.SCProtractionDriverRight.Reaction.Type = {On};
+Drv.SCElevationDriverRight.Reaction.Type = {On};
+Drv.GHDriverRightAbduction.Reaction.Type = {On};
+Drv.GHDriverRightFlexion.Reaction.Type = {On};
+Drv.GHDriverRightExternalRotation.Reaction.Type = {On};
+Drv.ElbowFlexionDriverRight.Reaction.Type = {On};
+Drv.ElbowPronationDriverRight.Reaction.Type = {On};
+Drv.WristDriverRightFlexion.Reaction.Type = {On};
+Drv.WristDriverRightAbduction.Reaction.Type = {On};
+
+// ---- Left arm -------------------------------------------------------------------------
+Drv.SCProtractionDriverLeft.Reaction.Type = {On};
+Drv.SCElevationDriverLeft.Reaction.Type = {On};
+Drv.GHDriverLeftAbduction.Reaction.Type = {On};
+Drv.GHDriverLeftFlexion.Reaction.Type = {On};
+Drv.GHDriverLeftExternalRotation.Reaction.Type = {On};
+Drv.ElbowFlexionDriverLeft.Reaction.Type = {On};
+Drv.ElbowPronationDriverLeft.Reaction.Type = {On};
+Drv.WristDriverLeftFlexion.Reaction.Type = {On};
+Drv.WristDriverLeftAbduction.Reaction.Type = {On};
+
+// ---- Legs -----------------------------------------------------------------------------
+#if TESTED_LEG_IS_RIGHT == 1
+
+// Left leg: relaxed, hanging. Everything held.
+Drv.HipDriverLeftFlexion.Reaction.Type = {On};
+Drv.HipDriverLeftExternalRotation.Reaction.Type = {On};
+Drv.HipDriverLeftAbduction.Reaction.Type = {On};
+Drv.KneeDriverLeft.Reaction.Type = {On};
+Drv.AnkleDriverLeftFlexion.Reaction.Type = {On};
+Drv.AnkleDriverLeftEversion.Reaction.Type = {On};
+
+// Right leg: tested. Hip held by pelvic belt + thigh strap (the default); ankle: relaxed foot, supported by passive tissue.
+#ifndef MVIC_HIP_FREE
+Drv.HipDriverRightFlexion.Reaction.Type = {On};
+Drv.HipDriverRightExternalRotation.Reaction.Type = {On};
+Drv.HipDriverRightAbduction.Reaction.Type = {On};
+#endif
+Drv.AnkleDriverRightFlexion.Reaction.Type = {On};
+Drv.AnkleDriverRightEversion.Reaction.Type = {On};
+// Knee: Reaction.Type stays {Off} (the default). The knee muscles produce the MVIC.
+
+#else
+
+// Right leg: relaxed, hanging. Everything held.
+Drv.HipDriverRightFlexion.Reaction.Type = {On};
+Drv.HipDriverRightExternalRotation.Reaction.Type = {On};
+Drv.HipDriverRightAbduction.Reaction.Type = {On};
+Drv.KneeDriverRight.Reaction.Type = {On};
+Drv.AnkleDriverRightFlexion.Reaction.Type = {On};
+Drv.AnkleDriverRightEversion.Reaction.Type = {On};
+
+// Left leg: tested. Hip held by pelvic belt + thigh strap (the default); ankle: relaxed foot, supported by passive tissue.
+#ifndef MVIC_HIP_FREE
+Drv.HipDriverLeftFlexion.Reaction.Type = {On};
+Drv.HipDriverLeftExternalRotation.Reaction.Type = {On};
+Drv.HipDriverLeftAbduction.Reaction.Type = {On};
+#endif
+Drv.AnkleDriverLeftFlexion.Reaction.Type = {On};
+Drv.AnkleDriverLeftEversion.Reaction.Type = {On};
+// Knee: Reaction.Type stays {Off} (the default). The knee muscles produce the MVIC.
+
+#endif
+
+
+// ---- Load-cell strap on the shank of the tested leg -----------------------------------
+// Node on the shank, StrapAboveMalleolus_m above the tip of the lateral malleolus, on the long axis of the shank. Its axes are those of the
+// ISB shank frame: x = anterior, y = proximal (along the shank), z = to the participant's right.
+Main.TestedLeg.Seg.Shank =
 {
+  AnyRefNode StrapNode =
+  {
+    AnyVec3 pAnkle = .AnkleJoint.sRel;
+    AnyVec3 pKnee = .KneeJointAnatomicalFrame.sRel;
+    AnyVec3 pMalleolus = .Scale(.StdPar.LateralMalleolus);
+    AnyVec3 uAxis = (pKnee - pAnkle) / vnorm(pKnee - pAnkle);
+    // position of the malleolus tip along the shank axis, measured from the ankle joint centre
+    AnyVar sMalleolus = (pMalleolus - pAnkle) * uAxis';
+    sRel = pAnkle + (sMalleolus + Main.Position.StrapAboveMalleolus_m) * uAxis;
+    ARel = .KneeJointAnatomicalFrame.ARel;
+  };
 };
 
-AnyFolder Drivers =
+AnyFolder StrapLoad =
 {
+  // Tension in the strap/load cell (N). It starts at the probe load (the START value of Main.MaxLoading, which then uses this value and twice
+  // this value); it must be large enough that the knee extensors, not the trunk muscles (about 13 % activity at rest), set the maximum muscle
+  // activity, which is the case above roughly 300 N. Main.Ops sets it to the measured force or back to the probe load.
+  AnyVar Magnitude = DesignVar(Main.Position.ProbeLoad_N);
+
+  // limbtrack's pull angle: between the pull and the shank, read from the knee towards the ankle (90 deg = square to the shank).
+  // In the shank frame the distal direction is -y. PullSideX is -1 when the strap pulls BACKWARDS (resists knee extension) and +1 when it
+  // pulls forwards (resists knee flexion). At 90 deg the force is {-Magnitude, 0, 0}, as in SeatedKneeExtMVIC.
+  AnyVar PullAngle = Main.Position.PullAngle_deg * pi / 180;
+  AnyVar Fx = Main.Position.PullSideX * sin(PullAngle) * Magnitude;
+  AnyVar Fy = -cos(PullAngle) * Magnitude;
+
+  AnyForce3D Force =
+  {
+    AnyRefNode &ForceNode = Main.TestedLeg.Seg.Shank.StrapNode;
+    Flocal = {.Fx, .Fy, 0.0};
+  };
+
+  AnyDrawVector DrawForce =
+  {
+    AnyRefNode &ref = Main.TestedLeg.Seg.Shank.StrapNode;
+    Vec = .Force.Fout / 1000;
+    Line.RGB = {0.0, 0.0, 1.0};
+    Line.Thickness = 0.01;
+    PointAway = On;
+    GlobalCoord = On;
+  };
 };

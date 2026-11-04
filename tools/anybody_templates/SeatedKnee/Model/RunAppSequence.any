@@ -1,16 +1,31 @@
-// The operations, in the order to run them (as in the AMMR human template).
-// For results, run them one by one (tools/anybody_models_run.py does): the MaxLoad evaluation runs the study again at two other loads,
-// so the study results are of the measured force only before it.
+/** Execute this operation to run the whole MVIC analysis:
+ 1. muscle calibration (empty for the simple muscle model)
+ 2. kinematics: places the model in the posture
+ 3. maximum strap force by two inverse dynamics runs (see EvaluateMaxLoad)
+The result is printed in the Output window and stored in Main.MaxLoading.MaxLoad. */
 AnyOperationSequence RunApplication =
 {
-  // Calibrates muscles of the 3-element Hill type; an empty operation for the simple muscles used here
   AnyOperation &CalibrationAnal = Main.HumanModel.Calibration.CalibrationSequence;
 
-  // The inverse dynamic analysis at the measured force
-  AnyOperation &InvAnal = Main.Study.InverseDynamics;
+  AnyOperation &Posture = Main.Study.Kinematics;
 
-  #if WITH_MAXLOAD == 1
-  // The load at which the highest muscle activity reaches 1 (AMMR tool EvaluateMaxLoad)
-  AnyOperation &MaxLoadAnal = Main.MaxLoading.Evaluate;
-  #endif
+  AnyOperation &MaxForce = Main.MaxLoading.Evaluate;
+};
+
+// Set the strap load: the measured force of the trial, or the probe load that MaxLoading starts from.
+// tools/anybody_models_run.py runs the study at the measured force first (for the read-backs), then at the probe load for MaxLoading.
+// (Same mechanism as the AnyOperationSetValue objects inside the AMMR tool EvaluateMaxLoad.)
+AnyFolder Ops =
+{
+  AnyOperationSetValue UseMeasuredForce =
+  {
+    Source = {&Main.Position.MeasuredForce_N};
+    Target = {&Main.Model.ModelEnvironmentConnection.StrapLoad.Magnitude};
+  };
+
+  AnyOperationSetValue UseProbeLoad =
+  {
+    Source = {&Main.Position.ProbeLoad_N};
+    Target = {&Main.Model.ModelEnvironmentConnection.StrapLoad.Magnitude};
+  };
 };

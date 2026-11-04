@@ -1,30 +1,145 @@
-// Posture of the seated knee test. Angles in degrees, AnyBody's own convention (see Position.any).
-// Only the values set here are changed; everything else keeps the AMMR default. The left leg mirrors the right by default (AMMR),
-// so the posture is written for the right leg whichever leg is tested.
+// Seated posture. All values in degrees (positions in m). Driven values come from Main.Position (Position.any).
+// Global axes: x = forward (the way the participant faces), y = up, z = to the participant's right.
+// The left leg is therefore on the -z side. The tested leg is the right or the left one (TESTED_LEG_IS_RIGHT).
+
 HumanModel.Mannequin =
 {
   Posture =
   {
-    // The pelvis is held fixed in space and upright, the trunk upright: the participant sits on the edge of the bench.
-    // Where it is held does not matter for the forces; the height is only for the picture.
+    // Pelvis fixed in space (pelvic belt on the table). Height is arbitrary here.
     PelvisPosX = 0.0;
-    PelvisPosY = 0.60;
+    PelvisPosY = 0.95;
     PelvisPosZ = 0.0;
-
     PelvisRotX = 0;
     PelvisRotY = 0;
     PelvisRotZ = 0;
 
+    // Upright trunk and head
+    PelvisThoraxExtension = 0;
+    PelvisThoraxLateralBending = 0;
+    PelvisThoraxRotation = 0;
+    NeckExtension = 0;
+    NeckLateralBending = 0;
+    NeckRotation = 0;
+
     Right =
     {
+      // Arms: hands resting on the table edge beside the hips
+      GlenohumeralFlexion = 0;
+      GlenohumeralAbduction = 10;
+      GlenohumeralExternalRotation = 0;
+      ElbowFlexion = 10;
+      ElbowPronation = -20;
+      WristFlexion = 0;
+      WristAbduction = 0;
+
+      #if TESTED_LEG_IS_RIGHT == 1
+      // Tested leg: angles from limbtrack (Position.any)
       HipFlexion = Main.Position.HipFlexion_deg;
       HipAbduction = Main.Position.HipAbduction_deg;
       HipExternalRotation = Main.Position.HipExternalRotation_deg;
-
       KneeFlexion = Main.Position.KneeFlexion_deg;
-
       AnklePlantarFlexion = Main.Position.AnklePlantarFlexion_deg;
       SubTalarEversion = Main.Position.SubTalarEversion_deg;
+      #else
+      // Other leg: hanging relaxed over the table edge
+      HipFlexion = Main.Position.HipFlexion_deg;
+      HipAbduction = 0;
+      HipExternalRotation = 0;
+      KneeFlexion = Main.Position.OtherKneeFlexion_deg;
+      AnklePlantarFlexion = Main.Position.OtherAnklePlantarFlexion_deg;
+      SubTalarEversion = 0;
+      #endif
+    };
+
+    Left =
+    {
+      // Arms mirror the right arm
+      SternoClavicularProtraction = .Right.SternoClavicularProtraction;
+      SternoClavicularElevation = .Right.SternoClavicularElevation;
+      SternoClavicularAxialRotation = .Right.SternoClavicularAxialRotation;
+      GlenohumeralFlexion = .Right.GlenohumeralFlexion;
+      GlenohumeralAbduction = .Right.GlenohumeralAbduction;
+      GlenohumeralExternalRotation = .Right.GlenohumeralExternalRotation;
+      ElbowFlexion = .Right.ElbowFlexion;
+      ElbowPronation = .Right.ElbowPronation;
+      WristFlexion = .Right.WristFlexion;
+      WristAbduction = .Right.WristAbduction;
+
+      #if TESTED_LEG_IS_RIGHT == 1
+      // Other leg: hanging relaxed over the table edge
+      HipFlexion = Main.Position.HipFlexion_deg;
+      HipAbduction = 0;
+      HipExternalRotation = 0;
+      KneeFlexion = Main.Position.OtherKneeFlexion_deg;
+      AnklePlantarFlexion = Main.Position.OtherAnklePlantarFlexion_deg;
+      SubTalarEversion = 0;
+      #else
+      // Tested leg: angles from limbtrack (Position.any)
+      HipFlexion = Main.Position.HipFlexion_deg;
+      HipAbduction = Main.Position.HipAbduction_deg;
+      HipExternalRotation = Main.Position.HipExternalRotation_deg;
+      KneeFlexion = Main.Position.KneeFlexion_deg;
+      AnklePlantarFlexion = Main.Position.AnklePlantarFlexion_deg;
+      SubTalarEversion = Main.Position.SubTalarEversion_deg;
+      #endif
+    };
+  };
+
+  // Static test: no velocities
+  PostureVel =
+  {
+    PelvisPosX = 0;
+    PelvisPosY = 0;
+    PelvisPosZ = 0;
+    PelvisRotX = 0;
+    PelvisRotY = 0;
+    PelvisRotZ = 0;
+    PelvisThoraxExtension = 0;
+    PelvisThoraxLateralBending = 0;
+    PelvisThoraxRotation = 0;
+    NeckExtension = 0;
+    NeckLateralBending = 0;
+    NeckRotation = 0;
+
+    Right =
+    {
+      SternoClavicularProtraction = 0;
+      SternoClavicularElevation = 0;
+      SternoClavicularAxialRotation = 0;
+      GlenohumeralFlexion = 0;
+      GlenohumeralAbduction = 0;
+      GlenohumeralExternalRotation = 0;
+      ElbowFlexion = 0;
+      ElbowPronation = 0;
+      WristFlexion = 0;
+      WristAbduction = 0;
+      HipFlexion = 0;
+      HipAbduction = 0;
+      HipExternalRotation = 0;
+      KneeFlexion = 0;
+      AnklePlantarFlexion = 0;
+      SubTalarEversion = 0;
+    };
+
+    Left =
+    {
+      SternoClavicularProtraction = 0;
+      SternoClavicularElevation = 0;
+      SternoClavicularAxialRotation = 0;
+      GlenohumeralFlexion = 0;
+      GlenohumeralAbduction = 0;
+      GlenohumeralExternalRotation = 0;
+      ElbowFlexion = 0;
+      ElbowPronation = 0;
+      WristFlexion = 0;
+      WristAbduction = 0;
+      HipFlexion = 0;
+      HipAbduction = 0;
+      HipExternalRotation = 0;
+      KneeFlexion = 0;
+      AnklePlantarFlexion = 0;
+      SubTalarEversion = 0;
     };
   };
 };

@@ -1,18 +1,29 @@
-// Body model configuration of the MVIC position models (AMMR 3.2.x).
-// Options: #path HTML_DOC "<AMMR_PATH_DOC>/bm_config/index.html"
-// Which leg is tested and which body parts are off is decided per position, in Position.any (it is read before this file).
 #path __BM_PLUGIN_FILE__ "BodyModelConfiguration.any"
 #define BM_CONFIG_PLUGIN __BM_PLUGIN_FILE__
 
-// Lower extremity model, as in the AMMR human template
+// -----------------------------------------------------------------------------------
+// Seated knee MVIC: body model configuration (as in the group's SeatedKneeExtMVIC model)
+//
+// Only ONE leg is the leg under test. Every other joint (trunk, arms, neck, the other leg, the tested hip and ankle) is held by hard drivers
+// whose reaction forces are switched ON (Model/JointsAndDrivers.any): they stand in for the pelvic belt, the thigh strap, the table and the hands.
+// The tested knee driver has its reaction OFF, so the knee muscles must carry the strap load.
+//
+// Trunk and arm muscles stay at the AMMR default (ON). Switching them off makes the min-max recruitment solver fail ("overloaded muscle
+// configuration") because the spine and shoulder joints are then carried by weak diagnostic actuators (SeatedKneeExtMVIC README).
+//
+// Which leg has simple muscles and which has none is decided per position (Position.any), because it follows the tested leg.
+// Options: <AMMR_PATH_DOC>/bm_config/index.html
+// -----------------------------------------------------------------------------------
+
+// All posture drivers are HARD, so the posture is reproduced exactly
+#define BM_MANNEQUIN_DRIVER_DEFAULT ON
+#define BM_MANNEQUIN_DRIVER_WEAK_SWITCH 0
+
+// TLEM2 lower extremity model (the group's model writes _LEG_MODEL_TLEM_, which is the same value)
 #define BM_LEG_MODEL _LEG_MODEL_TLEM2_
 
-// The study protocol uses the simple muscle model: constant strength, independent of muscle length
-#define BM_LEG_MUSCLES_BOTH _MUSCLES_SIMPLE_
+#define BM_ARM_DETAILED_HAND OFF
 
-// Height, mass and fat scale the whole model; thigh and shank length come from the tape (Participant.any)
+// Length-Mass-Fat scaling: segment lengths from height, segment masses from body mass, muscle strength from segment mass and body-fat percentage.
+// Height / mass / fat % are set in Participant.any
 #define BM_SCALING _SCALING_LENGTHMASSFAT_
-
-// Strength index of the leg muscles. 1.0 is the AMMR default. It is a design variable (Main.HumanModel.StrengthParameters.StrengthIndexLeg),
-// so a later scaling step can change it without loading the model again.
-#define BM_LEG_STRENGTH_INDEX 1.0
