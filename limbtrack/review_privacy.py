@@ -156,20 +156,18 @@ class PrivacyDialog(QDialog):
         self.btn_clear_all = QPushButton("Clear drawing")
         self.btn_make = QPushButton("Make protected copies")
         self.btn_make.setDefault(True)
-        self.btn_forget = QPushButton("Delete the protected copies")
         self.btn_close = QPushButton("Close")
         self.btn_clear_crop.clicked.connect(self.remove_crop)
         self.btn_undo_mask.clicked.connect(self.remove_last_mask)
         self.btn_clear_all.clicked.connect(self.clear_drawing)
         self.btn_make.clicked.connect(self.make_copies)
-        self.btn_forget.clicked.connect(self.forget)
         self.btn_close.clicked.connect(self.close)
         self.problem = QLabel()
         self.problem.setWordWrap(True)
         self.problem.setObjectName("privacyProblem")
         self.note = QLabel("The copies are saved in this trial's review folder as <trial>_raw_protected.mp4 and <trial>_overlay_protected.mp4. "
                            "The trial's own raw.mp4 and overlay.mp4 are not changed and stay on the disk until you decide what to do with them. "
-                           "No dot position and no number changes.")
+                           "Nothing is deleted: a copy that a new drawing replaces is moved to the folder 'superseded'. No dot position and no number changes.")
         self.note.setWordWrap(True)
         self.note.setObjectName("privacyNote")
 
@@ -183,7 +181,6 @@ class PrivacyDialog(QDialog):
         scrub.addWidget(self.slider, 1)
         scrub.addWidget(self.frame_label)
         bottom = QHBoxLayout()
-        bottom.addWidget(self.btn_forget)
         bottom.addStretch(1)
         bottom.addWidget(self.btn_make)
         bottom.addWidget(self.btn_close)
@@ -246,7 +243,6 @@ class PrivacyDialog(QDialog):
         self.btn_clear_crop.setEnabled(self.crop is not None)
         self.btn_undo_mask.setEnabled(bool(self.masks))
         self.btn_clear_all.setEnabled(drawn)
-        self.btn_forget.setEnabled(privacy_fix.read(self.trial.meta_path) != {})
         lines = []
         for d, c in self.problems().items():
             what = []
@@ -335,14 +331,3 @@ class PrivacyDialog(QDialog):
             self.changed()
         st = privacy_fix.status(self.trial.meta_path, self.meta)
         QMessageBox.information(self, "Protected copies", ("Made: " + ", ".join(done_kinds) + ". " if done_kinds else "") + st["text"])
-
-    def forget(self):
-        if QMessageBox.question(self, "Delete the protected copies", "Delete the drawing and the protected copies of this trial? "
-                                "The trial's own videos are not touched.") != QMessageBox.Yes:
-            return
-        privacy_fix.clear(self.trial.meta_path)
-        self.crop, self.masks = None, []
-        self.refresh()
-        if self.changed:
-            self.changed()
-

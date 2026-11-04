@@ -140,7 +140,7 @@ def test_a_trial_recorded_with_a_crop_is_put_back_at_full_size_before_a_new_mask
     assert pf.outside_recorded_crop((0, 0, 1280, 720), rcrop) and not pf.outside_recorded_crop(rcrop, rcrop)
 
 
-def test_drawing_again_replaces_the_copies_and_clearing_removes_only_the_review_files(tmp_path, plain):
+def test_drawing_again_makes_new_copies_and_moves_the_old_ones_aside_and_nothing_is_ever_deleted(tmp_path, plain):
     src_meta, d = plain
     folder = tmp_path / "recordings" / "P01"
     folder.mkdir(parents=True)
@@ -153,11 +153,17 @@ def test_drawing_again_replaces_the_copies_and_clearing_removes_only_the_review_
     stamp = pf.copy_path(meta, "raw").stat().st_mtime_ns
     pf.make_copies(meta, d, crop, masks)                                               # the same drawing: the copies are kept
     assert pf.copy_path(meta, "raw").stat().st_mtime_ns == stamp
-    pf.make_copies(meta, d, None, [(0, 0, 64, 64)])                                    # another drawing: new copies
+    first_raw = frames(pf.copy_path(meta, "raw"))[0].shape[:2]
+    pf.make_copies(meta, d, None, [(0, 0, 64, 64)])                                    # another drawing: new copies, the old ones moved aside
     assert frames(pf.copy_path(meta, "raw"))[0].shape[:2] == tuple(d["privacy"]["full_picture_size"][::-1])
+    aside = sorted((review_layer.review_dir(meta) / "superseded").iterdir())
+    assert len(aside) == 2 and all(p.name.startswith(tuple(f"{review_layer.base_of(meta)}_{k}_protected_" for k in pf.KINDS)) for p in aside)
+    assert frames([p for p in aside if "_raw_" in p.name][0])[0].shape[:2] == first_raw             # the earlier copy is whole and still readable
     assert [h["action"] for h in pf.read(meta)["history"]][0] == "drawn"
-    assert set(pf.clear(meta)) == {pf.FILE, pf.copy_path(meta, "raw").name, pf.copy_path(meta, "overlay").name}
-    assert pf.status(meta, d)["state"] == pf.UNPROTECTED and tree_hash(folder) == before
+    assert not hasattr(pf, "clear")                                                    # there is no way to delete a copy from the program
+    pf.make_copies(meta, d, crop, masks)                                               # back to the first drawing: the second pair is set aside as well, none overwritten
+    assert len(list((review_layer.review_dir(meta) / "superseded").iterdir())) == 4
+    assert tree_hash(folder) == before
 
 
 def test_a_cancelled_copy_leaves_no_half_video_and_says_what_is_still_to_make(tmp_path, plain):
@@ -268,10 +274,7 @@ def test_review_flags_an_unprotected_trial_and_the_privacy_window_makes_the_copi
         text = tab.checks.text(everything=True)
         assert "Protected copies made" in text and "No crop or mask on the video" not in text
         assert frames(pf.copy_path(meta, "raw"))[0].shape[:2] == (want[3], want[2])
-        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
-        dlg.btn_forget.click()                                                            # take it all back: only the review files go
-        assert pf.status(meta, d)["state"] == pf.UNPROTECTED and tree_hash(meta.parent) == before and dlg.crop is None and not dlg.masks
-        assert "No crop or mask on the video" in tab.checks.text(everything=True)
+        assert not hasattr(dlg, "btn_forget")                                            # the window cannot delete a copy
         dlg.close()
     finally:
         tab.trial.close()

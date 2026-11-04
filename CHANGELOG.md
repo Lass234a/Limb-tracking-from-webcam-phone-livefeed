@@ -5,6 +5,11 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
 
 ## 0.34.0 - 2026-11-04
 
+### Also in this version (audit of 2026-11-04)
+- **A video file's folders no longer reach `meta.json` off Windows:** the source is recorded by its file name only, splitting on either kind of slash (`camera.py`); with a Windows path on another system the user's folder names were kept.
+- **Anonymised in the repository** (wording only, no measured data): the researcher's Windows user name in paths (`HANDOFF.md`, `LoadCellCalibration/`, a test default), a phone model, and the body size of an AnyBody model.
+- **Tests that failed only on a non-Windows computer** now test the same thing there: the worker-process helper (`pid_alive`), the width of the Fix-dots column (the font is pinned, because the pane asks for exactly what its number columns need), and the read-only test (it needs a user who is not an administrator).
+
 ### Fix the privacy crop and masks in Review (the open item of `PARKED.md`, asked 2026-10-31)
 - **Why:** the crop and the black masks are set in the Live tab before recording, and `privacy.apply` changes only the saved copies. When the recorder forgot (no crop, no mask, a face outside what was covered), the saved `raw.mp4` and `overlay.mp4`
   show the unprotected picture, and Review could neither say so nor put it right.
@@ -13,7 +18,7 @@ meta schema and a `provenance` block (code hash, git commit, library versions, p
 - **The Privacy window** (button **Privacy** beside *Fix dots*, or the check's button): a picture of the trial (a slider picks the picture), *Crop* and *Mask* modes, and a drag draws the rectangle in full-picture pixels, snapped like the Live tab's
   (even sizes, at least 32 px, at most three masks). The tracked dots are drawn on the picture; a dot that the drawing would cover, or cut off at the crop edge, is red and named with the number of pictures, before anything is made.
   **Make protected copies** writes `<trial>_raw_protected.mp4` and `<trial>_overlay_protected.mp4` (the crop applied, the masks black) in the trial's **review folder**, with a progress window that can be cancelled (a cancelled copy leaves no half file).
-  **Delete the protected copies** removes the drawing and the copies; nothing else.
+  **Nothing is deleted:** there is no delete button. A copy that a new drawing replaces is moved to `superseded/` in the trial's review folder, with the time in its name; no copy is ever overwritten.
 - **What is kept:** the drawing and the copies made from it are in `review/<participant>/<trial>/privacy_fix.json` (the crop, the masks, which copies exist and from which drawing, an append-only history). Drawing again replaces the copies; making them again from the same drawing keeps them.
 - **What does not change:** the trial's own `raw.mp4`, `overlay.mp4`, `data.csv` and `meta.json` are never written (the review layer's guard), no tracked position and no number changes (a test compares every file's SHA-256 before and after, and the CSV rows and angles).
   **The unprotected originals stay on the disk until the people responsible for the data decide** (delete, move, encrypt): this version does not remove them, and `tools/protect_originals.py` still keeps their SHA-256.

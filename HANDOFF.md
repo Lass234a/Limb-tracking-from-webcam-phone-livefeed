@@ -6,7 +6,7 @@ stands, what was learned from real recordings, what must not be broken, and what
 the code, trust the code and `CHANGELOG.md`.**
 
 Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed (**public**). Local folder:
-`C:\Users\llind\Desktop\Studie\KVT3\Live feed limb tracking project` (Windows 11, Python 3.12 venv in `.venv`).
+the project folder on the researcher's Windows PC (path left out) (Windows 11, Python 3.12 venv in `.venv`).
 
 ---
 
@@ -55,11 +55,11 @@ Repository: https://github.com/Lass234a/Limb-tracking-from-webcam-phone-livefeed
 
 - Study: strength scaling of AnyBody muscle models from measured MVIC at specific joint positions (knee ext/flex, hip ext/flex, ankle
   plantar/dorsiflexion, belt squat). The protocol draft is `KVT3_protokol.pdf` (Tabel 2 = positions and required neighbour angles,
-  Tabel 3 = goniometer landmarks). The SOP skeleton is `C:\Users\llind\Desktop\Studie\ChenData\SOP\sop_strength_scaling.tex`; strength
+  Tabel 3 = goniometer landmarks). The SOP skeleton is `sop_strength_scaling.tex` (in the project's local SOP folder); strength
   curve scripts are in `...\ChenData\StrengthCurve\*.m` (`plot_proposal.m` was the source of the first default target angles).
 - Design discussions (Danish/English) about number of trials, hold length, active insufficiency and validation exercises happened in an
   earlier session (id `94442a43`); they are background, not requirements for the code. Check the SOP for what was actually decided.
-- An AnyBody seated knee-extension MVIC model (206 cm / 106 kg) exists at `C:\Users\llind\Documents\AnyBody.8.2.x\SeatedKneeExtMVIC`
+- An AnyBody seated knee-extension MVIC model (body size left out) exists at `SeatedKneeExtMVIC` (in the local AnyBody 8.2 folder)
   (session `55bb8a41`; see its README). Open: which number goes into AnyBody, the **plateau mean angle** or the **angle at peak force**
   (Review reports both; the decision is the user's).
 - Protocol in the app (`protocol.json`, checked at start-up): knee_extension [20, 70, 110] with hip 90; knee_flexion [20, 90] hip 90;
@@ -159,7 +159,7 @@ Tests: 52 test files in `tests/` (49 before the 2026-10-13 work) (synthetic leg 
 - The PC client and the app cannot both read the phone stream: **the phone allows one viewer**. What worked on 2026-10-09: close the DroidCam
   Client and let the app read `http://PHONE-IP:4747/video` (a bare address without `/video` is a web page; the app adds `/video`).
   The phone was on the Windows hotspot network (192.168.137.x). The newer DroidCam Client looks OBS-like and needs its virtual camera started.
-- **New DroidCam Client over USB (2026-10-14, Samsung SM-S942B):** add the phone in the client (Add > DroidCam, Refresh Device List, accept USB debugging on the phone; the new client has no separate 'start virtual camera' step; an earlier note saying so was wrong). **DirectShow and Media Foundation number the cameras in opposite order** (DirectShow `DroidCam Video, Integrated Camera`; Media Foundation `Integrated Camera, DroidCam Video`). Until 0.8.1 the fallback opened Media Foundation under the same number and so opened the laptop webcam (slowly: the 20 s time-out was blamed on the phone). Fixed in 0.8.1 by matching the camera by name (`msmf_camera_names`). Lesson: when a camera 'hangs', check WHICH camera was opened before tuning OpenCV settings. A hung camera open also stays inside the program (the helper thread cannot be cancelled): close the program completely and start it again.
+- **New DroidCam Client over USB (2026-10-14, an Android phone):** add the phone in the client (Add > DroidCam, Refresh Device List, accept USB debugging on the phone; the new client has no separate 'start virtual camera' step; an earlier note saying so was wrong). **DirectShow and Media Foundation number the cameras in opposite order** (DirectShow `DroidCam Video, Integrated Camera`; Media Foundation `Integrated Camera, DroidCam Video`). Until 0.8.1 the fallback opened Media Foundation under the same number and so opened the laptop webcam (slowly: the 20 s time-out was blamed on the phone). Fixed in 0.8.1 by matching the camera by name (`msmf_camera_names`). Lesson: when a camera 'hangs', check WHICH camera was opened before tuning OpenCV settings. A hung camera open also stays inside the program (the helper thread cannot be cancelled): close the program completely and start it again.
 - A camera that never answers is now reported after 20 s with advice (a hang happened with the client running but not connected).
 - **1080p (benchmark 2026-10-14, this laptop, 16 logical cores, synthetic pictures, `scratchpad` scripts not kept):** tracking + drawing 9-11 ms per picture at 720p and 16-18 ms at 1080p (fine for 30 pictures per second, tracker accuracy unchanged: 0.07 px, constants are in pixels but work for 21 px dots). **The two mp4v video encoders (one core each) are the limit: about 60 pictures/s at 720p, 21-25 at 1080p**, so at 30 pictures/s the 90-picture queue fills in 15 s and the program (which never drops pictures) starts to wait (late by up to 2 s); video files are 2.3x bigger and the queues can hold 1.1 GB. Real video is noisier than synthetic and will encode slower. The program always asks the camera for 1280x720 (`CameraSource` default). Options if 1080p is wanted: save the video at 720p while tracking at 1080p (Review must then scale the positions), a faster codec (MJPG), or both; none built.
 - **Frame rate:** first real stream recordings ran at 11 and 8.5 fps with the program's own work at 84-112 ms per picture (`pipeline_timing`
@@ -180,7 +180,7 @@ Tests: 52 test files in `tests/` (49 before the 2026-10-13 work) (synthetic leg 
   cannot replace the **tap test** for the picture delay.
 - **Picture delay** (how late a picture is stamped compared with when it was taken) is unknown; typical 0.1-0.3 s. Review has a *Picture
   delay* box (default 0, saved in exports). Measure with a sharp tap on the sensor/strap in view (`SETUP_AND_VALIDATION.md`).
-- **Load cell calibration** (separate session `9c32a976`; data in `C:\Users\llind\Desktop\Studie\KVT3\Kalibrerings data\`, analysis in
+- **Load cell calibration** (separate session `9c32a976`; data in the local `Kalibrerings data` folder, analysis in
   `LoadCellCalibration/`, report HTML there): TAS501 cell, amplifier SIC-A2 powered from 24 V (cell excitation from the amplifier), output
   in volts (~4.7 V at 250 kg), NI USB-6003 differential `ai0`. **Final fit 13 Oct (0-250 kg up and down, 24 runs): V = 0.08703 + 18.610 mV/kg
   x plates -> 526.95 N/V (53.734 kg/V), R2 0.999996, linear to 250 kg.** Descending runs read +0.29 kg above ascending; chain + strap
@@ -275,7 +275,7 @@ joint, ghost pose (commented out, `# PARKED-GHOST:`), numbers-only mode, plug-in
 - Performance facts: `engine.process` ~5-12 ms for 3-5 dots, ~36 ms with 7 dots + strap lost + window; `_blobs` and the GUI trace redraw are the
   main costs; the force reader thread costs ~2 ms.
 - OpenCV warnings (DSHOW "unknown C++ exception") on the DroidCam index are expected; `OPENCV_LOG_LEVEL=ERROR` silences them.
-- Other sessions' notes live in `C:\Users\llind\.claude\projects\C--Users-llind-Desktop-Studie-ChenData\memory\` (`project_limb-angle-tracker.md`,
+- Other sessions' notes live in the local Claude memory folder of the ChenData project (`project_limb-angle-tracker.md`,
   `project_force-calibration.md`, `project_anybody-seated-mvic.md`, `feedback_two-audience-deliverables.md`).
 
 ## 10. Things I could not verify

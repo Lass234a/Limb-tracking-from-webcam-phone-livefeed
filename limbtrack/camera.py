@@ -250,7 +250,7 @@ class CameraSource:
     def description(self):
         w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        name = Path(self.source).name if self.is_file else self.source      # a file's name only: no user folders in meta.json
+        name = re.split(r"[\\/]", str(self.source))[-1] if self.is_file else self.source      # a file's name only (either kind of slash): no user folders in meta.json
         return f"{name} ({w}x{h})"
 
     def granted(self):

@@ -79,7 +79,21 @@ def same(a, b):
 
 
 def pid_alive(pid):
-    """Whether a process of this id is still running (Windows; the id may be a few seconds old)."""
+    """Whether a process of this id is still running (the id may be a few seconds old). Windows: the exit code; elsewhere: a signal 0 and not a zombie."""
+    if os.name != "nt":
+        if pid <= 0:
+            return False                                                # (os.kill(0, 0) would signal the whole process group)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+                return fh.read().rsplit(")", 1)[1].split()[0] != "Z"      # (a killed child that nobody has waited for yet is a zombie: gone)
+        except OSError:
+            return True
     import ctypes
     k32 = ctypes.WinDLL("kernel32")
     k32.OpenProcess.restype = ctypes.c_void_p

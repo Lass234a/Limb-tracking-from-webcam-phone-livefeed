@@ -14,7 +14,7 @@ from datetime import datetime
 
 import numpy as np
 
-DATA = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\llind\Desktop\Studie\KVT3\Kalibrerings data"
+DATA = sys.argv[1] if len(sys.argv) > 1 else r"Kalibrerings data"
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration_report.html")
 RATE = 1000.0
 G = 9.80665

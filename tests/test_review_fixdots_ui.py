@@ -16,7 +16,7 @@ if os.path.isdir(r"C:\Windows\Fonts"):
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 from PySide6.QtCore import QLocale, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QPalette  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget  # noqa: E402
 
@@ -34,6 +34,18 @@ N = 30
 REAL_DIR = Path(__file__).resolve().parent.parent / "Pilot" / "P02"
 REAL_BASE = "P02_02_knee_extension_70deg_T4_20261029-120029"
 real_only = pytest.mark.skipif(not (REAL_DIR / f"{REAL_BASE}_meta.json").is_file(), reason="the pilot recordings are not here")
+
+
+@pytest.fixture(autouse=True)
+def _a_fixed_font():
+    """The widths asked for here (a 380 px column) were tuned on Windows, where the program's font is about as wide as Arial. The pane asks for exactly what its
+    number columns need, so a wider default font (a Linux machine's) legitimately needs more room. The font is pinned so the test measures the layout, not the
+    computer's font; it is put back afterwards."""
+    app = QApplication.instance() or QApplication([])
+    old = app.font()
+    app.setFont(QFont("Arial", 9))
+    yield
+    app.setFont(old)
 
 
 def _app():

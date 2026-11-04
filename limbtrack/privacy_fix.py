@@ -9,8 +9,10 @@ Review never writes a trial's own files (`review_layer`), so the fix is made the
     recordings/review/P02/<trial base>/<base>_overlay_protected.mp4
 
 The unprotected originals stay where they are, untouched; what happens to them (delete, move, encrypt) is a decision for the people
-responsible for the data. Nothing here touches tracking or the CSV: no measured number changes. This module is pure (no Qt).
+responsible for the data. Nothing here deletes a file: a copy that a new drawing replaces is moved to `superseded/` in the trial's review
+folder, with the time in its name. Nothing here touches tracking or the CSV: no measured number changes. This module is pure (no Qt).
 """
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -88,16 +90,24 @@ def write(meta_path, crop, masks, copies=None, history=None):
     return data
 
 
-def clear(meta_path):
-    """Forget the fix and delete the protected copies this module made (never an original). Returns the names of the files removed."""
-    gone = []
-    for p in [fix_path(meta_path)] + [copy_path(meta_path, k) for k in KINDS]:
-        try:
-            review_layer.guard(p).unlink()
-            gone.append(p.name)
-        except FileNotFoundError:
-            pass
-    return gone
+def set_aside(meta_path, kinds=KINDS):
+    """Move the protected copies of this trial (those of `kinds` that exist) into `superseded/` in its review folder, each with the time in its
+    name, and return the names moved. Nothing is deleted: a copy that a new drawing replaces stays on the disk for the data owners to decide about."""
+    moved = []
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    for k in kinds:
+        src = copy_path(meta_path, k)
+        if not src.is_file():
+            continue
+        dst = review_layer.guard(review_layer.review_file(meta_path, f"superseded/{src.stem}_{stamp}{src.suffix}"))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        n = 1
+        while dst.exists():                                           # (two in one second: never overwrite one that was set aside before)
+            dst = dst.with_name(f"{src.stem}_{stamp}_{n}{src.suffix}")
+            n += 1
+        os.replace(review_layer.guard(src), dst)
+        moved.append(dst.name)
+    return moved
 
 
 def copies_made(meta_path, fix=None):
@@ -249,11 +259,7 @@ def make_copies(meta_path, meta, crop, masks, progress=None):
     if same:
         copies = dict(old.get("copies") or {})                          # (the copies already made from this very crop and masks stay)
     else:
-        for k in KINDS:                                                  # a new crop or masks: the old copies no longer match, they are removed first
-            try:
-                review_layer.guard(copy_path(meta_path, k)).unlink()
-            except FileNotFoundError:
-                pass
+        set_aside(meta_path)                                             # a new crop or masks: the old copies no longer match; they are moved aside, not deleted
     write(meta_path, crop, masks, copies, history={"action": "drawn", "crop_xywh": rec["crop_xywh"], "masks_xywh": rec["masks_xywh"]})
     for kind in KINDS:
         src = original_path(meta_path, meta, kind)
@@ -263,6 +269,7 @@ def make_copies(meta_path, meta, crop, masks, progress=None):
         if same and copies_made(meta_path, read(meta_path)).get(kind):
             result[kind] = (copies.get(kind) or {}).get("frames")
             continue
+        set_aside(meta_path, (kind,))                                    # (a copy that is not recorded as made from this drawing is never overwritten)
         n = protect_video(src, copy_path(meta_path, kind), crop, masks, recorded_crop=rcrop, full_size=full_size, fps=fps,
                           progress=(lambda d, t, k=kind: progress(k, d, t)) if progress else None)
         result[kind] = n

@@ -17,8 +17,7 @@ from limbtrack.review_checks import COMPACT_BELOW, MAX_HEIGHT, ChecksPanel, acti
 
 from tests.test_analysis import torque_trial  # noqa: E402
 
-REAL = Path(os.environ.get("LIMBTRACK_REAL_P02", r"C:\Users\llind\AppData\Local\Temp\claude\C--Users-llind--claude-spares-spare-3DeC6G"
-                                                  r"\12f365b2-ac58-4b76-99af-bc9d1318be9a\scratchpad\lead_data\P02"))
+REAL = Path(os.environ.get("LIMBTRACK_REAL_P02", "real_P02_folder_not_set"))      # a copy of the real P02 trials, if this computer has one (set the variable to its folder)
 WINDOW = (8.5, 13.0)
 
 

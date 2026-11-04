@@ -17,7 +17,7 @@ from datetime import datetime
 
 import numpy as np
 
-DAY1 = r"C:\Users\llind\Desktop\Studie\KVT3\Kalibrerings data"
+DAY1 = r"Kalibrerings data"
 DAY2 = DAY1 + r"\Omgang 2"
 RATE = 1000.0
 SKIP = 6.0
