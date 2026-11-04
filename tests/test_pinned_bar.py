@@ -15,7 +15,7 @@ from PySide6.QtGui import QKeySequence, QShortcut  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QComboBox, QSizePolicy  # noqa: E402
 
-from limbtrack.gui import DOT_CHIP_COLUMNS, DOT_CHIP_STYLE, MainWindow, TRIALS_PER_POSITION  # noqa: E402
+from limbtrack.gui import DOT_CHIP_COLUMNS, DOT_CHIP_STYLE, MainWindow, TRIALS_PER_POSITION, dot_chip_style  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.synthetic import leg_points, render  # noqa: E402
 
@@ -233,7 +233,7 @@ def test_same_landmarks_keep_the_marked_dots_when_the_position_changes(win):
     mark_all(win)
     live.go_to_position(row_of(live, "knee_extension", 70))                    # same test, other target
     assert set(win.engine.dot_status().values()) - {"off"} == {"ok"}
-    assert all(not c.isHidden() and c.styleSheet() == DOT_CHIP_STYLE["ok"] for n, c in live.chips.items() if n in win.engine.active_dots)
+    assert all(not c.isHidden() and c.styleSheet() == dot_chip_style("ok") for n, c in live.chips.items() if n in win.engine.active_dots)
 
 
 # ------------------------------------------------------------------------------------------------ the dot buttons
@@ -253,15 +253,15 @@ def test_the_buttons_show_marked_lost_and_not_marked(win):
     live = win.live
     names = list(win.engine.active_dots)
     live.update_dot_rows()
-    assert all(live.chips[n].styleSheet() == DOT_CHIP_STYLE["unmarked"] for n in names)
+    assert all(live.chips[n].styleSheet() == dot_chip_style("unmarked") for n in names)
     mark_all(win)
-    assert all(live.chips[n].styleSheet() == DOT_CHIP_STYLE["ok"] for n in names)
+    assert all(live.chips[n].styleSheet() == dot_chip_style("ok") for n in names)
     gone = names[2]
     for i in range(1, 25):
         win.engine.process(render(PTS, seed=i, hide=[gone]), i / 30)
     live.update_dot_rows()
-    assert live.chips[gone].styleSheet() == DOT_CHIP_STYLE["lost"] and "LOST" in live.chips[gone].toolTip()
-    assert live.chips[names[0]].styleSheet() == DOT_CHIP_STYLE["ok"]
+    assert live.chips[gone].styleSheet() == dot_chip_style("lost") and "LOST" in live.chips[gone].toolTip()
+    assert live.chips[names[0]].styleSheet() == dot_chip_style("ok")
 
 
 def test_a_button_does_what_the_landmark_row_button_does(win):
@@ -272,7 +272,7 @@ def test_a_button_does_what_the_landmark_row_button_does(win):
     live.chips[a].click()
     assert live._arm == a and live.chips[a].styleSheet() == DOT_CHIP_STYLE["armed"] and live.lm_buttons[a].text() == "Cancel"
     live.on_click(*(PTS[a] + 3))
-    assert live._arm is None and live.chips[a].styleSheet() == DOT_CHIP_STYLE["ok"]
+    assert live._arm is None and live.chips[a].styleSheet() == dot_chip_style("ok")
     after_c = np.array([win.engine.trackers.trackers[c].x, win.engine.trackers.trackers[c].y])
     assert np.allclose(before_c, after_c)                                         # only that dot changed
     live.chips[a].click()

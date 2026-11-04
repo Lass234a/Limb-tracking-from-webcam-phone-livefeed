@@ -4,18 +4,19 @@ A trial is recorded for real (synthetic pictures, simulated force); damaged copi
 No real participant data is used here."""
 import csv
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-import check_session as cs  # noqa: E402
+_spec = importlib.util.spec_from_file_location("check_session", Path(__file__).resolve().parent.parent / "tools" / "check_session.py")        # (by path: tools/ is not put on sys.path for every other test)
+cs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cs)
 
 from tests.test_force import recording  # noqa: E402
 
@@ -252,3 +253,21 @@ def test_the_check_uses_no_analysis_code_of_the_program():
         elif isinstance(node, ast.ImportFrom):
             imported.add((node.module or "").split(".")[0])
     assert "limbtrack" not in imported, imported                       # (it reads the saved files only; a mistake in the program cannot also be in the check)
+
+
+# ---------------------------------------------------------------------------------------------- what the review of this tool found
+def test_an_empty_or_one_sample_force_file_is_reported_and_does_not_stop_the_check(folder):
+    path = next(folder.glob("*_force.csv"))
+    path.write_text("t_s,clock_s,volts,newtons\n", encoding="utf-8")
+    assert has(cs.check_trial(meta_of(folder)), cs.WARN, "holds 0 sample(s)")
+    path.write_text("t_s,clock_s,volts,newtons\n0.001,5.0,0.1,1.0\n", encoding="utf-8")
+    res = cs.check_trial(meta_of(folder))
+    assert has(res, cs.WARN, "holds 1 sample(s)") and "issues" in res
+
+
+def test_a_folder_called_review_above_the_one_given_does_not_hide_the_trials(folder, tmp_path):
+    root = tmp_path / "Review" / "recordings"                                   # (a person's own folder name, above the folder given)
+    shutil.copytree(folder, root / folder.name)
+    assert cs.run(root, out=lambda *_: None)[0] == 1
+    shutil.copytree(folder, root / "review" / folder.name)                      # the program's own review layer below it is still left out
+    assert cs.run(root, out=lambda *_: None)[0] == 1

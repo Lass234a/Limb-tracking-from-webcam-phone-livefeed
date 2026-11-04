@@ -7,7 +7,6 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
@@ -65,7 +64,7 @@ def test_a_trial_with_neither_crop_nor_mask_is_unprotected_until_someone_says_ot
     s = pf.status(meta, d)
     assert s["state"] == pf.UNPROTECTED and "No crop and no mask" in s["text"] and "Privacy" in s["text"]
     said = json.loads(json.dumps(d))
-    said["privacy"]["checked"] = {"how": pf.LOOKED_NOTHING}
+    said["privacy"].update(checked={"how": pf.LOOKED_NOTHING}, checked_for_this_position=True)                    # (what the Live tab writes when the tick is made at this position)
     assert pf.status(meta, said)["state"] == pf.NOTHING_TO_HIDE                       # the operator looked: nothing to hide
     old = {k: v for k, v in d.items() if k != "privacy"}
     assert pf.status(meta, old)["state"] == pf.UNKNOWN                                # recorded before the program kept a privacy record
@@ -286,7 +285,7 @@ def test_a_trial_the_operator_cleared_has_no_privacy_check_and_the_button_is_off
     tab, meta = _review_with_a_copy_of(src_meta, tmp_path)
     try:
         assert tab.btn_privacy.isEnabled()
-        tab.trial.meta.setdefault("privacy", {})["checked"] = {"how": pf.LOOKED_NOTHING}
+        tab.trial.meta.setdefault("privacy", {}).update(checked={"how": pf.LOOKED_NOTHING}, checked_for_this_position=True)
         tab.update_summary()
         assert "No crop or mask on the video" not in tab.checks.text(everything=True)
         tab.show_view("overview")
@@ -314,6 +313,119 @@ def test_the_privacy_window_belongs_to_one_trial_and_closes_when_another_is_open
         again = tab.open_privacy()
         assert again is not dlg and again.isVisible()
         again.close()
+    finally:
+        tab.trial.close()
+        tab.close()
+
+
+# ---------------------------------------------------------------------------------------------- what the review of this code found
+def test_a_looked_tick_made_for_another_position_does_not_count(plain):
+    meta, d = plain
+    said = json.loads(json.dumps(d))
+    said["privacy"].update(checked={"how": pf.LOOKED_NOTHING}, checked_for_this_position=False)
+    s = pf.status(meta, said)
+    assert s["state"] == pf.UNPROTECTED and "another position" in s["text"]
+    said["privacy"].pop("checked_for_this_position")                          # (an older trial that never recorded the flag keeps the benefit of the doubt)
+    assert pf.status(meta, said)["state"] == pf.NOTHING_TO_HIDE
+
+
+def test_a_trial_with_no_saved_video_is_not_called_unprotected_and_has_no_check(tmp_path, plain):
+    src_meta, d = plain
+    folder = tmp_path / "recordings" / "P01"
+    folder.mkdir(parents=True)
+    for p in src_meta.parent.iterdir():
+        if p.suffix != ".mp4":                                                # numbers only, as in a data repository
+            (folder / p.name).write_bytes(p.read_bytes())
+    meta = folder / src_meta.name
+    assert pf.status(meta, d)["state"] == pf.NO_VIDEO and "nothing to protect" in pf.status(meta, d)["text"]
+    from limbtrack import analysis
+    tr = Trial(meta, open_video=False)
+    try:
+        assert not any(i["action"] == "privacy" for i in analysis.trial_check_items(tr))
+    finally:
+        tr.close()
+
+
+def test_a_video_that_stops_decoding_early_makes_no_copy_and_says_so(tmp_path, plain, monkeypatch):
+    src_meta, d = plain
+    folder = tmp_path / "recordings" / "P01"
+    folder.mkdir(parents=True)
+    for p in src_meta.parent.iterdir():
+        (folder / p.name).write_bytes(p.read_bytes())
+    meta = folder / src_meta.name
+    real = pf.cv2.VideoCapture
+
+    class Damaged:
+        """A video that claims 100 pictures and stops decoding after 10."""
+        def __init__(self, path):
+            self.cap, self.n = real(path), 0
+
+        def isOpened(self):
+            return self.cap.isOpened()
+
+        def get(self, prop):
+            return 100.0 if prop == pf.cv2.CAP_PROP_FRAME_COUNT else self.cap.get(prop)
+
+        def read(self):
+            self.n += 1
+            return self.cap.read() if self.n <= 10 else (False, None)
+
+        def release(self):
+            self.cap.release()
+    monkeypatch.setattr(pf.cv2, "VideoCapture", Damaged)
+    crop, masks = a_crop_and_a_mask(meta, d)
+    with pytest.raises(OSError, match="stopped after 10 of 100"):
+        pf.make_copies(meta, d, crop, masks)
+    assert not pf.copy_path(meta, "raw").exists() and not list(review_layer.review_dir(meta).glob("*.part*"))
+    assert pf.status(meta, d)["state"] == pf.PENDING                          # nothing is claimed as protected
+
+
+def test_the_check_list_reads_the_privacy_state_from_disk_once_not_on_every_call(tmp_path, plain, monkeypatch):
+    src_meta, d = plain
+    from limbtrack import analysis
+    folder = tmp_path / "recordings" / "P01"
+    folder.mkdir(parents=True)
+    for p in src_meta.parent.iterdir():
+        (folder / p.name).write_bytes(p.read_bytes())
+    meta = folder / src_meta.name
+    tr = Trial(meta, open_video=False)
+    calls = []
+    real = pf.status
+    monkeypatch.setattr(pf, "status", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    try:
+        for _ in range(5):                                                   # (the analysis window is dragged)
+            analysis.trial_check_items(tr)
+        assert len(calls) == 1
+        crop, masks = a_crop_and_a_mask(meta, d)
+        pf.write(meta, crop, masks)                                          # the fix file changed: the state is read again
+        analysis.trial_check_items(tr)
+        assert len(calls) == 2
+        tr.meta["privacy"]["checked"] = {"how": pf.LOOKED_NOTHING}           # so is a changed privacy record
+        analysis.trial_check_items(tr)
+        assert len(calls) == 3
+    finally:
+        tr.close()
+
+
+def test_moving_the_slider_does_not_rescan_the_trial_but_a_new_drawing_does_once(tmp_path, plain, monkeypatch):
+    src_meta, d = plain
+    tab, meta = _review_with_a_copy_of(src_meta, tmp_path)
+    try:
+        dlg = tab.open_privacy()
+        scans, reads = [], []
+        real_scan, real_status = pf.dot_problems, pf.status
+        monkeypatch.setattr(pf, "dot_problems", lambda *a, **k: (scans.append(1), real_scan(*a, **k))[1])
+        monkeypatch.setattr(pf, "status", lambda *a, **k: (reads.append(1), real_status(*a, **k))[1])
+        for i in (3, 5, 8, 2):
+            dlg.slider.setValue(i)
+        assert dlg.index == 2 and scans == [] and reads == []                 # a picture changed, the drawing did not
+        x, y = first_dot_at(meta)
+        dlg.mode_mask.setChecked(True)
+        _drag(dlg, (x - 20, y - 20), (x + 20, y + 20))
+        assert len(scans) == 1 and len(reads) == 1                              # one scan and one read for the one change
+        dlg.slider.setValue(4)
+        assert len(scans) == 1 and len(reads) == 1
+        dlg.close()
     finally:
         tab.trial.close()
         tab.close()

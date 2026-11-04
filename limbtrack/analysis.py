@@ -6,6 +6,7 @@ smoothed force (a multiple of 20 ms removes 50 Hz mains hum) and say which assum
 """
 import csv
 import math
+import os
 
 import numpy as np
 
@@ -299,6 +300,25 @@ def _review_note_title(note):
     return "Changed in Review"
 
 
+def _privacy_state(tr, m):
+    """privacy_fix.status of the trial, kept on the Trial while neither its privacy record nor the fix file has changed: the check list is worked
+    out on every move of the analysis window, and the state is read from disk (the fix file and up to four others)."""
+    meta_path = getattr(tr, "meta_path", None)
+    if not meta_path:
+        return None
+    try:
+        stamp = os.stat(privacy_fix.fix_path(meta_path)).st_mtime_ns
+    except OSError:
+        stamp = 0
+    key = (repr(m.get("privacy")), stamp)
+    cached = getattr(tr, "_privacy_state", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    state = privacy_fix.status(meta_path, m)
+    tr._privacy_state = (key, state)
+    return state
+
+
 def trial_check_items(tr, t0=None, t1=None):
     """0.32.0: the check list with what Review's checks panel needs to show it clearly. A list of dicts, in the order (and with the level and
     text) of `trial_checks`: level 'ok', 'check' or 'info'; text, the full plain sentence; title, a short headline (at most
@@ -360,7 +380,7 @@ def trial_check_items(tr, t0=None, t1=None):
             "Marked compromised", "verdict")
     elif v and v.get("verdict") == verdicts.VALID:
         add("ok", f"Marked valid ({v.get('judged_in')})" + (f": {v['note']}" if v.get("note") else ""), "Marked valid", "verdict")
-    ps = privacy_fix.status(tr.meta_path, m) if getattr(tr, "meta_path", None) else None        # audit 2026-11-04: is the saved video protected?
+    ps = _privacy_state(tr, m)                                         # audit 2026-11-04: is the saved video protected?
     if ps and ps["state"] in (privacy_fix.UNPROTECTED, privacy_fix.UNKNOWN):
         add("check", ps["text"], "No crop or mask on the video", "recording", "privacy")
     elif ps and ps["state"] == privacy_fix.PENDING:

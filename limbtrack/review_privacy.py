@@ -192,7 +192,8 @@ class PrivacyDialog(QDialog):
         lay.addWidget(self.problem)
         lay.addWidget(self.note)
         lay.addLayout(bottom)
-        self.show_frame(0)
+        self._hit = set()                       # the dots the present drawing cuts off or covers (worked out when the drawing changes, not per picture)
+        self.refresh()
 
     # ---- the picture
     def _frame_image(self, i):
@@ -210,7 +211,11 @@ class PrivacyDialog(QDialog):
         self.picture.image = self._frame_image(self.index)
         self.picture.recorded_crop = self.recorded_crop
         self.frame_label.setText(f"picture {self.index + 1} of {len(self.trial.rows)}")
-        self.refresh()
+        self._show_dots()                                         # (only the dots of this picture: the drawing, its problems and the status did not change)
+
+    def _show_dots(self):
+        self.picture.dots = [(x, y, d in self._hit) for d, x, y in self._dots_in(self.index)]
+        self.picture.update()
 
     def _dots_in(self, i):
         out = []
@@ -231,11 +236,14 @@ class PrivacyDialog(QDialog):
         return privacy_fix.dot_problems(self.trial.rows, self.trial.dot_names, self.crop, self.masks)
 
     def refresh(self):
+        """The drawing changed (or the copies did): show it, say what it does to the dots, and what state the trial is in. Once per change."""
         pic = self.picture
         pic.crop, pic.masks = self.crop, list(self.masks)
-        hit = set(self.problems())
-        pic.dots = [(x, y, d in hit) for d, x, y in self._dots_in(self.index)]
-        pic.update()
+        pic.recorded_crop = self.recorded_crop
+        pic.image = pic.image if pic.image is not None else self._frame_image(self.index)
+        problems = self.problems()
+        self._hit = set(problems)
+        self._show_dots()
         st = privacy_fix.status(self.trial.meta_path, self.meta)
         self.info.setText(self._info_text(st))
         drawn = bool(self.crop or self.masks)
@@ -244,7 +252,7 @@ class PrivacyDialog(QDialog):
         self.btn_undo_mask.setEnabled(bool(self.masks))
         self.btn_clear_all.setEnabled(drawn)
         lines = []
-        for d, c in self.problems().items():
+        for d, c in problems.items():
             what = []
             if c["inside_mask"]:
                 what.append(f"under a mask in {c['inside_mask']} pictures")

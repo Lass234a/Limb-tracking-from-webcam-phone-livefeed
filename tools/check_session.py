@@ -20,6 +20,7 @@ import argparse
 import csv
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -69,8 +70,12 @@ def read_force(path):
         head = fh.readline().strip().split(",")
     if head[:4] != ["t_s", "clock_s", "volts", "newtons"]:
         return None
-    a = np.genfromtxt(path, delimiter=",", skip_header=1, usecols=(0, 1, 2, 3))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")                                         # (an empty file is reported below, not as a numpy warning)
+        a = np.genfromtxt(path, delimiter=",", skip_header=1, usecols=(0, 1, 2, 3))
     a = np.atleast_2d(a)
+    if a.size == 0 or a.shape[1] < 4:
+        return (np.array([]),) * 4
     return a[:, 0], a[:, 1], a[:, 2], a[:, 3]
 
 
@@ -208,6 +213,8 @@ def _check_force(base, meta, rows, t, cal_max_n):
     if got is None:
         return [(WARN, "force.csv has an unexpected layout: the force was not checked")], {}, None
     ft, fclock, volts, newtons = got
+    if len(ft) < 2:
+        return [(WARN, f"force.csv holds {len(ft)} sample(s): the force was not checked (the force was connected but nothing was recorded)")], {}, None
     fm = meta.get("force") or {}
     timing, rate = _check_force_time(fm, rows, t, ft, fclock)
     numbers, facts, peak_t = _check_force_numbers(fm, ft, volts, newtons, rate, cal_max_n)
@@ -322,7 +329,8 @@ def find_trials(root):
 
 def run(root, cal_max_n=None, out=print):
     """Check every trial under `root`; print FAIL and WARN lines; return (n_trials, n_fail, n_warn)."""
-    metas = [m for m in find_trials(root) if "review" not in {part.lower() for part in m.parts}]
+    root = Path(root)
+    metas = [m for m in find_trials(root) if "review" not in {part.lower() for part in m.relative_to(root).parts}]         # (only folders below the one given)
     nf = nw = 0
     by_person = {}
     for m in metas:

@@ -32,6 +32,7 @@ PENDING = "pending"              # a crop or masks were drawn in Review, the pro
 NOTHING_TO_HIDE = "nothing"      # the operator looked and said nothing identifies the participant
 UNPROTECTED = "unprotected"      # no crop, no mask, and nobody said that nothing needs hiding
 UNKNOWN = "unknown"              # the trial has no privacy record at all (recorded before it existed)
+NO_VIDEO = "novideo"             # no saved video is here (numbers only, or the videos were moved): there is nothing to protect in this folder
 
 
 # ------------------------------------------------------------------------------------------------ where things live
@@ -138,14 +139,19 @@ def status(meta_path, meta):
                 "text": "Protected copies made in Review (crop and masks applied). The unprotected originals are still on the disk."}
     if crop or masks:
         return {"state": RECORDED, "missing": [], "text": "A crop or masks were applied when this trial was recorded."}
+    if all(original_path(meta_path, meta, k) is None for k in KINDS):
+        return {"state": NO_VIDEO, "missing": [], "text": "No saved video of this trial is here (numbers only, or the videos were moved): nothing to protect."}
     pv = meta.get("privacy")
     if pv is None:
         return {"state": UNKNOWN, "missing": [],
                 "text": "This trial has no privacy record (it was recorded before the program kept one): the saved video may show the unprotected picture."}
-    if ((pv.get("checked") or {}).get("how") or "") == LOOKED_NOTHING:
+    said = ((pv.get("checked") or {}).get("how") or "") == LOOKED_NOTHING
+    if said and pv.get("checked_for_this_position") is not False:
         return {"state": NOTHING_TO_HIDE, "missing": [], "text": "The operator looked at the picture and said nothing identifies the participant."}
+    why = ("the operator's 'nothing identifies the participant' was said for another position than this one"
+           if said else "nobody said that nothing needs hiding")
     return {"state": UNPROTECTED, "missing": [],
-            "text": "No crop and no mask were applied to the saved video, and nobody said that nothing needs hiding: a face or a name may be in "
+            "text": f"No crop and no mask were applied to the saved video, and {why}: a face or a name may be in "
                     "raw.mp4 and overlay.mp4. Draw a crop or masks in Review (Privacy) to make protected copies."}
 
 
@@ -237,10 +243,14 @@ def protect_video(src, dst, crop, masks, recorded_crop=None, full_size=None, fps
                     break
         finally:
             writer.release()
-        if finished and done:
+        truncated = bool(finished and total and total - done > max(2, total // 100))       # (the file stopped decoding before the picture count it reports)
+        if finished and done and not truncated:
             review_layer.finish_video(part, dst)
         else:
-            part.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)                                                    # (our own half-written file; never an original)
+        if truncated:
+            raise OSError(f"{Path(src).name} stopped after {done} of {total} pictures (damaged?): the protected copy was not made, so none of it is "
+                          "marked as protected.")
         return done
     finally:
         cap.release()

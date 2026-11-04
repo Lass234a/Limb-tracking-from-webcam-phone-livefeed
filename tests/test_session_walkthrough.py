@@ -8,9 +8,9 @@ After the trial: its files are saved, the independent check (tools/check_session
 the export is written, and not one byte of the recorded files has changed.
 """
 import hashlib
+import importlib.util
 import math
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -21,13 +21,15 @@ import cv2  # noqa: E402
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
+from limbtrack import verdict as verdicts  # noqa: E402
 from limbtrack.gui import STEPS, MainWindow  # noqa: E402
 from limbtrack.protocol import load_protocol  # noqa: E402
 from limbtrack.synthetic import leg_points, render  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tools"))
-import check_session  # noqa: E402
+_spec = importlib.util.spec_from_file_location("check_session", ROOT / "tools" / "check_session.py")           # (loaded by path: tools/ is not put on sys.path for every other test)
+check_session = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check_session)
 
 # Keystroke-level model (Card, Moran and Newell 1980; the usual values): a mouse action is pointing and pressing, a key is one keystroke, and
 # each step starts with a moment of thinking.
@@ -128,7 +130,7 @@ class Operator:
             text = self.live.instruction.text()
             if PLAN[step] not in text.lower():                                       # a timed notice (such as the beeps test) may cover the instruction for a few seconds,
                 covered = time.time()                                                # the chip still shows the step; the instruction must be back within the notice's time
-                self.pump(lambda: PLAN[step] in self.live.instruction.text().lower(), NOTICE_SECONDS + 1.5)
+                self.pump(lambda s=step: PLAN[s] in self.live.instruction.text().lower(), NOTICE_SECONDS + 1.5)
                 text = self.live.instruction.text()
                 self.notice_seconds.append(time.time() - covered)
             self.said.append((step, text))
@@ -137,7 +139,7 @@ class Operator:
             if step == until:
                 return
             started = time.time()
-            assert self.pump(lambda: self.next_step() != step, 3.0), f"after the step '{step}' was done the screen still asks for it: {self.live.instruction.text()!r}"
+            assert self.pump(lambda s=step: self.next_step() != s, 3.0), f"after the step '{step}' was done the screen still asks for it: {self.live.instruction.text()!r}"
             self.latency.append(time.time() - started)
         pytest.fail("the steps did not lead to a recording")
 
@@ -150,46 +152,47 @@ def manifest(folder):
     return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path(folder).iterdir()) if p.is_file() and not p.name.startswith(("session_log", "settings"))}
 
 
-@pytest.fixture
-def session(tmp_path, video, monkeypatch):
+@pytest.fixture(scope="module")
+def finished_session(video, tmp_path_factory):
+    """One session, done once by following the screen (it takes about 25 s); both tests below look at it from their own side."""
     app = QApplication.instance() or QApplication([])
+    tmp = tmp_path_factory.mktemp("walkthrough_recordings")
     dialogs = []                                                                  # what the program said in a dialog (a refusal says why, here)
-    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: dialogs.append(("warning", a[2])))
-    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: dialogs.append(("information", a[2])))
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: (dialogs.append(("question", a[2])), QMessageBox.Yes)[1])
-    win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp_path)
+    mp = pytest.MonkeyPatch()
+    mp.setattr(QMessageBox, "warning", lambda *a, **k: dialogs.append(("warning", a[2])))
+    mp.setattr(QMessageBox, "information", lambda *a, **k: dialogs.append(("information", a[2])))
+    mp.setattr(QMessageBox, "question", lambda *a, **k: (dialogs.append(("question", a[2])), QMessageBox.Yes)[1])
+    win = MainWindow(load_protocol(ROOT / "protocol.json"), tmp)
     win.resize(1500, 950)
     win.show()
     app.processEvents()
     op = Operator(win, app, video)
     op.dialogs = dialogs
-    yield op, tmp_path
+    op.follow_the_screen()
+    yield op, tmp
     if win.engine.rec is not None:
         win.live.btn_rec.click()
-    if win.live.force_source is not None:
-        win.live.btn_force.click()
     win.live.worker = None
     win.close()
+    mp.undo()
 
 
-def test_a_first_time_operator_can_record_a_trial_by_following_the_screen(session):
-    op, tmp = session
-    op.follow_the_screen()
+def test_a_first_time_operator_can_record_a_trial_by_following_the_screen(finished_session):
+    op, tmp = finished_session
     steps_done = [s for s, _ in op.said]
     assert steps_done == ["camera", "force", "markers", "participant", "privacy", "ruler", "dots", "lock", "record"]      # the order of a session, every step asked once
-    assert all(op.said[i][0] != op.said[i + 1][0] for i in range(len(op.said) - 1))
     count = len(op.actions)
     print(f"\nactions to the first trial: {count} ({sum(1 for a in op.actions if a[1] == 'click')} clicks, {sum(1 for a in op.actions if a[1] == 'key')} keys); "
           f"keystroke-level estimate {op.klm_seconds():.0f} s of operator work (equipment waits not included)")
     assert count <= MAX_ACTIONS_TO_FIRST_TRIAL, f"{count} actions: " + "; ".join(f"{s}: {w}" for s, _k, w in op.actions)
     assert max(op.latency) < 2.0, op.latency                                                                  # the screen answers an action within two seconds
+    assert all(n <= NOTICE_SECONDS + 1.5 for n in op.notice_seconds), op.notice_seconds                       # a timed notice never covers the instruction for long
     # the screen goes back to asking for the next trial
     assert op.pump(lambda: "next trial" in op.live.instruction.text().lower(), 5), op.live.instruction.text()
 
 
-def test_the_trial_it_saved_passes_the_independent_check_opens_in_review_and_stays_untouched(session):
-    op, tmp = session
-    op.follow_the_screen()
+def test_the_trial_it_saved_passes_the_independent_check_opens_in_review_and_stays_untouched(finished_session):
+    op, tmp = finished_session
     metas = sorted(tmp.rglob("*_meta.json"))
     assert len(metas) == 1, sorted(str(p.relative_to(tmp)) for p in tmp.rglob("*"))[:20]
     meta = metas[0]
@@ -205,8 +208,9 @@ def test_the_trial_it_saved_passes_the_independent_check_opens_in_review_and_sta
     assert review.trial is not None and review.trial.base == meta.name[: -len("_meta.json")]
     op.do("review", "click", "Valid", review.verdict_bar.btn_valid.click)
     op.do("review", "click", "Export", review.export_session)
-    exports = list((meta.parent.parent / "review" / meta.parent.name / "exports").glob("*session_summary*.csv"))
+    exports = list((folder.parent / "review" / folder.name / "exports").glob("*session_summary*.csv"))
     assert exports, "the export was not written in the review folder: " + str(sorted(str(p.relative_to(tmp)) for p in tmp.rglob("*") if "review" in p.parts))[:600]
     review.trial.close()
     assert manifest(folder) == before, "Review changed a recorded file"                                      # byte for byte
-    assert list(folder.glob("*_verdict.json")) or list((meta.parent.parent / "review").rglob("verdict*.json")), "the verdict was not saved"
+    saved = Path(verdicts.review_verdict_path(meta))
+    assert saved.is_file() and verdicts.read_verdict(meta)["verdict"] == verdicts.VALID, saved              # the verdict was written, where Review keeps it

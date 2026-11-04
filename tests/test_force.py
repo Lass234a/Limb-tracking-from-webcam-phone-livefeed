@@ -412,7 +412,7 @@ def humming_trial(tmp_path, hum=0.09):
     """A recording whose force file is replaced by a known signal: rest, a light push, a hold at 1.0 V, release; plus 50 Hz hum and noise."""
     eng, paths = recording(tmp_path)
     tr = Trial(paths["meta.json"])
-    tr.meta.setdefault("privacy", {})["checked"] = {"how": "looked: nothing identifies the participant"}      # (a trial with nothing hidden and no word on it gets a privacy check)
+    tr.meta.setdefault("privacy", {}).update(checked={"how": "looked: nothing identifies the participant"}, checked_for_this_position=True)      # (a trial with nothing hidden and no word on it gets a privacy check)
     t = np.arange(-1.0, 16.0, 0.001)
     clean = np.interp(t, [-1, 3, 3.05, 8, 8.6, 13, 13.5, 16], [0.1, 0.1, 0.3, 0.3, 1.0, 1.0, 0.1, 0.1])   # rest, a light push, the hold at 1.0 V, release
     rng = np.random.RandomState(1)
