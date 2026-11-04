@@ -1,0 +1,25 @@
+// The pull of the strap, as the load cell measured it at the peak force.
+// Global axes: x forward (the way the participant faces), y up, z to the participant's right.
+// The force is a pure force on the strap node. It is the TOTAL force from the load cell zero: the weight of the limb comes from gravity
+// in the model, so the resting force is not subtracted here (SOP step 9.10).
+AnyFolder Loads =
+{
+  AnyFolder &Shank = Main.Model.TestedLeg.Seg.Shank;
+
+  // Unit vector along the shank, from the knee joint to the ankle joint, in global coordinates
+  AnyVec3 ShankDir = (Shank.AnkleJoint.r - Shank.KneeJoint.r) / vnorm(Shank.AnkleJoint.r - Shank.KneeJoint.r);
+
+  // The effort turns the shank about EffortAxisZ * z (+1: forward and up, as in knee extension). The strap works against it, so its
+  // moment is about -EffortAxisZ * z and the sideways part of the pull points along (-EffortAxisZ * z) x ShankDir.
+  AnyVec3 Tangent = cross(-Main.Position.EffortAxisZ * {0, 0, 1}, ShankDir);
+
+  // limbtrack's pull angle: between the pull and the shank, read from the knee towards the ankle. 90 deg = square to the shank.
+  AnyVar PullAngle = Main.Position.PullAngle_deg * pi / 180;
+  AnyVec3 PullDir = cos(PullAngle) * ShankDir + sin(PullAngle) * Tangent;
+
+  AnyForce3D StrapForce =
+  {
+    AnyRefFrame &ref = Main.Model.TestedLeg.Seg.Shank.StrapNode;
+    F = Main.Position.Force_N * .PullDir;
+  };
+};

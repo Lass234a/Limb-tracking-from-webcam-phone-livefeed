@@ -1,0 +1,88 @@
+// SeatedKnee.main.any
+// The shared model of the seated knee MVIC positions (knee extension and knee flexion, hip 90 deg).
+// Written for AMMR 3.2.x on AnyBody 8.2, from the AMMR 3.2.1 human template (Tools/Templates/Human).
+// NOT RUN IN ANYBODY YET: go through references/first-run-checklist.md of the skill anybody-position-models first.
+//
+// Do not type numbers here. They come from two small files that tools/anybody_models.py writes next to the opening Main.any:
+//   <PARTICIPANT_DIR>/Participant.any   height, mass, fat, thigh and shank length of the person
+//   <POSITION_DIR>/Position.any         joint angles, force, direction of the force, strap place (edit this file to adjust a position)
+#include "libdef.any"
+
+// AMMR tool: finds the load at which the highest muscle activity reaches 1 (a class template: it only defines, it runs nothing)
+#include "<ANYBODY_PATH_MODELUTILS>/Validation/EvaluateMaxExternalLoad.any"
+
+Main =
+{
+  // The position first: it holds #define lines (which leg is tested, which body parts are off) that the body model reads when it loads
+  #include "<POSITION_DIR>/Position.any"
+
+  #ifndef WITH_CHECKS
+  #define WITH_CHECKS 0
+  #endif
+  #ifndef WITH_MAXLOAD
+  #define WITH_MAXLOAD 0
+  #endif
+
+  // Body model configuration: leg model, simple muscles, scaling law
+  #include "Model/BodyModelConfiguration.any"
+
+  // The person (AMMR reads Main.HumanModel.Anthropometrics when the scaling law uses length, mass and fat)
+  #include "<PARTICIPANT_DIR>/Participant.any"
+
+  // Posture of the tested leg, read from Main.Position
+  #include "Model/Mannequin.any"
+
+  // The default human model
+  #include "<ANYBODY_PATH_BODY>/HumanModel.any"
+
+  AnyFolder Model =
+  {
+    // Links to the human model, as in the AMMR template
+    AnyFolder &BodyModel = .HumanModel.BodyModel;
+    AnyFolder &DefaultMannequinDrivers = .HumanModel.DefaultMannequinDrivers;
+
+    // The tested leg, and the strap and thigh-fixation nodes added to it
+    #include "Model/TestedLeg.any"
+
+    // The bench is not drawn: its work is done by the reaction forces. The folder is kept because the AMMR template has it.
+    #include "Model/Environment.any"
+
+    // The pull of the strap, measured by the load cell
+    #include "Model/Loads.any"
+
+    AnyFolder ModelEnvironmentConnection =
+    {
+      #include "Model/JointsAndDrivers.any"
+      // The pelvis and the thigh are held by the bench, the pelvic belt and the thigh strap
+      #include "Model/Reactions.any"
+    };
+  };
+
+  AnyBodyStudy Study =
+  {
+    AnyFolder &Model = .Model;
+
+    Gravity = {0.0, -9.81, 0.0};
+    nStep = 1;                                  // one posture, held: no movement
+    // Overdeterminate solver is needed while using the soft default mannequin drivers (as in the AMMR human template)
+    Kinematics.SolverType = KinSolOverDeterminate;
+    InitialConditions.SolverType = Kinematics.SolverType;
+    // Maximum voluntary effort: minimise the highest muscle activity. The AMMR tool EvaluateMaxLoad needs this criterion.
+    InverseDynamics.Criterion.Type = MR_MinMaxStrict;
+  };
+
+  // Optional read-backs: the angles and the force direction the model really got (switch: WITH_CHECKS in Position.any)
+  #if WITH_CHECKS == 1
+  #include "Model/Checks.any"
+  #endif
+
+  // Optional: the load at which the highest muscle activity reaches 1, from two runs (switch: WITH_MAXLOAD in Position.any)
+  #if WITH_MAXLOAD == 1
+  EvaluateMaxLoad MaxLoading(STUDY = Main.Study) =
+  {
+    LoadPtr = &Main.Position.Force_N;
+  };
+  #endif
+
+  #include "Model/RunAppSequence.any"
+};

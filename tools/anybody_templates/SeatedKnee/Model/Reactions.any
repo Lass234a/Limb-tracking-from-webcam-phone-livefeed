@@ -1,0 +1,27 @@
+// Reaction forces: what the bench and the straps give the body. They are free unknowns of the inverse dynamics (no muscle cost).
+AnyFolder Reactions =
+{
+  // The pelvis is held (bench, pelvic belt, the hands on the bench). Same as the AMMR human template: there is no support under the feet.
+  AnyReacForce PelvisReactions =
+  {
+    AnyKinLinear lin =
+    {
+      AnyRefFrame& pelvis = Main.HumanModel.BodyModel.Trunk.SegmentsLumbar.PelvisSeg;
+    };
+    AnyKinRotational rot =
+    {
+      Type = RotAxesAngles;
+      AnyRefFrame& pelvis = Main.HumanModel.BodyModel.Trunk.SegmentsLumbar.PelvisSeg;
+    };
+  };
+
+  // The thigh is held to the bench by the fixation strap over the distal femoral shaft. Without this, the hip muscles would have to take the
+  // moment of the knee and the test would load the wrong muscles. A point support (three forces), not a moment.
+  AnyReacForce ThighFixation =
+  {
+    AnyKinLinear lin =
+    {
+      AnyRefFrame& thigh = Main.Model.TestedLeg.Seg.Thigh.FixationNode;
+    };
+  };
+};

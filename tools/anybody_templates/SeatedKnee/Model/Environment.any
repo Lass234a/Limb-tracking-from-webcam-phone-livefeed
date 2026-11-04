@@ -1,0 +1,5 @@
+// Place holder for the environment, as in the AMMR human template.
+// The bench, the pelvic belt and the thigh strap are not drawn. Their work is done by the reaction forces in Reactions.any.
+AnyFolder Environment =
+{
+};

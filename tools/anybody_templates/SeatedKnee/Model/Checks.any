@@ -1,0 +1,38 @@
+// Read-backs for the first run (switch: WITH_CHECKS in Position.any). They show what the model really got, to be compared with what
+// Position.any asked for. tools/anybody_models_run.py compares them with the expected values in manifest.json.
+// If one line does not load in your AnyBody version, set WITH_CHECKS to 0 and tell us which line: nothing else depends on this file.
+AnyFolder Check =
+{
+  AnyFolder &Shank = Main.Model.TestedLeg.Seg.Shank;
+  AnyFolder &Loads = Main.Model.Loads;
+
+  // Joint angles reached, degrees, AnyBody's convention (the AMMR interface measures are in radians)
+  AnyVar KneeFlexion_deg = Main.Model.TestedInterface.KneeFlexion.Pos[0] * 180 / pi;
+  AnyVar AnklePlantarFlexion_deg = Main.Model.TestedInterface.AnklePlantarFlexion.Pos[0] * 180 / pi;
+
+  // The pull: angle to the shank axis (should equal Position.PullAngle_deg) and the direction itself, global
+  AnyVec3 ShankDir = Loads.ShankDir;
+  AnyVec3 PullDir = Loads.PullDir;
+  AnyVar PullDotShank = ShankDir[0] * PullDir[0] + ShankDir[1] * PullDir[1] + ShankDir[2] * PullDir[2];
+  AnyVar PullAngle_deg = atan2(vnorm(cross(ShankDir, PullDir)), PullDotShank) * 180 / pi;
+
+  // Lever arm of the pull about the knee joint, and the moment it makes (force times lever arm, no gravity)
+  AnyVar LeverArm_m = vnorm(cross(Shank.StrapNode.r - Shank.KneeJoint.r, PullDir));
+  AnyVar ExternalKneeMoment_Nm = Main.Position.Force_N * LeverArm_m;
+
+  // Lengths in the scaled model, to compare with the tape measures of the person
+  AnyVar ShankLength_m = vnorm(Shank.AnkleJoint.r - Shank.KneeJoint.r);
+  AnyVar StrapToKnee_m = vnorm(Shank.StrapNode.r - Shank.KneeJoint.r);
+
+  // An arrow for the pull, to look at in the model view
+  AnyDrawVector DrawPull =
+  {
+    AnyRefFrame& ref = Main.Model.TestedLeg.Seg.Shank.StrapNode;
+    Vec = Main.Position.Force_N * PullDir / 1000;
+    GlobalCoord = On;
+    PointAway = Off;
+    Line.Thickness = 0.005;
+    Line.End.Style = Line3DCapStyleArrow;
+    Line.RGB = {0, 0, 1};
+  };
+};

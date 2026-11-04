@@ -40,3 +40,6 @@ replay_cache.json
 truth_candidates.csv
 # collections made by tools/collect_pilot.py (<pilot folder>_collection: copies of participant data)
 *_collection/
+# models made by tools/anybody_models.py (participant codes, forces, measures): never commit
+AnyBody_models/
+Export/

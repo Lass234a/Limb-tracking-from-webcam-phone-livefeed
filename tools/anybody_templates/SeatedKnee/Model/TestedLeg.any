@@ -1,0 +1,36 @@
+// The tested leg, and the two places the model adds to it:
+//   StrapNode      on the shank, where the strap with the load cell pulls
+//   FixationNode   on the distal thigh, where the thigh strap and the bench hold the thigh
+// Included inside Main.Model, after the human model. TESTED_LEG_IS_RIGHT is set in Position.any.
+#if TESTED_LEG_IS_RIGHT == 1
+AnyFolder &TestedLeg = Main.HumanModel.BodyModel.Right.Leg;
+AnyFolder &TestedInterface = Main.HumanModel.BodyModel.Interface.Right;
+#else
+AnyFolder &TestedLeg = Main.HumanModel.BodyModel.Left.Leg;
+AnyFolder &TestedInterface = Main.HumanModel.BodyModel.Interface.Left;
+#endif
+
+// The shank's own frame is used for both nodes: the knee and ankle joint nodes of the AMMR leg are in the same frame.
+TestedLeg.Seg.Shank =
+{
+  AnyRefNode StrapNode =
+  {
+    // Unit vector along the shank, from the ankle joint towards the knee joint
+    AnyVec3 uUp = (.KneeJoint.sRel - .AnkleJoint.sRel) / vnorm(.KneeJoint.sRel - .AnkleJoint.sRel);
+    // StrapFromKnee = 0: the strap is StrapDist_m above the ankle joint axis (the lateral malleolus is taken as the ankle axis)
+    // StrapFromKnee = 1: the strap is StrapDist_m below the knee joint
+    sRel = (1 - Main.Position.StrapFromKnee) * (.AnkleJoint.sRel + Main.Position.StrapDist_m * uUp)
+         + Main.Position.StrapFromKnee * (.KneeJoint.sRel - Main.Position.StrapDist_m * uUp);
+  };
+};
+
+TestedLeg.Seg.Thigh =
+{
+  AnyRefNode FixationNode =
+  {
+    // Unit vector along the thigh, from the hip joint towards the knee joint
+    AnyVec3 uDown = (.KneeJoint.sRel - .HipJoint.sRel) / vnorm(.KneeJoint.sRel - .HipJoint.sRel);
+    // ThighFixationDist_m above the knee joint, on the line between the hip and knee joints
+    sRel = .KneeJoint.sRel - Main.Position.ThighFixationDist_m * uDown;
+  };
+};

@@ -1,0 +1,14 @@
+// Points the model at the AMMR (3.0 or newer; written against 3.2.1 on AnyBody 8.2).
+// If AnyBody cannot find the AMMR, replace the #include line with the libdef.any of the AMMR you use, for example
+//   #include "<ANYBODY_PATH_MYFILES>/AnyBody.8.2.x/AMMR/libdef.any"
+// tools/anybody_models.py --ammr-libdef PATH writes that line for you.
+#ifndef LIBDEF_ANY
+#include "<ANYBODY_PATH_INSTALLDIR>/AMMR/libdef.any"
+#endif
+
+#if AMMR_VERSION_MAJOR < 3
+Main =
+{
+  ERROR "Wrong AMMR version. Please modify libdef.any to point to the AMMR 3.x you use."
+};
+#endif

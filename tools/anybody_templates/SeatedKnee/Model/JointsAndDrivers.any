@@ -1,0 +1,8 @@
+// Joints and drivers: the default mannequin drivers of the human model set the posture (Mannequin.any), so nothing is added here.
+AnyFolder Joints =
+{
+};
+
+AnyFolder Drivers =
+{
+};

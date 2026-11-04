@@ -1,0 +1,30 @@
+// Posture of the seated knee test. Angles in degrees, AnyBody's own convention (see Position.any).
+// Only the values set here are changed; everything else keeps the AMMR default. The left leg mirrors the right by default (AMMR),
+// so the posture is written for the right leg whichever leg is tested.
+HumanModel.Mannequin =
+{
+  Posture =
+  {
+    // The pelvis is held fixed in space and upright, the trunk upright: the participant sits on the edge of the bench.
+    // Where it is held does not matter for the forces; the height is only for the picture.
+    PelvisPosX = 0.0;
+    PelvisPosY = 0.60;
+    PelvisPosZ = 0.0;
+
+    PelvisRotX = 0;
+    PelvisRotY = 0;
+    PelvisRotZ = 0;
+
+    Right =
+    {
+      HipFlexion = Main.Position.HipFlexion_deg;
+      HipAbduction = Main.Position.HipAbduction_deg;
+      HipExternalRotation = Main.Position.HipExternalRotation_deg;
+
+      KneeFlexion = Main.Position.KneeFlexion_deg;
+
+      AnklePlantarFlexion = Main.Position.AnklePlantarFlexion_deg;
+      SubTalarEversion = Main.Position.SubTalarEversion_deg;
+    };
+  };
+};

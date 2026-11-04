@@ -1,0 +1,18 @@
+// Body model configuration of the MVIC position models (AMMR 3.2.x).
+// Options: #path HTML_DOC "<AMMR_PATH_DOC>/bm_config/index.html"
+// Which leg is tested and which body parts are off is decided per position, in Position.any (it is read before this file).
+#path __BM_PLUGIN_FILE__ "BodyModelConfiguration.any"
+#define BM_CONFIG_PLUGIN __BM_PLUGIN_FILE__
+
+// Lower extremity model, as in the AMMR human template
+#define BM_LEG_MODEL _LEG_MODEL_TLEM2_
+
+// The study protocol uses the simple muscle model: constant strength, independent of muscle length
+#define BM_LEG_MUSCLES_BOTH _MUSCLES_SIMPLE_
+
+// Height, mass and fat scale the whole model; thigh and shank length come from the tape (Participant.any)
+#define BM_SCALING _SCALING_LENGTHMASSFAT_
+
+// Strength index of the leg muscles. 1.0 is the AMMR default. It is a design variable (Main.HumanModel.StrengthParameters.StrengthIndexLeg),
+// so a later scaling step can change it without loading the model again.
+#define BM_LEG_STRENGTH_INDEX 1.0

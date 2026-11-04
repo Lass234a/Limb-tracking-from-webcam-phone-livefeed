@@ -1,0 +1,16 @@
+// The operations, in the order to run them (as in the AMMR human template).
+// For results, run them one by one (tools/anybody_models_run.py does): the MaxLoad evaluation runs the study again at two other loads,
+// so the study results are of the measured force only before it.
+AnyOperationSequence RunApplication =
+{
+  // Calibrates muscles of the 3-element Hill type; an empty operation for the simple muscles used here
+  AnyOperation &CalibrationAnal = Main.HumanModel.Calibration.CalibrationSequence;
+
+  // The inverse dynamic analysis at the measured force
+  AnyOperation &InvAnal = Main.Study.InverseDynamics;
+
+  #if WITH_MAXLOAD == 1
+  // The load at which the highest muscle activity reaches 1 (AMMR tool EvaluateMaxLoad)
+  AnyOperation &MaxLoadAnal = Main.MaxLoading.Evaluate;
+  #endif
+};
