@@ -1,6 +1,6 @@
 opencv-python>=5.0
 numpy>=2.0
-PySide6>=6.6
+PySide6>=6.6,<6.12                       # below 6.12: with 6.12.0 the test processes abort at exit with heap corruption in Qt's offscreen display plugin (reproduced; cause not found; 6.11.2, the pilot's version, is clean)
 pyqtgraph>=0.13
 pytest>=8.0
 nidaqmx>=1.0                              # force from an NI DAQ (also needs the NI-DAQmx driver); optional: the program runs without it

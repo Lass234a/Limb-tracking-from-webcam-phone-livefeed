@@ -3,7 +3,9 @@
 
 Remembered: the camera (by NAME, because the numbers change between restarts), the test and target, tolerances, dot colour, which way
 the participant faces, mirror, landmarks, force settings, the automatic MVIC and sound settings, the camera model, the
-ruler length, which panel section was open, the window shape, and the participant code if the program was used in the last 12 hours.
+ruler length, which panel section was open, the window shape, and the participant code if the program was used in the last 12 hours,
+with the tested leg of each participant, the typed participant measures of each participant (0.34.0) and the set-up facts typed for each
+position (0.34.0; participant, test, target): these come back only together with a participant code, that is, within the same 12 hours.
 The Review tab's two divider positions are kept in their own top-level part of the file (`review_ui`), written by the Review tab.
 
 NOT remembered, on purpose: the marked dots and the lock (the picture is different), the force zero (the rig hangs differently), the

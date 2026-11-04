@@ -439,6 +439,8 @@ class OverviewPage(QWidget):
 
     openRequested = Signal(str)          # the base name of the trial that was double-clicked / activated
     exportRequested = Signal(bool)       # True: valid trials only (the Export menu of 0.32.0 calls the exports itself; kept for code that listens)
+    sessionCheckRequested = Signal()     # 0.34.0 (F7): the Session check button
+    rowsFinished = Signal()              # a run of rows ended (the session check line is brought up to date)
     approvalChanged = Signal()           # the participant was approved, or the trials changed since the approval (the label says which)
 
     def __init__(self, row_fn, parent=None, parallel=False):
@@ -512,6 +514,14 @@ class OverviewPage(QWidget):
             f"QPushButton:hover {{ background: {tint(ACCENT, 0.12)}; }}"
             "QPushButton:disabled { border-color: palette(mid); color: palette(mid); font-weight: normal; }")
         self.approve_button.clicked.connect(lambda: self.request_approval())
+        self.session_button = QPushButton("Session check")
+        self.session_button.setFocusPolicy(Qt.NoFocus)
+        self.session_button.setEnabled(False)
+        self.session_button.setToolTip("What is still missing for this participant: positions not recorded, a third trial needed, trials not judged, "
+                                       "reference readings, where the strap sat, the participant measures. It only reads; it changes nothing.")
+        self.session_button.clicked.connect(self.sessionCheckRequested.emit)
+        self.session_label = ElidedLabel("")
+        self.session_label.setObjectName("hint")
         self.export_button, self.more_button = QToolButton(), QToolButton()
         for b, text, tip in ((self.export_button, "Export", "Save this participant's numbers (all trials, or the valid ones) or the open trial's files."),
                              (self.more_button, "More", "Open the review folder, reference validation, or a single trial file.")):
@@ -532,6 +542,7 @@ class OverviewPage(QWidget):
         top.addWidget(QLabel("Show:"))
         top.addWidget(self.filter)
         top.addWidget(self.approve_button)
+        top.addWidget(self.session_button)
         top.addWidget(self.export_button)
         top.addWidget(self.more_button)
 
@@ -570,6 +581,7 @@ class OverviewPage(QWidget):
         lay.setSpacing(4)
         lay.addLayout(top)
         lay.addWidget(self.approval_label)
+        lay.addWidget(self.session_label)
         lay.addWidget(self.table, 1)
         lay.addWidget(self.progress)
         lay.addWidget(self.hint)
@@ -599,6 +611,7 @@ class OverviewPage(QWidget):
         self.cache_hits = 0
         self._approvals = review_layer.read_approvals(folder) if folder else []
         self._approval = self._approvals[-1] if self._approvals else {}
+        self.session_label.setText("")
         self._refresh_approval(emit=False)
         self.flush(full=True)
 
@@ -663,6 +676,7 @@ class OverviewPage(QWidget):
         todo = self.stale_entries()
         if not todo:
             self.flush()
+            self.rowsFinished.emit()
             return
         if self._running:                # a cancelled run is still finishing: start again when it has
             self._again = True
@@ -779,6 +793,7 @@ class OverviewPage(QWidget):
         self._save_disk_cache()
         self.flush()
         self._refresh_approval()
+        self.rowsFinished.emit()
         if self._again:
             self._again = False
             self.ensure_rows()
@@ -1090,6 +1105,7 @@ class OverviewPage(QWidget):
         colour = (WARN if state["changed"] or state["removed"] else GOOD) if state["approved"] else None
         self.approval_label.setStyleSheet(f"color: {colour};" if colour else "")
         self.approve_button.setEnabled(bool(self.entries))
+        self.session_button.setEnabled(bool(self.entries))
         if emit and (self.approval_label.text(), self._changed_since) != before:
             if self.filter.currentData() == "changed":
                 self.flush()

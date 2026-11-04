@@ -11,11 +11,13 @@ from pathlib import Path
 
 import numpy as np
 
+from . import angle_reference
 from .force import NO_FORCE_RISE_N, WINDOW_PEAK_DEFAULT_S
 from .loadcell import GRAVITY
 from .pull import compute_pull
 from .rest import clock_text
-from . import privacy_fix, verdict as verdicts
+from . import check_weight, privacy_fix, stabilisation, standing_reference, study_settings
+from . import verdict as verdicts
 
 HUM_WARN_PCT = 3.0              # 50 Hz hum above this share of the force rise is flagged
 FPS_WARN = 20.0                 # fewer pictures per second than this are flagged
@@ -433,6 +435,10 @@ def trial_check_items(tr, t0=None, t1=None):
             rm = relaxed_mismatch(fs["unit"], fs["relaxed"], fs["rest_mean"], fs["peak_minus_rest"])                        # 0.26.0
             if rm:
                 add("check", rm, "Zero 2 does not fit this trial", "force", "zero")
+        if fs is not None:                                             # 0.34.0 (F5): did the pelvis and the neighbouring segment stay still?
+            stab = stabilisation.check_item(stabilisation.of_trial(tr, *w, fs=fs))
+            if stab is not None:
+                add(stab[0], stab[1], stab[2], "position")
         fw = tr.force_window()
         hw = tr.hold_window()
         if fw and hw:
@@ -455,6 +461,12 @@ def trial_check_items(tr, t0=None, t1=None):
             else:
                 add("check", f"The automatic MVIC markers were on, but the force never rose by {am.get('threshold')} {am.get('unit')}: no start was marked. "
                               "Use 'Window = force above half of peak'.", "No automatic MVIC start marked", "force", "window")
+    st_line = standing_reference.check_line(m.get("standing_reference"), angle_reference.offsets_from_meta(m))      # 0.34.0 (F4)
+    if st_line:
+        add("info", st_line, "Standing reference in the file", "position")
+    study = study_settings.check_item(m.get("study_settings"))         # 0.35.0 (F13): recorded with settings that differ from the study's frozen list
+    if study is not None:
+        add(*study, "recording")
     # strap and anchor
     if "anchor" in tr.tracks:
         ax, ay = tr.tracks["anchor"]
@@ -588,7 +600,10 @@ SESSION_COLUMNS = ["trial", "position_number", "trial_number", "participant", "t
                    "force_zero_v", "force_zero_source", "force_zero_drift_n",                                # 0.30.0
                    "data_source", "review_edits", "dots_corrected_pictures",                                  # 0.30.0: original / reviewed, and what was edited
                    "checks_to_look_at", "verdict", "verdict_reasons", "verdict_note", "repeatability_pct_same_position", "third_trial_needed",
-                   "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis"]
+                   "reference_main_deg", "reference_instrument", "app_main_at_reading_deg", "app_minus_reference_main_deg", "reference_app_basis",
+                   *stabilisation.COLUMNS,                                                                   # 0.34.0 (F5): rest to peak force, the pelvis and the segment that must stay still
+                   *standing_reference.COLUMNS,                                                              # 0.34.0 (F4): the standing offsets and segment lengths of the participant
+                   *check_weight.COLUMNS]                                                                    # 0.35.0 (F8): the latest check of the force against a known mass
 
 
 def other_angles_at_peak(fs):
@@ -605,15 +620,21 @@ def other_angles_at_peak(fs):
     return out
 
 
+def trial_window(tr):
+    """((start, end) seconds, where it comes from) of the window the export row of a trial is worked out in: from the force when there is
+    force, else the MVIC markers, else the whole trial. The same rule `session_row` has always used (0.34.0: moved out so the AnyBody export
+    reads the same window)."""
+    if tr.has_force() and tr.force_window():
+        return tr.force_window(), "force above half of peak"
+    if tr.hold_window():
+        return tr.hold_window(), "MVIC markers"
+    return (float(tr.t[0]), float(tr.t[-1])), "whole trial"
+
+
 def session_row(tr):
     """The key numbers of one trial (window from the force when there is force, else the MVIC markers, else the whole trial)."""
     m = tr.meta
-    if tr.has_force() and tr.force_window():
-        win, src = tr.force_window(), "force above half of peak"
-    elif tr.hold_window():
-        win, src = tr.hold_window(), "MVIC markers"
-    else:
-        win, src = (float(tr.t[0]), float(tr.t[-1])), "whole trial"
+    win, src = trial_window(tr)
     row = {k: "" for k in SESSION_COLUMNS}
     row.update(trial=tr.base, position_number=m.get("position_number") or "", trial_number=m.get("trial_number") or "",   # (0.20.0)
                participant=m.get("participant"), test_key=m.get("test_key"), target_deg=m.get("target_deg"),
@@ -641,6 +662,10 @@ def session_row(tr):
         fp = force_peaks(tr, *win, timing=ft)
         row.update(force_window_peak=fp["window_peak"], force_window_peak_ms=fp["window_peak_ms"], force_window_peak_at_s=fp["window_peak_at_s"],
                    force_time_to_peak_s=fp["time_to_peak_s"], force_time_to_window_peak_s=fp["time_to_window_peak_s"])
+    if fs is not None:                                                                            # 0.34.0 (F5): blank where it cannot be given
+        row.update(stabilisation.export_cells(stabilisation.of_trial(tr, *win, fs=fs)))
+    row.update(standing_reference.export_cells(m))                                                # 0.34.0 (F4): blank for a trial without a standing reference
+    row.update(check_weight.export_cells(m))                                                      # 0.35.0 (F8): blank for a trial without a check weight in its file
     row["data_source"] = getattr(tr, "source", "original")
     row["review_edits"] = "; ".join(getattr(tr, "review_notes", []) or [])
     row["dots_corrected_pictures"] = sum(len(v) for v in (getattr(tr, "edited", None) or {}).values()) or ""
@@ -789,6 +814,13 @@ def position_check(rows):
                         f"{best[0]:.1f} %): {listing}. Note it in the deviation log; no further trial (SOP 10.6).{more}{notes}"}
     return {"state": "ok", "pct": spread, "n": n,
             "text": f"10 % check: trials {best[1]} and {best[2]} differ by {best[0]:.1f} % of their mean (all {k}: {spread:.1f} %): {listing}.{more}{notes}"}
+
+
+def anybody_rows(*args, **kwargs):
+    """0.34.0 (F1): the AnyBody input rows, one per participant and position (limbtrack/anybody.py `build`; the module is read when first
+    used, it reads this one)."""
+    from . import anybody
+    return anybody.build(*args, **kwargs)
 
 
 def write_session_csv(rows, path):

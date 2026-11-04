@@ -29,7 +29,8 @@ from .filters import SMOOTHING_WINDOW_S, MovingAverage
 from .force import NO_FORCE_RISE_N, smooth_signal
 from .loadcell import GRAVITY, find_regression
 from .recorder import FrameSizeChanged, TrialRecorder
-from . import cues, privacy, provenance
+from . import check_weight as check_mod, cues, participant_measures as measures_mod, privacy, provenance, setup_facts as setup_mod, standing_reference as standing_mod
+from . import study_settings as study_mod
 from .angle_reference import DEFAULT_REFERENCE_DEG, AngleReference, check_value as _check_reference_value
 from .reference import INSTRUMENTS, ReferenceReadings
 from .pull import compute_pull, describe as describe_pull
@@ -39,7 +40,7 @@ from .results import LOST, OK, OUT, FrameResult
 from .tracker import NEIGHBOUR_EXCLUSION_FACTOR, DotState, TrackerSet, to_gray
 from .tracker import settings as tracker_settings
 
-SOFTWARE_VERSION = "0.33.0"
+SOFTWARE_VERSION = "0.35.0"
 META_SCHEMA = 2             # 2: provenance, settings snapshot, gaps, partial-dot counts, source_frame
 LOST_CLICK_REACH_PX = 150      # a click this near a lost dot's frozen position re-marks that lost dot
 RE_MARK_MIN_REACH_PX = 15      # a click must be at least this near a tracked dot (or 2 x its diameter) to re-mark it
@@ -89,7 +90,7 @@ SNAPSHOT_KEYS = ["participant", "notes", "test_key", "test_label", "target_deg",
                  "neighbour_targets_deg", "dots_used", "dots_disabled", "optional_dots_used", "position_locked", "locked_references_deg", "dot_kind",
                  "facing", "mirrored_image", "smoothing", "trails", "three_point", "three_point_convention", "angles", "overlay_video_saved", "camera_setup_checklist",
                  "privacy", "force_setup", "auto_mvic_setup", "audio_cues", "view", "tested_leg", "tape_pelvic_width_mm", "reference_readings",
-                 "angle_reference"]
+                 "angle_reference", "participant_measures", "setup", "standing_reference", "check_weight", "rig_check"]
 
 
 class Engine:
@@ -170,6 +171,10 @@ class Engine:
         self.facing_right = True     # which way the participant faces in the image (matters for signed angles)
         self._legs = {}              # participant code -> the tested leg, 'right' / 'left' (see the tested_leg property; 0.20.0)
         self._rec_leg = None         # the tested leg of the trial being recorded (taken when it starts)
+        self._measures = {}          # participant code -> the typed participant measures (see the participant_measures property; 0.34.0)
+        self._rec_measures = {}      # the measures of the trial being recorded (taken when it starts)
+        self._setups = {}            # (participant code, test key, target) -> {"facts", "typed_at", "used"}: the set-up facts typed for a position (0.34.0)
+        self._rec_setup = None       # the set-up facts of the trial being recorded: (facts, typed_at, prefilled, key), taken when it starts
         self._participant_code = ""  # the participant code in the window (see the participant_code property)
         self._pelvis_owner = None    # participant code the tape measure and the wall tick were entered for (None: before a code)
         self.pelvis_facts_cleared_for = None   # set when they were cleared for another participant: whose they were (the window says so)
@@ -177,6 +182,15 @@ class Engine:
         self.wall_posture = False    # frontal tests: the operator ticked that the participant stands against a wall (heel, buttocks, back touching)
         self.reference = ReferenceReadings()   # what the operator typed from a goniometer or inclinometer, and the app's angles at that moment (limbtrack/reference.py)
         self.angle_ref = AngleReference()      # "the joint is at 0 now, the dots read 10": the offsets the angles are shown and judged from (limbtrack/angle_reference.py, 0.33.0)
+        self._check_weight = None    # the latest check weight of this program run (limbtrack/check_weight.py, 0.35.0), or None
+        self._rig_check = None       # the latest saved rig check (limbtrack/rig_check.py, 0.35.0), or None
+        self._beep_check_t0 = None   # when the rig check's three beeps were asked for (beep_check)
+        self.study_block = None      # the study's frozen settings of protocol.json (study_settings.clean; set by the window), or None: nothing is compared (0.35.0)
+        self.study_extras = {}       # numbers of the window's own code the comparison needs (study_settings._extra), set by the window
+        self._standing_cap = None    # the standing capture under way (limbtrack/standing_reference.py, 0.34.0), or None
+        self._standing_cap_key = None   # the angles and the dots it began with (a change cancels it)
+        self._standing_all = {}      # participant code -> the record of that participant's standing capture (a thin layer on angle_ref)
+        self._standing_msg = ""      # what the last capture said (kept until the next one is started)
         self._last_derived = {}      # computed points of the latest picture (the hip centre of a frontal test)
         self._rigid_ref = {}         # (dotA, dotB) of protocol rigid_pairs -> their distance in pixels when they were marked (0.19.0)
         self._dots_apart = {}        # pairs of the latest picture whose distance changed by more than RIGID_PAIR_CHANGE -> the change (fraction)
@@ -800,6 +814,132 @@ class Engine:
         self._forbid_while_recording("which leg is tested")
         self._legs = {str(k): v for k, v in dict(legs or {}).items() if k and v in ("right", "left")}
 
+    # ------------------------------------------------- participant measures and set-up facts (0.34.0; typed by the operator, never measured)
+    @property
+    def participant_measures(self):
+        """The measures typed for the participant code in the window (height, mass, body fat, thigh and shank length, ASIS width; only
+        those that have a value), see limbtrack/participant_measures.py. They belong to the participant code like the tested leg.
+        While recording: the ones the trial started with."""
+        if self.rec is not None:
+            return dict(self._rec_measures)
+        return measures_mod.entered(self._measures.get(self._participant_code))
+
+    @participant_measures.setter
+    def participant_measures(self, values):
+        self._forbid_while_recording("the participant measures")
+        clean = measures_mod.clean(values)                  # (raises ValueError before anything is kept)
+        if measures_mod.entered(clean):
+            self._measures[self._participant_code] = clean
+        else:
+            self._measures.pop(self._participant_code, None)
+
+    def set_participant_measure(self, key, value):
+        """Keep one measure (None clears it) for the participant code in the window. ValueError, with a sentence for the operator, for an
+        unknown measure or an implausible value; RuntimeError while recording."""
+        self.participant_measures = {**self.participant_measures, key: value}
+
+    @property
+    def participant_measures_all(self):
+        """Participant code -> the measures typed for it (what the window remembers with the participant code)."""
+        return {k: measures_mod.entered(v) for k, v in self._measures.items() if k and measures_mod.entered(v)}
+
+    @participant_measures_all.setter
+    def participant_measures_all(self, all_values):
+        self._forbid_while_recording("the participant measures")
+        out = {}
+        for code, values in dict(all_values or {}).items():
+            try:
+                clean = measures_mod.clean(values)
+            except (ValueError, TypeError):
+                continue                                    # one bad remembered entry must not lose the others
+            if code and measures_mod.entered(clean):
+                out[str(code)] = clean
+        self._measures = out
+
+    def measures_picture_check(self):
+        """The typed thigh and shank lengths of this participant against the latest picture (ruler scale): see participant_measures.picture_check.
+        {} without a ruler, a typed length or both dots."""
+        xy = {n: (st.x, st.y) for n, st in self._last_states.items() if not st.lost}
+        return measures_mod.picture_check(self.participant_measures, xy, self.scale.live_px_per_cm())
+
+    def _participant_measures_meta(self):
+        check = self.rec_info.get("measures_check") if self.rec is not None else self.measures_picture_check()
+        return measures_mod.meta_block(self.participant_measures, check)
+
+    def setup_key(self):
+        """(participant code, test key, target) the set-up facts belong to. While recording: the trial's own position."""
+        who = self.rec_info.get("participant") if self.rec is not None else self._participant_code
+        return (who or "", self.test.key, None if self.target is None else round(float(self.target), 3))
+
+    @property
+    def setup_facts(self):
+        """The set-up facts typed for this participant, test and target (strap distance from a named landmark, supports, seat/back angle;
+        see limbtrack/setup_facts.py), or None when nothing was noted. They stay for the next trial of the same position (prefilled)."""
+        if self.rec is not None:
+            return None if self._rec_setup is None else dict(self._rec_setup[0])
+        entry = self._setups.get(self.setup_key())
+        return None if entry is None else dict(entry["facts"])
+
+    @setup_facts.setter
+    def setup_facts(self, facts):
+        self._forbid_while_recording("the set-up facts")
+        clean = setup_mod.clean(facts)                     # (raises ValueError before anything is kept)
+        key = self.setup_key()
+        old = self._setups.get(key)
+        if setup_mod.is_empty(clean):
+            self._setups.pop(key, None)
+        elif old is None or old["facts"] != clean:         # an edit makes it 'typed now' again; the same values typed again change nothing
+            self._setups[key] = {"facts": clean, "typed_at": datetime.now().isoformat(timespec="seconds"), "used": False}
+
+    @property
+    def setup_state(self):
+        """(typed_at, used) of the set-up facts of this position: when they were typed, and whether a trial was already recorded with them
+        (then they are carried over, not newly typed). None when nothing is noted."""
+        entry = self._setups.get(self.setup_key())
+        return None if entry is None else (entry["typed_at"], entry["used"])
+
+    @property
+    def setups_all(self):
+        """Every typed set-up as a list of {participant, test, target, facts, typed_at, used} (what the window remembers)."""
+        return [{"participant": k[0], "test": k[1], "target": k[2], "facts": dict(v["facts"]), "typed_at": v["typed_at"], "used": v["used"]}
+                for k, v in self._setups.items() if k[0]]
+
+    @setups_all.setter
+    def setups_all(self, entries):
+        self._forbid_while_recording("the set-up facts")
+        out = {}
+        for e in list(entries or []):
+            try:
+                key = (str(e["participant"]), str(e["test"]), None if e["target"] is None else round(float(e["target"]), 3))
+                facts = setup_mod.clean(e["facts"])
+            except (KeyError, ValueError, TypeError):
+                continue                                    # one bad remembered entry must not lose the others
+            if key[0] and not setup_mod.is_empty(facts):
+                out[key] = {"facts": facts, "typed_at": str(e.get("typed_at") or ""), "used": bool(e.get("used"))}
+        self._setups = out
+
+    def _take_setup_for_trial(self):
+        """At the start of a recording: the set-up facts this trial is saved with, as (facts, typed_at, prefilled, key), or None. Prefilled = they
+        were already saved with an earlier trial of this position and have not been changed since."""
+        entry = self._setups.get(self.setup_key())
+        if entry is None:
+            return None
+        return (dict(entry["facts"]), entry["typed_at"], bool(entry["used"]), self.setup_key())
+
+    def _mark_setup_used(self):
+        """The set-up facts of this position have gone into a trial: the next trial's copy is 'prefilled' until someone changes them."""
+        entry = self._setups.get(self._rec_setup[3]) if self._rec_setup is not None else None
+        if entry is not None:
+            entry["used"] = True
+
+    def _setup_meta(self):
+        if self.rec is not None:
+            taken = self._rec_setup
+        else:
+            entry = self._setups.get(self.setup_key())
+            taken = None if entry is None else (entry["facts"], entry["typed_at"], entry["used"])
+        return None if taken is None else setup_mod.meta_block(taken[0], typed_at=taken[1], prefilled=taken[2])
+
     def _pelvis_facts_entered(self):
         given = getattr(self, "_tape_pelvic_width_mm", None) is not None or bool(getattr(self, "_wall_posture", False))   # (both set in __init__)
         self._pelvis_owner = (self._participant_code or None) if given else None
@@ -917,6 +1057,204 @@ class Engine:
 
     def _angle_reference_meta(self):
         return self.angle_ref.to_meta(self.angle_reference_owner(), names={a.name for a in self.active_angles})
+
+    # ------------------------------------------------- standing reference (0.34.0): a thin layer on the angle reference
+    def start_standing_reference(self, readings=None, instrument=""):
+        """Begin the 3 s standing capture (the participant stands in the anatomical posture, the dots marked, the angles readable). `readings`:
+        {angle name: degrees} typed from a goniometer or inclinometer for the angles it was read for (the others are called 0, the anatomical
+        zero). When the 3 s are over the offsets of every steady angle are set as angle references (see limbtrack/standing_reference.py:
+        the latest wins) and the record is kept for the participant code. ValueError/RuntimeError, with a sentence for the operator, when
+        it cannot begin: while recording, during a break, without a participant code, without a readable hip, knee or ankle angle, or
+        with a typed number that is not an angle."""
+        with self.lock:
+            self._forbid_while_recording("the standing reference")
+            if self.paused:
+                raise RuntimeError("The program is paused for a break. Press Resume (P) first, then capture the standing reference.")
+            if not self._participant_code:
+                raise ValueError("Give the participant code first: the standing reference belongs to a person.")
+            names = [a.name for a in self.active_angles if a.name in standing_mod.ANGLE_NAMES and self._ref_last.get(a.name) is not None]
+            if not names:
+                raise ValueError("No hip, knee or ankle angle can be read at the moment: mark the dots first (all of them, with the foot dots for the ankle), "
+                                 "or find the one that is lost.")
+            if self.seconds_since_last_frame() > STAMP_MAX_PICTURE_AGE_S:
+                raise ValueError("No new picture has come in for a moment (the camera stopped or dropped out, or the video is paused). "
+                                 "Get the picture going again, then capture.")
+            typed = {}
+            for k, v in (readings or {}).items():
+                if v is None:
+                    continue
+                if k not in standing_mod.ANGLE_NAMES:
+                    raise ValueError(f"'{k}' is not an angle the standing reference takes a reading for")
+                typed[k] = _check_reference_value(v)                           # (an AngleReferenceError is a ValueError with a sentence)
+            self._standing_cap = standing_mod.Capture([a.name for a in self.active_angles], typed, instrument)
+            self._standing_cap_key = (self.test.key, tuple(a.name for a in self.active_angles), id(self.trackers), self._participant_code)
+            self._standing_msg = ""
+
+    def cancel_standing_reference(self, why="The standing capture was cancelled; nothing was kept."):
+        with self.lock:
+            if self._standing_cap is not None:
+                self._standing_cap = None
+                self._standing_msg = why
+
+    def _standing_step(self, t, states):
+        """One picture of a standing capture (called under the lock from `_process`). Cancels it when the angles or the dots changed under it, or
+        the pictures stopped; completes it after CAPTURE_S seconds."""
+        cap = self._standing_cap
+        if cap is None:
+            return
+        if self._standing_cap_key != (self.test.key, tuple(a.name for a in self.active_angles), id(self.trackers), self._participant_code):
+            self.cancel_standing_reference("The test, the dots or the participant changed during the standing capture; nothing was kept. Capture again.")
+            return
+        points = {n: (st.x, st.y) for n, st in states.items() if not st.lost}
+        try:
+            done = cap.feed(t, {n: self._ref_last.get(n) for n in cap.names}, points)
+        except standing_mod.StandingError as e:
+            self.cancel_standing_reference(str(e))
+            return
+        if done:
+            self._standing_cap = None
+            self._finish_standing(cap)
+
+    def _finish_standing(self, cap):
+        owner = self.angle_reference_owner()
+        taken_at = datetime.now().isoformat(timespec="seconds")
+        rec = cap.finish(self.scale.live_px_per_cm(), self.test.key, "right" if self.facing_right else "left", taken_at)
+        held = self.angle_ref.active(owner)
+        replaced = [n for n in rec["angles"] if n in held and not self._is_standing_entry(owner, n, held[n])]
+        for n, a in rec["angles"].items():
+            self.angle_ref.set(owner, n, a["reading_deg"], a["dots_deg"], taken_at=taken_at)
+        if rec["angles"]:
+            self._standing_all[owner] = rec
+        words = ", ".join(f"{n} {a['offset_deg']:+.1f}" for n, a in rec["angles"].items())
+        msg = (f"Standing reference kept: the dots read more than the joint by {words} degrees. From now on these angles are shown and judged from it."
+               if rec["angles"] else "Standing reference NOT kept: no angle could be set.")
+        if replaced:
+            msg += f" It replaced the reference set earlier for {', '.join(replaced)}."
+        for n, why in rec["skipped"].items():
+            msg += f" {n.capitalize()} not set: {why}."
+        self._standing_msg = msg
+
+    def _is_standing_entry(self, owner, name, entry):
+        """Is this angle reference entry the one the standing capture of `owner` set (and not a later one by hand)?"""
+        rec = self._standing_all.get(owner) or {}
+        a = (rec.get("angles") or {}).get(name)
+        return (a is not None and entry.get("taken_at") == rec.get("taken_at") and abs(entry["offset_deg"] - a["offset_deg"]) < 0.002
+                and abs(entry["reference_deg"] - a["reading_deg"]) < 0.002)
+
+    def standing_state(self):
+        """For the window: {state: 'idle' | 'capturing', progress 0..1, length_s, message (what the last capture said), record (this participant's,
+        or None), in_use (angles whose live reference is the standing one)}."""
+        with self.lock:
+            cap = self._standing_cap
+            owner = self.angle_reference_owner()
+            rec = self._standing_all.get(owner) if owner else None
+            held = self.angle_ref.active(owner)
+            return {"state": "capturing" if cap is not None else "idle", "progress": cap.progress() if cap is not None else 0.0,
+                    "length_s": standing_mod.CAPTURE_S, "message": self._standing_msg, "record": copy.deepcopy(rec),
+                    "in_use": [n for n in (rec or {}).get("angles", {}) if n in held and self._is_standing_entry(owner, n, held[n])]}
+
+    def clear_standing_reference(self):
+        """Forget this participant's standing record and the angle references it set (those replaced later by hand stay)."""
+        with self.lock:
+            self._forbid_while_recording("the standing reference")
+            owner = self.angle_reference_owner()
+            held = self.angle_ref.active(owner)
+            for n in list(held):
+                if self._is_standing_entry(owner, n, held[n]):
+                    self.angle_ref.clear(n)
+            self._standing_all.pop(owner, None)
+            self._standing_msg = ""
+
+    @property
+    def standing_references_all(self):
+        """Participant code -> the record of the standing capture (what the window remembers with the participant code, like the measures)."""
+        return {k: copy.deepcopy(v) for k, v in self._standing_all.items() if k and v.get("angles")}
+
+    @standing_references_all.setter
+    def standing_references_all(self, records):
+        self._forbid_while_recording("the standing reference")
+        out = {}
+        for code, rec in dict(records or {}).items():
+            if code and isinstance(rec, dict) and isinstance(rec.get("angles"), dict) and rec["angles"]:
+                out[str(code)] = copy.deepcopy(rec)         # (a damaged entry costs only that entry; the export reads it defensively)
+        self._standing_all = out
+
+    def _standing_meta(self):
+        owner = self.angle_reference_owner()
+        rec = self._standing_all.get(owner) if owner else None
+        if not rec:
+            return None
+        held = self.angle_ref.active(owner)
+        names = {a.name for a in self.active_angles}
+        return standing_mod.meta_block(rec, [n for n in rec.get("angles", {}) if n in names and n in held and self._is_standing_entry(owner, n, held[n])])
+
+    # ------------------------------------------------- the check weight and the rig check (0.35.0; they only read, no measured number depends on them)
+    @property
+    def check_weight(self):
+        """The latest check weight of this program run (a dict, see limbtrack/check_weight.py), or None. It is saved in every following trial."""
+        return None if self._check_weight is None else dict(self._check_weight)
+
+    @check_weight.setter
+    def check_weight(self, result):
+        self._forbid_while_recording("the check weight")
+        self._check_weight = check_mod.clean(result)        # (raises ValueError before anything is kept)
+
+    def make_check_weight(self, mass_kg):
+        """Check the force against a hanging known mass (limbtrack/check_weight.py). Returns (result, None) and keeps the result for the
+        following trials, or (None, why) with nothing changed."""
+        self._forbid_while_recording("the check weight")
+        result, why = check_mod.measure(self.force, mass_kg)
+        if result is not None:
+            self.check_weight = result
+        return result, why
+
+    def _check_weight_meta(self):
+        cal = self.force.calibration if self.force is not None else None
+        return check_mod.meta_block(self._check_weight, cal)
+
+    def study_settings_state(self):
+        """The frozen study settings compared with the program as it is now (limbtrack/study_settings.py `compare`), or None without a block."""
+        return study_mod.evaluate(self.study_block, self)
+
+    def _study_settings_meta(self):
+        return study_mod.meta_block(self.study_settings_state(), study_mod.block_hash(self.study_block))
+
+    @property
+    def rig_check(self):
+        """The latest saved rig check (a dict, see limbtrack/rig_check.py), or None. It is saved in every following trial."""
+        return None if self._rig_check is None else copy.deepcopy(self._rig_check)
+
+    @rig_check.setter
+    def rig_check(self, block):
+        self._forbid_while_recording("the rig check")
+        if block is not None and not isinstance(block, dict):
+            raise ValueError("A rig check must be a dict.")
+        self._rig_check = None if block is None else copy.deepcopy(block)
+
+    def live_fps(self):
+        """The picture rate the live loop is really running at, from the times of the last pictures (None until ten pictures are in). Reads only."""
+        with self.lock:
+            t = list(self._times)
+        if len(t) < 10 or t[-1] <= t[0]:
+            return None
+        return (len(t) - 1) / (t[-1] - t[0])
+
+    def beep_check(self):
+        """Play three of the real cues (record, ramp, end) through the cue player, also when the beeps are switched off, and return how many
+        seconds they take (the window asks `beep_check_result` after that). Errors of the sound system are kept, not hidden (cue_problem)."""
+        now = time.perf_counter()
+        self._cues.cancel()
+        self._cues.last_error, self._cues.error_count = None, 0
+        self._beep_check_t0 = now
+        plan = ((0.0, "record"), (0.6, "ramp"), (1.4, "end"))
+        self._cues.schedule([(now + dt, name) for dt, name in plan])
+        return plan[-1][0] + cues.duration_s("end") + 0.4
+
+    def beep_check_result(self):
+        """(names of the cues the sound system took since beep_check, the error or None)."""
+        t0 = self._beep_check_t0
+        names = [n for n, _, started in list(self._cues.played) if t0 is not None and started >= t0]
+        return names, self._cues.last_error
 
     def reference_for_this_position(self):
         """False when readings are held for another test, target or participant (they will not be saved with the next trial)."""
@@ -1730,6 +2068,7 @@ class Engine:
             self.scale.update(gray)
             self._check_rigid_pairs(states)
             angles = self._compute_angles(states, t)
+            self._standing_step(t, states)
             self._check_facing(states)
             self._last_angles = angles
             self._record_history(t, angles)
@@ -1847,7 +2186,10 @@ class Engine:
                 h, w = self._last_gray.shape[:2]
                 frame_size = (w, h)
             self._privacy_hits = {}
+            self._standing_cap = None                         # a standing capture cannot go on into a recording
             self._rec_leg = self._legs.get(self._participant_code)   # (before self.rec is set: tested_leg then reads this)
+            self._rec_measures = measures_mod.entered(self._measures.get(self._participant_code))     # (0.34.0: likewise)
+            self._rec_setup = self._take_setup_for_trial()      # (marked as used below, once the recorder really exists)
             self._rehearsal = None                            # a try-out of the markers ends where the real thing begins
             self._pause_ghost = None                          # a trial's overlay video must not carry the ghost of a break
             target = self.target if self.primary_angle else None
@@ -1856,6 +2198,7 @@ class Engine:
                 self.active_dots, [a.name for a in self.active_angles], self._fps(), frame_size, with_pull=self.pull_active,
                 save_overlay=self.save_overlay, crop=self._privacy_crop, masks=self._privacy_masks, with_force=self.force is not None,
                 derived_names=list(self.test.derived), position=position_number(self.tests, self.test.key, target))
+            self._mark_setup_used()
             self._marker_n = 0
             self._pending_event = None
             self._mvic_end_t = None
@@ -1873,6 +2216,7 @@ class Engine:
             self._arm_auto_mvic()
             self._timing = {"process": [], "arrival": []}
             self.rec_info = {"participant": participant, "notes": notes}
+            self.rec_info["measures_check"] = self.measures_picture_check()    # (0.34.0: typed segment lengths against the picture, as at Record)
             self._relaxed_for_trial = self.relaxed_here() is not None     # (needs rec_info: the key reads the trial's own participant)
             if self.reference.has_data() and self.reference_for_this_position():
                 self.reference.claim(self.reference_position(), bind=True)   # from now on this participant's (also if typed before a code)
@@ -1974,6 +2318,8 @@ class Engine:
             "view": self.test.view,
             "facing_not_used": "frontal view: these angles do not depend on which way the picture faces" if frontal else None,
             "tested_leg": self.tested_leg,              # every test since 0.20.0 (frontal tests only before); None = not chosen
+            "participant_measures": self._participant_measures_meta(),   # 0.34.0: typed height, mass, fat %, segment lengths; None = nothing typed
+            "setup": self._setup_meta(),                                  # 0.34.0: strap distance from a named landmark, supports, seat/back angle; None = nothing typed
             "tape_pelvic_width_mm": self.tape_pelvic_width_mm if frontal else None,
             "sagittal_posture": ({"controlled_by": SAGITTAL_POSTURE, "measured": False,
                                   "operator_ticked": bool(self.wall_posture)} if frontal else None),
@@ -1981,6 +2327,10 @@ class Engine:
             "hip_centre_scale": self._hip_centre_scale_meta(),
             "reference_readings": self._reference_meta(),
             "angle_reference": self._angle_reference_meta(),            # 0.33.0: offsets the angles were shown and judged from (None: none)
+            "standing_reference": self._standing_meta(),                # 0.34.0: the standing capture of this participant (offsets, segment lengths); None: none
+            "check_weight": self._check_weight_meta(),                  # 0.35.0: the latest check of the force against a known mass (null: none this run)
+            "rig_check": None if self._rig_check is None else copy.deepcopy(self._rig_check),   # 0.35.0: the latest saved rig check list (null: never run)
+            "study_settings": self._study_settings_meta(),              # 0.35.0: the frozen study settings and what differed at the start (null: no block in protocol.json)
             "reference_extras": dict(self.test.reference_extras),
             "mirrored_image": self.mirror,   # True: raw.mp4, overlay.mp4 and all pixel coordinates are left-right flipped
             "smoothing": {
@@ -2028,6 +2378,8 @@ class Engine:
                 if self._meta_start.get(k) != end_meta.get(k):
                     changed[k] = [self._meta_start.get(k), end_meta.get(k)]
                 meta[k] = self._meta_start.get(k)
+            meta["study_settings"] = self._meta_start.get("study_settings")   # (as at the start; not in SNAPSHOT_KEYS: the force smoothing and the
+                                                                              # ruler length are display settings that may be touched while recording)
             if changed:
                 meta["changed_during_recording"] = changed      # should never happen: the settings are frozen while recording
             if reason:

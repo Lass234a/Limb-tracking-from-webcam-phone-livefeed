@@ -1,0 +1,8 @@
+# The exact library versions the pilot data (P01 and P02, 129 trials) was recorded with. Every trial's meta.json 'provenance' block says so,
+# and it was the same for all of them. Numbers come from OpenCV and numpy, so the same versions are the safest way to get the same numbers.
+# Build that environment with:   py -3.12 -m pip install -r requirements-lock.txt
+# (Python 3.12.10. nidaqmx and pygrabber were not recorded; install what requirements.txt asks for.)
+numpy==2.5.3
+opencv-python==5.0.0.93
+PySide6==6.11.2
+pyqtgraph==0.14.0

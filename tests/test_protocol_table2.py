@@ -176,15 +176,25 @@ def test_switching_to_a_test_with_the_same_landmarks_keeps_the_marked_dots_and_t
         eng.process(render(p, seed=i), 0.1 + i / 30)
     eng.tolerance, eng.neighbour_tolerance = 2.0, 4.0                       # the operator's own values
     assert eng.lock_position()
-    eng.set_test("knee_flexion")
+    eng.set_test("hip_extension_k90")        # (0.34.0: not knee_flexion any more, which has the two foot dots too; this pair has the same five dots)
     assert eng.next_dot_to_mark() is None and eng.trackers.is_ready()        # nothing to re-click
     assert not eng.locked and eng._refs == {}                                # but the lock belongs to the old test
     assert (eng.tolerance, eng.neighbour_tolerance) == (2.0, 4.0)
-    assert eng.target == 20.0                                                # the new test's first position
+    assert eng.target == 0.0                                                 # the new test's first position
     res = eng.process(render(p, seed=9), 1.0)
     assert not any(st.lost for st in res.dots.values())
-    hip = next(a for a in res.angles if a.name == "hip")
-    assert hip.reference == 90.0                                              # the new test's required neighbour angle applies at once
+    knee = next(a for a in res.angles if a.name == "knee")
+    assert knee.reference == 90.0                                             # the new test's required neighbour angle applies at once
+
+
+def test_knee_extension_to_knee_flexion_now_marks_the_dots_afresh_because_knee_flexion_has_the_foot(tmp_path):
+    """0.34.0: knee flexion has seven dots, knee extension five, so the marked dots are not kept between them (tests/test_ankle_knee_flexion.py)."""
+    eng, p = make(tmp_path, "knee_extension", hip_flex=90, knee_flex=70, ankle_df=5)
+    for i in range(5):
+        eng.process(render(p, seed=i), 0.1 + i / 30)
+    assert eng.next_dot_to_mark() is None
+    eng.set_test("knee_flexion")
+    assert eng.next_dot_to_mark() == "iliac_crest" and not eng.trackers.is_ready() and len(eng.active_dots) == 7
 
 
 def test_a_test_with_other_landmarks_still_starts_afresh(tmp_path):

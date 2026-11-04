@@ -354,13 +354,13 @@ def test_participant_faces_is_in_the_participant_section_not_the_position_sectio
     assert not live.facing_combo.isHidden() and not live.participant_form.labelForField(live.facing_combo).isHidden()
 
 
-def test_the_foot_dots_are_tracked_only_in_the_ankle_tests_and_the_belt_squat():
+def test_the_foot_dots_are_tracked_only_in_the_ankle_tests_the_belt_squat_and_since_0_34_0_knee_flexion():
     foot = {"mt5_base", "mt5_head"}
-    for key in ("knee_extension", "knee_flexion", "hip_extension_k0", "hip_extension_k90", "hip_flexion"):
+    for key in ("knee_extension", "hip_extension_k0", "hip_extension_k90", "hip_flexion"):
         t = TESTS[key]
         assert not foot & set(t.all_dots) and [a.name for a in t.angles if a.name == "ankle"] == [], key
         assert len(t.dots) == 5
-    for key in ("ankle_plantarflexion", "ankle_dorsiflexion", "belt_squat"):
+    for key in ("knee_flexion", "ankle_plantarflexion", "ankle_dorsiflexion", "belt_squat"):        # (knee flexion: back since 0.34.0, tests/test_ankle_knee_flexion.py)
         assert foot <= set(TESTS[key].dots) and len(TESTS[key].dots) == 7, key
     assert TESTS["knee_extension"].all_dots == TESTS["hip_flexion"].all_dots            # same dots: changing test keeps them marked
 
