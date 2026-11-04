@@ -15,7 +15,7 @@ from .force import NO_FORCE_RISE_N, WINDOW_PEAK_DEFAULT_S
 from .loadcell import GRAVITY
 from .pull import compute_pull
 from .rest import clock_text
-from . import verdict as verdicts
+from . import privacy_fix, verdict as verdicts
 
 HUM_WARN_PCT = 3.0              # 50 Hz hum above this share of the force rise is flagged
 FPS_WARN = 20.0                 # fewer pictures per second than this are flagged
@@ -271,7 +271,7 @@ def torque_summary(tr, t0, t1, picture_delay=0.0):
 # ------------------------------------------------------------------------------------------------ the check list
 CHECK_TITLE_MAX = 36            # 0.32.0: the headline of a check (Review's checks panel) is at most this many characters
 CHECK_AREAS = ("recording", "dots", "position", "force", "review", "verdict")
-CHECK_ACTIONS = ("fix_dots", "zero", "window", "calibration")       # what a check can offer to do about it (None: nothing)
+CHECK_ACTIONS = ("fix_dots", "zero", "window", "calibration", "privacy")       # what a check can offer to do about it (None: nothing)
 
 
 def _title(*options):
@@ -360,6 +360,13 @@ def trial_check_items(tr, t0=None, t1=None):
             "Marked compromised", "verdict")
     elif v and v.get("verdict") == verdicts.VALID:
         add("ok", f"Marked valid ({v.get('judged_in')})" + (f": {v['note']}" if v.get("note") else ""), "Marked valid", "verdict")
+    ps = privacy_fix.status(tr.meta_path, m) if getattr(tr, "meta_path", None) else None        # 0.34.0: is the saved video protected?
+    if ps and ps["state"] in (privacy_fix.UNPROTECTED, privacy_fix.UNKNOWN):
+        add("check", ps["text"], "No crop or mask on the video", "recording", "privacy")
+    elif ps and ps["state"] == privacy_fix.PENDING:
+        add("check", ps["text"], "Protected copies not made", "recording", "privacy")
+    elif ps and ps["state"] == privacy_fix.FIXED:
+        add("info", ps["text"], "Protected copies made", "recording", "privacy")
     rb = m.get("rest_before")                                          # 0.27.0: the rest timed before the trial
     if rb and rb.get("short"):
         add("check", f"Only {clock_text(rb['seconds'])} of rest before this trial (the SOP asks for {clock_text(rb['required_s'])} {rb.get('why', '')}).",

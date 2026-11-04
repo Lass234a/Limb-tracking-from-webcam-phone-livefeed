@@ -23,6 +23,7 @@ from .review_decide import VerdictControl
 from .review_force import ForceTree
 from .review_angles import AngleDotTree
 from .review_fixdots import FixDotsPane
+from .review_privacy import PrivacyDialog
 from .review_overview import OverviewPage
 from .review_style import ElidedLabel, build_stylesheet
 from .displacement import window_displacements
@@ -1179,6 +1180,13 @@ class ReviewTab(QWidget):
         self.btn_fix.setToolTip("Put a dot right after the trial: the video grows and the dot tools take the right side. Press again, or Esc, to go back.")
         self.btn_fix.setEnabled(False)
         self.btn_fix.clicked.connect(lambda on: self.set_fix_mode(on))
+        self.btn_privacy = QPushButton("Privacy")                # draw a crop and masks after the recording and make protected copies of the videos (0.34.0)
+        self.btn_privacy.setObjectName("privacyButton")
+        self.btn_privacy.setFocusPolicy(Qt.NoFocus)
+        self.btn_privacy.setToolTip("Draw a crop and black masks on the picture and make protected copies of raw.mp4 and overlay.mp4 in the review folder. "
+                                    "The trial's own videos are not changed.")
+        self.btn_privacy.setEnabled(False)
+        self.btn_privacy.clicked.connect(lambda: self.open_privacy())
         self.btn_play = QPushButton("Play")
         self.btn_play.setCheckable(True)
         self.btn_play.clicked.connect(self.toggle_play)
@@ -1420,6 +1428,7 @@ class ReviewTab(QWidget):
         ctrl.addWidget(self.frame_label)
         ctrl.addWidget(self.chk_trails)
         ctrl.addWidget(self.btn_fix)
+        ctrl.addWidget(self.btn_privacy)
         ctrl.addWidget(self.zoom_label)
         ctrl.addWidget(self.zoom_combo)
         self.zero_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -1852,6 +1861,7 @@ class ReviewTab(QWidget):
         self.btn_view_overview.setChecked(over)
         self.btn_view_trial.setChecked(not over)
         self.btn_fix.setVisible(not over)
+        self.btn_privacy.setVisible(not over)
         self.stack.setCurrentIndex(1 if over else 0)
         self._after_view_change()
 
@@ -1918,6 +1928,8 @@ class ReviewTab(QWidget):
         tr = Trial(meta_path, source=self._source)
         old, self.trial = self.trial, tr
         if old is not None:
+            if not self._same(old.meta_path, tr.meta_path):
+                self._close_privacy()                      # (the Privacy window reads the old trial's video)
             old.close()                                    # (the previous trial's video was never let go of before 0.29.0)
         tr.window_peak_s = float(self.window_peak_spin.value()) / 1000.0
         m = tr.meta
@@ -1970,6 +1982,7 @@ class ReviewTab(QWidget):
         self.force_smooth.setEnabled(tr.has_force())
         self.window_peak_spin.setEnabled(tr.has_force())
         self.btn_fix.setEnabled(tr.cap is not None)                              # (the dots are fixed on the video)
+        self.btn_privacy.setEnabled(tr.cap is not None)                          # (and so are the crop and masks)
         if self._fix_mode and tr.cap is None:
             self.set_fix_mode(False)
         self._show_zero(tr)
@@ -2248,6 +2261,35 @@ class ReviewTab(QWidget):
             self.snap_to_force()
         elif action == "calibration":
             self._show_plot_view("calib")
+        elif action == "privacy":
+            self.open_privacy()
+
+    def open_privacy(self):
+        """The Privacy window for the trial on screen (0.34.0): crop and masks drawn after the recording, protected copies in the review folder."""
+        tr = self.trial
+        if tr is None or tr.cap is None:
+            return None
+        self._close_privacy()
+        dlg = PrivacyDialog(tr, self, changed=self._privacy_changed)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        self._privacy_dialog = dlg
+        dlg.show()
+        return dlg
+
+    def _close_privacy(self):
+        """Close the Privacy window if one is open (it belongs to one trial)."""
+        dlg, self._privacy_dialog = getattr(self, "_privacy_dialog", None), None
+        if dlg is not None:
+            try:
+                dlg.close()
+            except RuntimeError:                           # (its C++ object is already gone)
+                pass
+
+    def _privacy_changed(self):
+        """The crop, masks or protected copies of the trial changed: its checks (and the chip in the bottom bar) are worked out again.
+        Nothing is reloaded: no number of the trial changed, and the Privacy window is still reading its video."""
+        if self.trial is not None:
+            self.update_summary()
 
     # ---- force zero
     def apply_force_calibration(self):

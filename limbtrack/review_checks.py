@@ -22,9 +22,9 @@ COMPACT_BELOW = 520           # a panel narrower than this puts the sentence of 
 QWIDGETSIZE_MAX = 16777215    # (Qt's "no maximum")
 PILL_HEIGHT = 20
 MARGIN_V, SPACING, SIDE_MARGIN = 5, 3, 8
-ACTION_LABELS = {"fix_dots": "Show dot", "zero": "Set zero", "window": "Set window", "calibration": "Calibration"}
+ACTION_LABELS = {"fix_dots": "Show dot", "zero": "Set zero", "window": "Set window", "calibration": "Calibration", "privacy": "Privacy"}
 ACTION_TIPS = {"fix_dots": "Open the Fix dots workspace", "zero": "Go to the force zero", "window": "Go to the analysis window",
-               "calibration": "Show the calibration graph"}
+               "calibration": "Show the calibration graph", "privacy": "Draw a crop and masks and make protected copies of the videos"}
 KIND_COLOURS = {"check": WARN, "ok": GOOD, "info": INFO_GREY}
 
 

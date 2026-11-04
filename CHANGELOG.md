@@ -3,6 +3,25 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.34.0 - 2026-11-04
+
+### Fix the privacy crop and masks in Review (the open item of `PARKED.md`, asked 2026-10-31)
+- **Why:** the crop and the black masks are set in the Live tab before recording, and `privacy.apply` changes only the saved copies. When the recorder forgot (no crop, no mask, a face outside what was covered), the saved `raw.mp4` and `overlay.mp4`
+  show the unprotected picture, and Review could neither say so nor put it right.
+- **A check:** a trial recorded with neither crop nor mask, where the operator did not tick *I looked: nothing identifies the participant*, now has the check **No crop or mask on the video** (amber, with a **Privacy** button). So has a trial recorded before the
+  program kept a privacy record (`meta.json` has no `privacy`). A trial recorded with a crop or masks, or with the operator's "nothing identifies the participant", has no check. The check is a note: it does not change the verdict, a number or a file.
+- **The Privacy window** (button **Privacy** beside *Fix dots*, or the check's button): a picture of the trial (a slider picks the picture), *Crop* and *Mask* modes, and a drag draws the rectangle in full-picture pixels, snapped like the Live tab's
+  (even sizes, at least 32 px, at most three masks). The tracked dots are drawn on the picture; a dot that the drawing would cover, or cut off at the crop edge, is red and named with the number of pictures, before anything is made.
+  **Make protected copies** writes `<trial>_raw_protected.mp4` and `<trial>_overlay_protected.mp4` (the crop applied, the masks black) in the trial's **review folder**, with a progress window that can be cancelled (a cancelled copy leaves no half file).
+  **Delete the protected copies** removes the drawing and the copies; nothing else.
+- **What is kept:** the drawing and the copies made from it are in `review/<participant>/<trial>/privacy_fix.json` (the crop, the masks, which copies exist and from which drawing, an append-only history). Drawing again replaces the copies; making them again from the same drawing keeps them.
+- **What does not change:** the trial's own `raw.mp4`, `overlay.mp4`, `data.csv` and `meta.json` are never written (the review layer's guard), no tracked position and no number changes (a test compares every file's SHA-256 before and after, and the CSV rows and angles).
+  **The unprotected originals stay on the disk until the people responsible for the data decide** (delete, move, encrypt): this version does not remove them, and `tools/protect_originals.py` still keeps their SHA-256.
+- **Limits, said plainly:** a trial recorded with a crop holds nothing outside it, so a new crop that reaches outside the old one comes out black there (the window says so). A rectangle is fixed for the whole trial, as in Live: a face that moves out of its mask in
+  the middle of the trial is not covered (look at several pictures with the slider). The copies are re-encoded (`mp4v`), as the originals were. Review itself still shows the original picture on screen. Not tried on real pilot videos, only on synthetic recordings.
+- **Tests:** `tests/test_privacy_fix.py` (14: the states of a trial, copies of a plain and of a cropped trial, a mask alone, drawing again and clearing, a cancelled copy, no write beside the trial, unchanged numbers, the dots the drawing would hide,
+  and the check, the button and the window driven with the mouse events of a drag). The shared test trial (`humming_trial`) says the operator looked and nothing identifies the participant, as the Live tab's tick does.
+
 ## 0.33.0 - 2026-10-31
 
 ### A bigger video and one default graph, the other angles at peak, and an angle reference (Live and Review)
