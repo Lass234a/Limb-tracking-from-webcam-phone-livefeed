@@ -1,4 +1,4 @@
-"""Fixing the privacy crop and masks after the recording (0.34.0, the item "Fix the privacy crop and masks in Review" of PARKED.md).
+"""Fixing the privacy crop and masks after the recording (audit of 2026-11-04, the item "Fix the privacy crop and masks in Review" of PARKED.md).
 
 In the Live tab the crop and the black masks are set before recording, and `privacy.apply` changes only the saved copies. When the
 recorder forgot (no crop, no mask, a face outside what was covered), the saved `raw.mp4` and `overlay.mp4` show the unprotected picture.

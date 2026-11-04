@@ -3,9 +3,14 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
-## 0.34.0 - 2026-11-04
+## Unreleased - 2026-11-04 (the number is given when it is merged)
 
-### Also in this version (audit of 2026-11-04)
+### Also in this change (audit of 2026-11-04)
+- **An independent after-session check, `tools/check_session.py`:** `python tools/check_session.py recordings` re-derives, from the saved files only, what the numbers claim and says **FAIL** where they disagree with each other
+  (time going backwards, newtons not equal to (volts minus zero) times slope, force and pictures not on one clock, an angle that is not what its dots give, missing picture rows) and **WARN** where they are consistent but may not mean what they seem
+  (no zero, the input limit reached, a load beyond the heaviest calibration load, a resting force far from zero, a dot lost or moved apart or mislabelled at the force peak, the angle far from the position's target, a dot that jumped,
+  an inconsistent ruler scale, an iliac crest dot that is not a stable landmark). It imports nothing from the program's analysis, so a mistake in the program cannot also be in the check, and it never writes. Run it after every session, before the data is
+  used. `tests/test_check_session.py` (18) records a trial, damages copies of it in each of those ways and checks that each damage is named; breaking the check on purpose (four ways) was noticed every time. The thresholds are named constants at the top of the file.
 - **A video file's folders no longer reach `meta.json` off Windows:** the source is recorded by its file name only, splitting on either kind of slash (`camera.py`); with a Windows path on another system the user's folder names were kept.
 - **Anonymised in the repository** (wording only, no measured data): the researcher's Windows user name in paths (`HANDOFF.md`, `LoadCellCalibration/`, a test default), a phone model, and the body size of an AnyBody model.
 - **Tests that failed only on a non-Windows computer** now test the same thing there: the worker-process helper (`pid_alive`), the width of the Fix-dots column (the font is pinned, because the pane asks for exactly what its number columns need), and the read-only test (it needs a user who is not an administrator).

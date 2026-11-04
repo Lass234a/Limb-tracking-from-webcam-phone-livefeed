@@ -1,4 +1,4 @@
-"""The Privacy window of Review (0.34.0): draw a crop and black masks on a picture of a recorded trial and make protected copies of its videos.
+"""The Privacy window of Review (audit of 2026-11-04): draw a crop and black masks on a picture of a recorded trial and make protected copies of its videos.
 
 The same two tools as in the Live tab (a crop that keeps only part of the picture, black masks over faces and name tags), drawn after the
 recording on the full picture. The protected copies go in the trial's review folder (`limbtrack/privacy_fix.py`); the trial's own

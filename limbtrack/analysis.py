@@ -360,7 +360,7 @@ def trial_check_items(tr, t0=None, t1=None):
             "Marked compromised", "verdict")
     elif v and v.get("verdict") == verdicts.VALID:
         add("ok", f"Marked valid ({v.get('judged_in')})" + (f": {v['note']}" if v.get("note") else ""), "Marked valid", "verdict")
-    ps = privacy_fix.status(tr.meta_path, m) if getattr(tr, "meta_path", None) else None        # 0.34.0: is the saved video protected?
+    ps = privacy_fix.status(tr.meta_path, m) if getattr(tr, "meta_path", None) else None        # audit 2026-11-04: is the saved video protected?
     if ps and ps["state"] in (privacy_fix.UNPROTECTED, privacy_fix.UNKNOWN):
         add("check", ps["text"], "No crop or mask on the video", "recording", "privacy")
     elif ps and ps["state"] == privacy_fix.PENDING:

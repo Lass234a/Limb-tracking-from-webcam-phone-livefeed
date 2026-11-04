@@ -1,4 +1,4 @@
-"""Fixing the privacy crop and masks in Review (0.34.0, limbtrack/privacy_fix.py): protected copies of a recorded trial are made in the review
+"""Fixing the privacy crop and masks in Review (audit of 2026-11-04, limbtrack/privacy_fix.py): protected copies of a recorded trial are made in the review
 layer, the trial's own files are never written, and no measured number changes."""
 import hashlib
 import json

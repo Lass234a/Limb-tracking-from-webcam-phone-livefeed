@@ -1180,7 +1180,7 @@ class ReviewTab(QWidget):
         self.btn_fix.setToolTip("Put a dot right after the trial: the video grows and the dot tools take the right side. Press again, or Esc, to go back.")
         self.btn_fix.setEnabled(False)
         self.btn_fix.clicked.connect(lambda on: self.set_fix_mode(on))
-        self.btn_privacy = QPushButton("Privacy")                # draw a crop and masks after the recording and make protected copies of the videos (0.34.0)
+        self.btn_privacy = QPushButton("Privacy")                # draw a crop and masks after the recording and make protected copies of the videos (unreleased)
         self.btn_privacy.setObjectName("privacyButton")
         self.btn_privacy.setFocusPolicy(Qt.NoFocus)
         self.btn_privacy.setToolTip("Draw a crop and black masks on the picture and make protected copies of raw.mp4 and overlay.mp4 in the review folder. "
@@ -2265,7 +2265,7 @@ class ReviewTab(QWidget):
             self.open_privacy()
 
     def open_privacy(self):
-        """The Privacy window for the trial on screen (0.34.0): crop and masks drawn after the recording, protected copies in the review folder."""
+        """The Privacy window for the trial on screen (audit of 2026-11-04): crop and masks drawn after the recording, protected copies in the review folder."""
         tr = self.trial
         if tr is None or tr.cap is None:
             return None
