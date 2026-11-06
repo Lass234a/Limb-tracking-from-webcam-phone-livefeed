@@ -83,7 +83,7 @@ While the video runs, the **live trace** under it shows the last 15 s: the main 
 | Where | Meaning |
 |---|---|
 | Angle text / limb lines green | inside tolerance |
-| Angle text / limb lines red | outside tolerance |
+| Angle text / limb lines red | outside tolerance (the read-out also says OUT, so it does not rest on colour alone) |
 | Angle text white | no reference yet (not locked) |
 | Dot ring yellow | dot strong |
 | Dot ring orange + "weak dot (fading)" | dot contrast has dropped below 60 % of when it was marked: fix lighting/glare before it is lost |

@@ -19,6 +19,28 @@ CHECK_COLOUR = (0, 165, 255)                      # BGR orange: an angle whose d
 
 def _angle_colour(a):
     return CHECK_COLOUR if getattr(a, "suspect", None) and a.status != LOST else COLOURS[a.status]
+
+
+def angle_line(a):
+    """The read-out line of one angle in the picture header: its value (from the reference when there is one, the dots' angle beside it),
+    the deviation from its target or locked value, and words for what the colour says, so that nothing is told by colour alone (WCAG 2.1
+    1.4.1; 0.35.1): OUT when it is outside its tolerance (red; for a red-green colour-blind operator the red and green of the picture are
+    only 1.5 : 1 apart in brightness), CHECK DOTS when its dots moved apart (orange), 'lost' when a dot is lost (grey)."""
+    if a.status == LOST:
+        return f"{a.title}: lost"
+    off = getattr(a, "ref_offset", 0.0) or 0.0                   # angle reference (0.33.0): the angle from the reference first, the dots' angle beside it
+    s_val = f"{a.value - off:6.1f}"
+    if a.reference is not None:
+        s_val += f"  ({a.deviation:+.1f} vs {a.reference - off:.0f})"
+    if a.status == OUT:
+        s_val += "  OUT"
+    if off:
+        s_val += f"   dots {a.value:.1f}"
+    if getattr(a, "suspect", None):
+        s_val += "  CHECK DOTS"
+    return f"{a.title}: {s_val}"
+
+
 DERIVED_COLOUR = (255, 255, 0)                    # BGR cyan: a computed point (the hip centre of a frontal test), unlike a sticker
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 PROMPT_PREFIX = "click dot: "                         # header line that asks for the next dot (engine.py writes it), drawn in yellow
@@ -209,19 +231,7 @@ def draw(frame, dots, angles, header_lines=(), recording=False, trails=None, sca
     if rows:
         rows[-1] = rows[-1][:4] + (rows[-1][4] + 6 * s,)
     for a in angles:
-        col = _angle_colour(a)
-        if a.status == LOST:
-            s_val = "lost"
-        else:
-            off = getattr(a, "ref_offset", 0.0) or 0.0          # angle reference (0.33.0): the angle from the reference first, the dots' angle beside it
-            s_val = f"{a.value - off:6.1f}"
-            if a.reference is not None:
-                s_val += f"  ({a.deviation:+.1f} vs {a.reference - off:.0f})"
-            if off:
-                s_val += f"   dots {a.value:.1f}"
-            if getattr(a, "suspect", None):
-                s_val += "  CHECK DOTS"
-        rows.append((f"{a.title}: {s_val}", 0.75 * s, col, thick, 32 * s))
+        rows.append((angle_line(a), 0.75 * s, _angle_colour(a), thick, 32 * s))
     y = 34 * s
     _shade_behind(img, rows, 12, y)
     for line, scale, col, th, advance in rows:

@@ -15,7 +15,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRect, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
-                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
+                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QScrollArea,
                                QSizePolicy, QSplitter, QTabWidget, QListWidget, QVBoxLayout, QWidget)
 
 from . import check_weight as check_mod, privacy, reference, rig_check as rig_mod, session_memory, study_settings as study_mod

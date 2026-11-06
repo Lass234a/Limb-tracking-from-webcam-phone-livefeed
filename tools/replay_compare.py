@@ -221,7 +221,7 @@ def compare(track, rows, i0, dot, tol, masks):
 def code_signature(candidate, protocol=None):
     """Changes whenever the tracker code, this script or the protocol file (rigid_pairs) change, so cached numbers are never reused
     for different code."""
-    h = hashlib.sha1()
+    h = hashlib.sha1(usedforsecurity=False)          # (a cache key, not security)
     extra = ([Path(candidate)] if candidate else []) + ([Path(protocol)] if protocol and Path(protocol).is_file() else [])
     for p in sorted((HERE.parent / "limbtrack").glob("*.py")) + [Path(__file__)] + extra:
         h.update(p.name.encode())
@@ -239,7 +239,7 @@ def trial_signature(meta_path, meta, tol, code_sig):
             parts.append(f"{st.st_size}:{st.st_mtime_ns}")
         except OSError:
             parts.append("missing")
-    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+    return hashlib.sha1("|".join(parts).encode(), usedforsecurity=False).hexdigest()
 
 
 def process_trial(job):

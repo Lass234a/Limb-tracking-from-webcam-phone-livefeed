@@ -62,8 +62,9 @@ def fixed_numbers(block):
     return [r for r in result["rows"] if r["key"] in code_keys]
 
 
-def report(git_info, version, code_hash, protocol_hash, block, fixed, now=None):
-    """The lines to paste into the study log. Pure: everything it prints is an argument."""
+def report(git_info, version, code_hash, protocol_hash, block, fixed, now=None, libraries=None):
+    """The lines to paste into the study log. Pure: everything it prints is an argument. `libraries`: {name: version} (provenance.libraries),
+    printed when given (0.35.1: the dot tracking is OpenCV's, so the same commit with another OpenCV can give other numbers)."""
     lines = [f"LIMBTRACK FREEZE CHECK  {time.strftime('%Y-%m-%d %H:%M', time.localtime(now))}",
              f"Program version      : {version}",
              f"Git commit           : {git_info['commit'] or 'unknown (git could not say)'}"
@@ -83,6 +84,9 @@ def report(git_info, version, code_hash, protocol_hash, block, fixed, now=None):
                 lines.append(f"                       ... and {len(names) - LIST_MAX} more {title}")
     lines += [f"Code hash (sha256)   : {code_hash} (limbtrack/*.py, line endings ignored; needs no git)",
               f"Protocol hash        : {protocol_hash or 'unknown'} (protocol.json as JSON; carries the study settings below)"]
+    if libraries:
+        lines.append("Libraries            : " + ", ".join(f"{k} {v or 'not installed'}" for k, v in libraries.items())
+                     + " (keep these the same during the study: requirements.txt only gives the lowest versions)")
     if block is None:
         lines.append("Study settings       : none (protocol.json has no study_settings block)")
         return lines
@@ -119,7 +123,8 @@ def main(argv=None):
     block = load_study_settings(protocol)
     info = git_state()
     fixed = fixed_numbers(block) if block is not None else []
-    print("\n".join(report(info, SOFTWARE_VERSION, provenance.code_sha256(), provenance.protocol_sha256(protocol), block, fixed)))
+    print("\n".join(report(info, SOFTWARE_VERSION, provenance.code_sha256(), provenance.protocol_sha256(protocol), block, fixed,
+                            libraries=provenance.libraries())))
     bad = problems(info, fixed)
     if bad:
         print("\nNot ready to freeze: " + "; ".join(bad) + ".")

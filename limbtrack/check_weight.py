@@ -21,8 +21,6 @@ import math
 import time
 from datetime import datetime
 
-import numpy as np
-
 from . import force as force_mod
 from .loadcell import GRAVITY
 
@@ -89,11 +87,7 @@ def read_window(src, seconds=AVERAGE_S):
     _, v = src.samples_between(now - seconds, now + 1.0)
     if v.size < MIN_SAMPLE_SHARE * seconds * src.rate or v.size < 4:
         return None
-    cycles = int(v.size * force_mod.MAINS_HZ / src.rate)
-    if cycles < 5:
-        return None
-    n = int(round(cycles * src.rate / force_mod.MAINS_HZ))
-    return np.asarray(v[-n:], dtype=np.float64)
+    return force_mod.whole_mains_cycles(v, src.rate)
 
 
 def measure(src, mass_kg, seconds=AVERAGE_S, now=None):

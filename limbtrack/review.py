@@ -30,7 +30,7 @@ from . import analysis
 from .force import NO_FORCE_RISE_N, SMOOTH_DEFAULT_S, WINDOW_PEAK_DEFAULT_S, ForceCalibration, mains_amplitude, smooth_signal
 from .loadcell import COVERAGE, GRAVITY, active_regression, find_regression
 from .pull import COLUMNS as PULL_COLUMNS
-from .angles import measure, segment_pairs
+from .angles import measure, segment_pairs  # noqa: F401 - segment_pairs: used by the parked ghost (PARKED-GHOST lines)
 # PARKED-GHOST: from .geometry import anchored_ghost
 from .protocol import AngleDef
 from .results import INFO, LOST, OK, OUT
@@ -496,11 +496,13 @@ class Trial:
         One rule for every trial, marked by hand or automatically; it does not depend on the analysis window."""
         if not self.has_force():
             return None
-        key = (self.force_smooth_s, id(self.force_n))
-        if getattr(self, "_rest_cache", (None,))[0] == key:
-            return self._rest_cache[1]
+        # The cache holds the force arrays it was worked out from and is used only while they are the same objects (0.35.1: until then their
+        # id(), which Python gives again to a new array once the old one is freed, so after two calibrations a stale rest could come back).
+        cache = getattr(self, "_rest_cache", None)
+        if cache is not None and cache[0] == self.force_smooth_s and cache[1] is self.force_n and cache[2] is self.force_v:
+            return cache[3]
         out = self._find_force_rest()
-        self._rest_cache = (key, out)
+        self._rest_cache = (self.force_smooth_s, self.force_n, self.force_v, out)
         return out
 
     def _find_force_rest(self):
@@ -2143,7 +2145,6 @@ class ReviewTab(QWidget):
             curve.setDownsampling(auto=True, method="peak")
             fp.addItem(curve)
         fp.setLabel("left", f"Force ({unit})")
-        y = ys if tr.force_smooth_s > 0 else raw
         lo, hi = float(np.nanmin(raw)), float(np.nanmax(raw))
         pad = 0.06 * max(hi - lo, 1e-9)
         fp.setYRange(lo - pad, hi + pad, padding=0)

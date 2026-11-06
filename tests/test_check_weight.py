@@ -357,7 +357,7 @@ def test_a_trial_carries_the_latest_check_and_one_made_before_any_check_says_nul
         assert k in block, k
     assert block["mass_kg"] == 25.0 and block["same_calibration"] is True and block["ok"] is True
     assert block["error_pct"] == session["result"]["error_pct"] and block["time"] == session["result"]["time"]
-    assert after["software_version"] == SOFTWARE_VERSION == "0.35.0"
+    assert after["software_version"] == SOFTWARE_VERSION
     assert "changed_during_recording" not in after and "changed_during_recording" not in before        # the setting is frozen like the others
     assert after["force"]["peak_n"] > 450                                                    # (a real contraction on top of the hanging mass)
 

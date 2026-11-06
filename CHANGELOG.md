@@ -3,6 +3,70 @@
 Version numbers refer to `SOFTWARE_VERSION` in `limbtrack/engine.py`; every recording's `meta.json` stores the version, the
 meta schema and a `provenance` block (code hash, git commit, library versions, protocol hash).
 
+## 0.35.1 - 2026-11-05
+
+An audit of 0.35.0 (static analysis, a security scan, complexity, a dependency and licence check, a review of the code that measures and saves
+numbers, brute-force cross-checks of the maths, a real-time load test and a colour check). The maths itself was right: the angles, the hip centre,
+the smoothing, the sliding-window peak, the mains-hum amplitude, the moment arm and the load cell regression (re-fitted from its own points: 526.95 N/V)
+all agree with independent calculations to rounding. What was wrong is small and is fixed; each fix has a test in `tests/test_fixes_0_35_1.py` that
+fails on 0.35.0.
+
+### Fixes that can change a number (all small)
+- **Force samples were lost when the DAQ clock estimate stepped back** (`force.py` `_push`). When a chunk came with less USB delay than any in the
+  last 20 s (the computer became less busy), its first samples got the time of the sample before; when the chunk before had already been handed to
+  the recording, `Engine._take_force` (which goes on from just after the last time it handed over) never wrote them to `force.csv`: about one sample
+  per millisecond of the step (2 of 40 000 in a test with a 3 ms step). Now two samples never share a time (1 us apart until the estimate has caught
+  up), so `force.csv` has every sample again. Numbers: a sample or two per step were missing; nothing else changes.
+- **The zero and the relaxed level (Zero 2) now average a whole number of 50 Hz cycles** (`force.py` `_steady_mean`, new `whole_mains_cycles`, also
+  used by the check weight). The 1 s window of a zero holds about 985-1000 samples, because the newest are still on their way from the DAQ, so part
+  of a hum cycle stayed in the mean: up to about 0.6 % of the hum's amplitude, so with the 90 mV hum of 9 Oct about 0.5 mV (0.3 N); with the
+  isolated outlet (about 1 mV of hum) nothing measurable. Changes the zero (and so the newtons) of new recordings by at most that much.
+- **Steepest rise (rate of force development) in Review** (`analysis.force_timing`): the sample interval is now the median one, as everywhere else,
+  not the first interval of the file. That one is 0.99 to 1.01 ms after the 10 us rounding of `force.csv`, so "100 ms" was 99 to 101 samples and the
+  rate about 1 % off; two first samples with the same time stopped the trial's numbers (export row, checks) with a division by zero.
+
+### Fixes that change no number
+- **The resting force cache** (`review.Trial.force_rest`) was keyed on `id(force_n)`. Python gives a freed array's id to a new one, so after two zeros
+  set one after the other in Review a stale resting force could come back (27 of 30 tries in a loop on a 3 s trial; the window refreshes after each
+  change, which made it unlikely in use). The cache now keeps the arrays themselves.
+- **An angle of `angle_library` written in the old `kind` / `points` spelling** passed the protocol check and then stopped the program at start-up;
+  it now loads (`protocol.load_protocol`).
+- **Colour is no longer the only sign of an angle outside its tolerance** (WCAG 2.1, 1.4.1): the read-out line in the picture (live, the saved overlay
+  video and Review) now ends with OUT, as it already said CHECK DOTS and lost. For a red-green colour-blind operator the program's red and green are
+  only 1.5 : 1 apart in brightness. (`overlay.angle_line`, which `overlay.draw` now uses.)
+- **`tools/freeze_check.py` prints the library versions** (Python, numpy, OpenCV, PySide6, pyqtgraph; `provenance.libraries`, which `meta.json` already
+  used). The dot tracking is OpenCV's, and `requirements.txt` gives only the lowest versions, so the same commit with another OpenCV can give other
+  numbers: keep the printed versions during the study.
+- Clean-up: unused imports and variables removed (`analysis`, `review_layer`, `gui`, `check_weight`, `dot_edits`, `review`, `tools/build_truth.py`), the
+  per-picture helper of `analysis.torque_series` defined once instead of in every pass of its loop, the
+  SHA-1 cache key of `tools/replay_compare.py` marked as not for security, and two tests that pinned the literal version now compare with
+  `SOFTWARE_VERSION` (the rule of `test_provenance` since 0.7.1).
+
+### Load test (real time, synthetic pictures; no change needed)
+- One recording of 5 minutes at 30 pictures a second (1280x720, 5 dots, a simulated load cell at 1000 samples a second, both videos): all 9,000
+  pictures are in `data.csv` and in both videos, all 300,125 force samples are in `force.csv`, no gaps, 29.99 pictures a second.
+- 20 recordings of 10 s one after the other: every picture and sample saved each time. In 60 and 80 more (memory only), threads and open
+  files stay where they were.
+- Work per picture: 7.7 ms (95 % under 9.8 ms), 23 % of the time between two pictures, on a 4-core machine.
+- Memory grows only with the force buffer, which keeps the last 10 minutes by design (about 45 MB at most). On Linux the C library also keeps
+  freed picture buffers (about 2.8 MB per recording; gone with a fixed `MALLOC_MMAP_THRESHOLD_`): an allocator effect, not a leak in the program.
+
+### What the audit found and did not change (decisions for the group)
+- The window's step and dot chips use pale text made for a dark Windows theme: on a dark theme they pass the WCAG contrast of 4.5 : 1 (6.4 to 8.3), on
+  a light theme they fail it (1.3 to 3.0). The red status text (#dc2626) is 3.4 : 1 on dark. Not changed: which theme the laptop uses decides it.
+- The repository has no licence file; it is public, so nobody else may legally reuse the code until one is chosen.
+- Not run, because they need real operators: the System Usability Scale, the Single Ease Question, task completion and time on task. `session_log.csv`
+  already has the time of every step for time on task. A keystroke-level estimate instead: about 11 minutes of operator input in a session of 21
+  positions and 45 trials (the SOP rests alone are about 66 minutes); the biggest items are marking the dots again and the verdict in the Live tab,
+  which takes the mouse (about 3.5 s a trial; a key would make it about 1.6 s; the digit keys are taken by the dots).
+- The full suite on a Linux test machine (not the study laptop): 1,831 passed, 13 failed on 0.35.0, every failure from the machine, not the program:
+  four overview-worker tests use a Windows-only helper (`ctypes.WinDLL`), the read-only test runs as root (root may write a read-only file), the
+  video-name test uses a Windows path, and seven layout tests measure pixels with wider fonts than Windows has. One of these, the Participant section
+  that should need no scrolling, passes on 0.33.0 on the same machine: the Measures box of 0.34.0 added about 90 px (on Windows it scrolls about 40
+  of the 60 px allowed, as the test's note says), so on a smaller screen that section scrolls.
+- With a picture delay above 0 (Review only; the exports use 0), the torque window is in picture time while the force window is in force time, so its
+  edges are off by the delay.
+
 ## 0.35.0 - 2026-11-04
 
 Built from `audit/IMPROVEMENT_AND_ANYBODY_PLAN_2026-11-02.md`, the features after F1-F7. **Why this version:** before the first study participant the force has to be checked against something known (plan V4: **F8, the check weight**, and **F9, the rig check list**) and the program that records the study has to be the same program, with the same settings, every time (plan V6, the code freeze: **F13, the study settings**, and a small freeze tool). **No measured number changes in any of them:** the check weight and the rig check only READ the force samples and the engine's state, they move no zero, no calibration and no setting; the study settings only READ the program's settings and compare them with a list; none of them ever stops Record (they warn, remind and log). New things are only added: new `meta.json` keys (`check_weight`, `rig_check`, `study_settings`; `null` when there is none, and a trial of an earlier version opens and exports with blanks), three new columns (two at the end of the session summary and of the AnyBody export, one at the end of the AnyBody export only), new session log lines, one new block in `protocol.json`. None of it has been tried on the real rig or on a person; the tolerances, thresholds and frozen values named below are proposals the group has to confirm.

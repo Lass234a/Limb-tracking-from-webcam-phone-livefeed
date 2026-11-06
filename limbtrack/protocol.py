@@ -370,7 +370,7 @@ def load_protocol(path):
         angles = []
         for item in t["angles"]:
             if isinstance(item, str):
-                d = dict(library[item])
+                d = _legacy(library[item])       # (0.35.1: the old 'kind'/'points' spelling works in the library too, as the check accepts it)
                 d.setdefault("name", item)
             else:
                 d = _legacy(item)

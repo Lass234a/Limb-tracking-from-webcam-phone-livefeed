@@ -35,6 +35,7 @@ KEEP_SECONDS = 600.0              # samples kept in memory (a recording is far s
 STANDARD_GRAVITY = GRAVITY        # m/s^2: a mass of 1 kg weighs 9.80665 N
 MIN_CAL_SPAN_V = 0.005            # a known load must move the signal by at least this much for a two-point calibration
 ALIGN_WINDOW_S = 20.0
+MIN_SAMPLE_STEP_S = 1e-6          # two samples are never given the same time: after the clock estimate moved back they are this far apart
 CLIP_FRACTION = 0.99                # a sample this close to +-range is 'at the limit'
 SMOOTH_DEFAULT_S = 0.1              # display and analysis smoothing: a moving average of this length (a multiple of 20 ms removes 50 Hz hum)
 WINDOW_PEAK_DEFAULT_S = 0.5         # 0.29.0: the sliding-window peak is the highest mean force over any stretch this long (Review, adjustable).
@@ -74,6 +75,16 @@ def smooth_signal(values, rate, window_s):
     padded = np.pad(values, (left, n - 1 - left), mode="edge")
     c = np.cumsum(np.insert(padded, 0, 0.0))
     return (c[n:] - c[:-n]) / n
+
+
+def whole_mains_cycles(values, rate, mains_hz=MAINS_HZ, min_cycles=5):
+    """The newest samples of `values` that make a whole number of mains cycles, so the hum averages out of their mean exactly (at 1000
+    samples per second one 50 Hz cycle is 20 samples), or None when they hold fewer than `min_cycles` cycles."""
+    v = np.asarray(values, dtype=np.float64)
+    cycles = int(v.size * mains_hz / rate)
+    if cycles < min_cycles:
+        return None
+    return v[-int(round(cycles * rate / mains_hz)):]
 
 
 def mains_amplitude(volts, rate, mains_hz=MAINS_HZ):
@@ -303,9 +314,14 @@ class ForceSource:
             n0 = self._n_total
             self._n_total += chunk.size
             self._aligner.update(arrival, self._n_total)
-            t = np.maximum.accumulate(self._aligner.times(n0, chunk.size))
-            if self._chunks and t[0] < self._chunks[-1][0][-1]:         # the clock estimate moved: keep time running forward
-                t = np.maximum(t, self._chunks[-1][0][-1])
+            t = self._aligner.times(n0, chunk.size)
+            last = self._chunks[-1][0][-1] if self._chunks else None
+            if last is not None and t[0] <= last:
+                # The clock estimate moved back (a chunk came with less USB delay than any in the last 20 s): keep time running STRICTLY
+                # forward, one microsecond per sample until the estimate is caught up. Until 0.35.1 these samples got the same time as the
+                # previous sample, and the engine, which hands samples to force.csv from just after the last time it handed over, never
+                # wrote them: a millisecond step back lost about one sample per millisecond.
+                t = np.maximum(t, last + MIN_SAMPLE_STEP_S * np.arange(1, t.size + 1))
             self._chunks.append((t, chunk))
             self._kept += chunk.size
             self._last_arrival = arrival
@@ -390,7 +406,9 @@ class ForceSource:
         """(mean volts, None) of the last `seconds`, or (None, reason) when there is too little or the signal is not steady.
 
         Steady means: no drift (the two halves agree within MAX_DRIFT_V) and little noise (the spread without the 50 Hz hum is within
-        MAX_STEADY_SD_V). The hum is taken out because a whole number of its cycles averages out of the mean exactly. What was
+        MAX_STEADY_SD_V). The hum is taken out because a whole number of its cycles averages out of the mean exactly: the newest whole
+        number of cycles is used (0.35.1; until then all the samples of the window, about 985 to 1000 of the 1 s of a zero because the newest
+        ones are still on their way from the DAQ, which left part of a cycle of hum in the mean: up to 0.6 % of the hum's amplitude). What was
         measured is kept in `last_reading` (mean, noise, hum, drift, samples)."""
         if self.frozen:
             return None, "Stop recording first: the zero and the calibration cannot change during a recording."
@@ -400,6 +418,9 @@ class ForceSource:
         _, v = self.samples_between(now - seconds, now + 1.0)
         if v.size < 0.5 * seconds * self.rate or v.size < 4:
             return None, "Not enough force samples yet. Wait a moment and try again."
+        whole = whole_mains_cycles(v, self.rate)
+        if whole is not None:
+            v = whole
         hum = mains_amplitude(v, self.rate)
         hum = hum if math.isfinite(hum) else 0.0
         noise = math.sqrt(max(float(v.std()) ** 2 - hum ** 2 / 2.0, 0.0))        # a sine's variance is amplitude squared / 2

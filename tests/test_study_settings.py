@@ -413,7 +413,7 @@ def test_the_trial_keeps_the_list_as_it_was_at_the_start_and_a_touched_display_s
     m = meta_of(trials["touched"])
     assert [d["key"] for d in m["study_settings"]["differences"]] == ["dot_kind"]                 # white at the start; the ruler was 100 cm then
     assert "changed_during_recording" not in m and trials["ruler_after_touch"] == 80.0       # (it was changed while recording)
-    assert m["software_version"] == SOFTWARE_VERSION == "0.35.0"
+    assert m["software_version"] == SOFTWARE_VERSION
 
 
 def test_nothing_measured_changes_between_a_trial_with_and_without_the_list(trials):

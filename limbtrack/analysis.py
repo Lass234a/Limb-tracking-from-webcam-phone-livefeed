@@ -5,9 +5,7 @@ Everything here only READS a loaded trial (limbtrack/review.py `Trial`); nothing
 smoothed force (a multiple of 20 ms removes 50 Hz mains hum) and say which assumptions they rest on.
 """
 import csv
-import json
 import math
-from pathlib import Path
 
 import numpy as np
 
@@ -63,11 +61,13 @@ def force_timing(tr, t0, t1):
     while hi < k and y[hi] < base + 0.90 * rise:
         hi += 1
     onset, t90 = float(t[lo]), float(t[hi])
-    # steepest rise over 100 ms between the onset and the peak
-    rate = float(t[1] - t[0]) if len(t) > 1 else 0.001
-    step = max(1, int(round(0.1 / rate)))
+    # steepest rise over 100 ms between the onset and the peak. The sample interval is the median one, as everywhere else (0.35.1: until then
+    # the first interval of the file, which the 10 us rounding of force.csv makes 0.99 to 1.01 ms, so the 100 ms were 99 to 101 samples, and two
+    # samples with the same time stopped the trial's numbers with a division by zero)
+    dt = float(np.median(np.diff(t))) if len(t) > 2 else 0.001
+    step = max(1, int(round(0.1 / dt))) if dt > 0 else 100
     seg = y[lo:k + 1]
-    rfd = float(np.nanmax((seg[step:] - seg[:-step]) / (step * rate))) if seg.size > step else math.nan
+    rfd = float(np.nanmax((seg[step:] - seg[:-step]) / (step * dt))) if seg.size > step and dt > 0 else math.nan
     # steadiness of the hold: the middle 60 % of the stretch above 90 % of the peak
     above = y >= base + 0.90 * rise
     a = k
@@ -198,12 +198,13 @@ def torque_series(tr, picture_delay=0.0):
     n = len(tr.t)
     arm = np.full(n, np.nan)
     est = np.zeros(n, bool)
+
+    def xy(name, i):
+        x, yv = tracks[name][0][i], tracks[name][1][i]
+        return None if (math.isnan(x) or math.isnan(yv)) else (float(x), float(yv))
     for i in range(n):
-        def xy(name):
-            x, yv = tracks[name][0][i], tracks[name][1][i]
-            return None if (math.isnan(x) or math.isnan(yv)) else (float(x), float(yv))
-        anchor, joint, a, b = xy("anchor"), xy(fulcrum), xy(seg[0]), xy(seg[1])
-        strap = xy("strap") if "strap" in tr.tracks else None
+        anchor, joint, a, b = xy("anchor", i), xy(fulcrum, i), xy(seg[0], i), xy(seg[1], i)
+        strap = xy("strap", i) if "strap" in tr.tracks else None
         if strap is None and stand_in:
             strap, est[i] = b, True                    # the stand-in
         if None in (anchor, joint, a, b, strap):

@@ -53,6 +53,18 @@ def protocol_sha256(path):
         return None
 
 
+def libraries():
+    """{name: version} of Python and of the libraries whose versions can change a measured number or what is shown (OpenCV does the dot
+    tracking, numpy the maths); None for one that is not installed. meta.json carries them (`collect`) and tools/freeze_check.py prints them."""
+    return {
+        "python": sys.version.split()[0],
+        "numpy": _version("numpy"),
+        "opencv": _version("opencv-python") or _version("opencv-python-headless"),
+        "pyside6": _version("PySide6"),
+        "pyqtgraph": _version("pyqtgraph"),
+    }
+
+
 @functools.lru_cache(maxsize=8)
 def collect(protocol_path=None):
     """The provenance record for meta.json."""
@@ -61,11 +73,7 @@ def collect(protocol_path=None):
         "code_sha256": code_sha256(),
         "git_commit": _git("rev-parse", "HEAD"),
         "git_dirty": None if status is None else bool(status),
-        "python": sys.version.split()[0],
-        "numpy": _version("numpy"),
-        "opencv": _version("opencv-python") or _version("opencv-python-headless"),
-        "pyside6": _version("PySide6"),
-        "pyqtgraph": _version("pyqtgraph"),
+        **libraries(),
         "platform": platform.platform(),
         "processor": platform.processor(),
         "timezone": time.strftime("%z"),

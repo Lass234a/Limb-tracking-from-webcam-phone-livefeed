@@ -19,7 +19,6 @@ import csv
 import hashlib
 import json
 import shutil
-import math
 import os
 from datetime import datetime
 from pathlib import Path
