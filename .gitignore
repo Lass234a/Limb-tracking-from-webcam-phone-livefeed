@@ -40,3 +40,6 @@ replay_cache.json
 truth_candidates.csv
 # collections made by tools/collect_pilot.py (<pilot folder>_collection: copies of participant data)
 *_collection/
+
+# Screenshots of trials made by tools/trial_snapshots.py: they show the participant, never commit them
+snapshots/
